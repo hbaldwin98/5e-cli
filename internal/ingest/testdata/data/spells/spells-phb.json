@@ -1,0 +1,13 @@
+{
+  "spell": [
+    {
+      "name": "Testbolt",
+      "source": "PHB",
+      "level": 0,
+      "school": "V",
+      "page": 9,
+      "srd": true,
+      "entries": ["A bolt of testing. See {@creature Test Beast|MM}."]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "data": [
+    {
+      "type": "section",
+      "name": "Holding Breath",
+      "entries": ["A creature can hold its breath for minutes equal to 1 plus its Constitution modifier."]
+    }
+  ]
+}

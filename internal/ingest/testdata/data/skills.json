@@ -1,0 +1,18 @@
+{
+  "skill": [
+    {
+      "name": "Testing",
+      "source": "PHB",
+      "page": 1,
+      "srd": true,
+      "entries": ["You do a {@skill Testing} thing with {@condition Hexed|PHB}."]
+    },
+    {
+      "name": "Testing",
+      "source": "XPHB",
+      "page": 2,
+      "srd52": true,
+      "entries": ["You test things."]
+    }
+  ]
+}

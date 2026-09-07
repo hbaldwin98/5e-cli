@@ -1,0 +1,4 @@
+[submodule "third_party/5etools-src"]
+	path = third_party/5etools-src
+	url = https://github.com/5etools-mirror-3/5etools-src.git
+	shallow = true

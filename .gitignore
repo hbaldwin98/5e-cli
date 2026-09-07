@@ -1,0 +1,11 @@
+# derived indexes (never commit 5etools content)
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# build
+/5e
+/bin/
+/dist/
+coverage.out

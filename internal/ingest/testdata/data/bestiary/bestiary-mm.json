@@ -1,0 +1,10 @@
+{
+  "monster": [
+    {
+      "name": "Test Beast",
+      "source": "MM",
+      "page": 3,
+      "entries": ["A beast that tests. It uses {@spell Testbolt}."]
+    }
+  ]
+}
