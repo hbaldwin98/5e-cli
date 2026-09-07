@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -15,12 +16,14 @@ import (
 
 // Options configure the MCP server.
 type Options struct {
-	Ask ask.Config
+	Ask     ask.Config
+	Edition edition.Pref
 }
 
 type handler struct {
 	st  *store.Store
 	ask ask.Config
+	ed  edition.Pref
 }
 
 type getInput struct {
@@ -41,7 +44,7 @@ type getOutput struct {
 
 // New builds an MCP server over the local 5e index.
 func New(st *store.Store, opt Options) *mcp.Server {
-	h := &handler{st: st, ask: opt.Ask}
+	h := &handler{st: st, ask: opt.Ask, ed: opt.Edition}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "5e", Version: "0.1.0"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get",
@@ -67,6 +70,9 @@ func (h *handler) get(_ context.Context, _ *mcp.CallToolRequest, in getInput) (*
 	ents, err := h.st.Lookup(in.Kind, in.Name, in.Source)
 	if err != nil {
 		return nil, getOutput{}, err
+	}
+	if in.Source == "" {
+		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
 	}
 	if len(ents) == 0 {
 		return nil, getOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
@@ -117,6 +123,7 @@ func (h *handler) search(_ context.Context, _ *mcp.CallToolRequest, in searchInp
 		Kind:    in.Kind,
 		Sources: in.Sources,
 		Limit:   in.Limit,
+		Edition: h.ed,
 	})
 	if err != nil {
 		return nil, searchOutput{}, err

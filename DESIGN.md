@@ -111,7 +111,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e mcp
 ```
 
-Global flags: `--json`, `--data`, `--index` (path to the sqlite file).
+Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`).
 
 ### `ingest`
 
@@ -125,8 +125,8 @@ Typed lookup. Kind is required so `5e get spell shield` and `5e get item shield`
 
 Identity is `(kind, name, source)`. Names are matched case-insensitively. If `--source` is omitted and several sources match:
 
-1. Apply configured edition preference (2014 vs 2024 — `PHB` vs `XPHB`, `MM` vs `XMM`, …).
-2. If still ambiguous, print the candidates and exit non-zero. Never silently pick a reprint.
+1. Apply `--edition` / `FIVE_E_EDITION` (default `2024`: `XPHB` over `PHB`, `XMM` over `MM`, `XDMG` over `DMG`).
+2. If still ambiguous, print the candidates and exit non-zero. Never silently pick among remaining reprints. `--edition all` keeps every match.
 
 Human output is a compact stat block / entry. `--json` is the original normalized entity plus resolved fluff, not a screenshot of the TTY.
 
@@ -189,7 +189,7 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 
 **Fluff.** Mechanical files and `fluff-*` files share `(name, source)`. Join at ingest. Search both. `get` shows mechanics first, lore second.
 
-**2014 vs 2024.** Treat `XPHB` / `XMM` / `XDMG` as distinct sources. A config key `edition = "2014" | "2024" | "all"` only affects default `get` disambiguation and default search ranking, not what is ingested.
+**2014 vs 2024.** Treat `XPHB` / `XMM` / `XDMG` as distinct sources. `--edition` / `FIVE_E_EDITION` (`2014` | `2024` | `all`, default `2024`) only affects default `get` disambiguation and default search ranking, not what is ingested.
 
 **Kinds (v1 entity rows)**
 
@@ -310,6 +310,7 @@ internal/ingest/     // discovery, parse, fluff join, atomic sqlite write
 internal/parse/      // entries walker, tag lexer, plaintext render
 internal/store/      // sqlite schema, queries
 internal/search/     // fuzzy + FTS merge
+internal/edition/    // 2014 / 2024 / all preference
 internal/ask/        // OpenAI-compatible embed + retrieve + generate
 internal/mcpserver/  // stdio MCP tools over get/search/retrieve
 internal/cli/        // cobra commands, human vs json
@@ -328,13 +329,12 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 
 ## Follow-ups
 
-Work after `mcp`. Do these in order unless a later item is unblocked.
+Work after edition default. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **Edition default** (`2014` / `2024` / `all`) for `get` disambiguation and search ranking.
-- **Homebrew:** extra JSON files in a user dir, same parser.
 - **`--srd` filter** if 5etools `srd` / `srd52` flags prove reliable.
+- **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Distribution
 
@@ -349,4 +349,5 @@ Work after `mcp`. Do these in order unless a later item is unblocked.
 - Ask uses an OpenAI-compatible base URL (`OPENAI_API_KEY`, `OPENAI_BASE_URL`) rather than a bundled local model.
 - `ask --retrieve-only` (and MCP `semantic_search`) embeds the query without a generation call.
 - MCP is the official Go SDK over stdio, wrapping the same `get` / `search` / retrieve paths as the CLI.
+- Default edition is `2024`. `--edition 2014` or `all` opts out; `FIVE_E_EDITION` is the env equivalent.
 

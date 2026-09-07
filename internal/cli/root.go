@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
 	"github.com/hbaldwin98/5e-cli/internal/mcpserver"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
@@ -17,9 +19,10 @@ import (
 )
 
 type options struct {
-	JSON  bool
-	Data  string
-	Index string
+	JSON    bool
+	Data    string
+	Index   string
+	Edition string
 }
 
 func rootCmd() *cobra.Command {
@@ -33,6 +36,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&opt.JSON, "json", false, "machine-readable JSON output")
 	cmd.PersistentFlags().StringVar(&opt.Data, "data", "", "path to 5etools data/ directory")
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
+	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), mcpCmd(opt))
 	return cmd
 }
@@ -55,6 +59,14 @@ func resolve(opt *options) (data, index string, err error) {
 		}
 	}
 	return data, index, nil
+}
+
+func (opt *options) editionPref() (edition.Pref, error) {
+	s := opt.Edition
+	if s == "" {
+		s = os.Getenv("FIVE_E_EDITION")
+	}
+	return edition.Parse(s)
 }
 
 func ingestCmd(opt *options) *cobra.Command {
@@ -108,6 +120,13 @@ func getCmd(opt *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
+			}
 			if len(ents) == 0 {
 				return fmt.Errorf("no %s named %q", kind, name)
 			}
@@ -139,11 +158,16 @@ func searchCmd(opt *options) *cobra.Command {
 				return err
 			}
 			defer st.Close()
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
 			hits, err := search.Search(st, search.Query{
 				Text:    strings.Join(args, " "),
 				Kind:    kind,
 				Sources: splitSources(sources),
 				Limit:   limit,
+				Edition: ed,
 			})
 			if err != nil {
 				return err
@@ -249,7 +273,11 @@ func runMCP(ctx context.Context, opt *options, errw io.Writer) error {
 	cfg := ask.ConfigFromEnv()
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	cfg.Progress = errw
-	return mcpserver.Run(ctx, st, mcpserver.Options{Ask: cfg})
+	ed, err := opt.editionPref()
+	if err != nil {
+		return err
+	}
+	return mcpserver.Run(ctx, st, mcpserver.Options{Ask: cfg, Edition: ed})
 }
 
 func writeAskHits(w io.Writer, hits []ask.Hit) error {

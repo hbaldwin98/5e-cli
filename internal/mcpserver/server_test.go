@@ -146,7 +146,7 @@ func TestSemanticSearch_doesNotCallChat(t *testing.T) {
 func TestGet_ambiguousRequiresSource(t *testing.T) {
 	st := testStore(t)
 	defer st.Close()
-	session := connect(t, New(st, Options{}))
+	session := connect(t, New(st, Options{Edition: "all"}))
 	defer session.Close()
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{

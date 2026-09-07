@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -22,6 +23,7 @@ type Query struct {
 	Kind    string
 	Sources []string
 	Limit   int
+	Edition edition.Pref
 }
 
 // Search merges fuzzy name hits with FTS5 body hits.
@@ -30,12 +32,21 @@ func Search(st *store.Store, q Query) ([]Hit, error) {
 		q.Limit = 10
 	}
 	merged := map[string]*Hit{}
-	prose := Prose(q.Text)
-
-	names, err := st.Names()
-	if err != nil {
+	if err := addNameHits(st, q, merged); err != nil {
 		return nil, err
 	}
+	if err := addFTSHits(st, q, merged); err != nil {
+		return nil, err
+	}
+	return rankHits(merged, q), nil
+}
+
+func addNameHits(st *store.Store, q Query, merged map[string]*Hit) error {
+	names, err := st.Names()
+	if err != nil {
+		return err
+	}
+	prose := Prose(q.Text)
 	srcOK := sourceSet(q.Sources)
 	for _, e := range names {
 		if q.Kind != "" && e.Kind != q.Kind {
@@ -54,46 +65,64 @@ func Search(st *store.Store, q Query) ([]Hit, error) {
 		}
 		put(merged, Hit{Kind: e.Kind, Name: e.Name, Source: e.Source, Score: score, Snippet: snippet(e.Text, 120)})
 	}
+	return nil
+}
 
+func addFTSHits(st *store.Store, q Query, merged map[string]*Hit) error {
 	fts := FTSQuery(q.Text)
-	if fts != "" {
-		limit := q.Limit * 5
-		entHits, err := st.FTSEntities(fts, q.Kind, q.Sources, limit)
-		if err != nil {
-			return nil, err
-		}
-		docHits, err := st.FTSDocuments(fts, q.Kind, q.Sources, limit)
-		if err != nil {
-			return nil, err
-		}
-		for _, h := range append(entHits, docHits...) {
-			put(merged, Hit{
-				Kind:    h.Kind,
-				Name:    h.Name,
-				Source:  h.Source,
-				Score:   ftsScore(h.Rank),
-				Snippet: h.Snippet,
-			})
-		}
+	if fts == "" {
+		return nil
 	}
+	limit := q.Limit * 5
+	entHits, err := st.FTSEntities(fts, q.Kind, q.Sources, limit)
+	if err != nil {
+		return err
+	}
+	docHits, err := st.FTSDocuments(fts, q.Kind, q.Sources, limit)
+	if err != nil {
+		return err
+	}
+	for _, h := range append(entHits, docHits...) {
+		put(merged, Hit{
+			Kind:    h.Kind,
+			Name:    h.Name,
+			Source:  h.Source,
+			Score:   ftsScore(h.Rank),
+			Snippet: h.Snippet,
+		})
+	}
+	return nil
+}
 
+func rankHits(merged map[string]*Hit, q Query) []Hit {
 	out := make([]Hit, 0, len(merged))
 	for _, h := range merged {
 		out = append(out, *h)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
-		}
-		if out[i].Name != out[j].Name {
-			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-		}
-		return out[i].Source < out[j].Source
+		return lessHit(out[i], out[j], q.Edition)
 	})
 	if len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
-	return out, nil
+	return out
+}
+
+func lessHit(a, b Hit, ed edition.Pref) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	aEd, bEd := edition.Match(a.Source, ed), edition.Match(b.Source, ed)
+	if aEd != bEd {
+		return aEd
+	}
+	if len(a.Name) != len(b.Name) {
+		return len(a.Name) < len(b.Name)
+	}
+	if a.Name != b.Name {
+		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
+	}
+	return a.Source < b.Source
 }
 
 func put(m map[string]*Hit, h Hit) {

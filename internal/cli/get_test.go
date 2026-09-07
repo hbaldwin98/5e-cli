@@ -48,8 +48,53 @@ func TestGetJSON_entityAndSection(t *testing.T) {
 	}
 
 	_, err = runCLI("--index", index, "--data", data, "--json", "get", "skill", "Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGet_editionDisambiguates(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "skill", Name: "Testing", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "phb skill"},
+		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb skill"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLI("--index", index, "--data", data, "--json", "get", "skill", "Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"source":"XPHB"`) {
+		t.Fatalf("default 2024: %s", out)
+	}
+
+	out, err = runCLI("--edition", "2014", "--index", index, "--data", data, "--json", "get", "skill", "Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"source":"PHB"`) {
+		t.Fatalf("2014: %s", out)
+	}
+
+	_, err = runCLI("--edition", "all", "--index", index, "--data", data, "--json", "get", "skill", "Testing")
 	if err == nil {
 		t.Fatal("expected ambiguous")
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "search", "Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) < 2 || hits[0]["source"] != "XPHB" {
+		t.Fatalf("search 2024 first: %s", out)
 	}
 }
 
