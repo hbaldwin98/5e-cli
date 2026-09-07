@@ -98,6 +98,50 @@ func TestGet_editionDisambiguates(t *testing.T) {
 	}
 }
 
+func TestGet_srdFilters(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Testbolt"}`), Text: "a testing bolt"},
+		{Kind: "item", Name: "Secret Blade", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "a testing blade"},
+	}, []parse.Document{
+		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "testing breath"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLI("--srd", "--index", index, "--data", data, "--json", "get", "spell", "Testbolt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"name":"Testbolt"`) {
+		t.Fatalf("srd get: %s", out)
+	}
+
+	_, err = runCLI("--srd", "--index", index, "--data", data, "get", "item", "Secret Blade")
+	if err == nil || !strings.Contains(err.Error(), "no item") {
+		t.Fatalf("non-srd get: %v", err)
+	}
+
+	_, err = runCLI("--srd", "--index", index, "--data", data, "get", "bookSection", "Holding Breath")
+	if err == nil || !strings.Contains(err.Error(), "no bookSection") {
+		t.Fatalf("section get: %v", err)
+	}
+
+	out, err = runCLI("--srd", "--index", index, "--data", data, "--json", "search", "testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0]["name"] != "Testbolt" {
+		t.Fatalf("srd search: %s", out)
+	}
+}
+
 func TestMCP_requiresIndex(t *testing.T) {
 	_, err := runCLI("--index", filepath.Join(t.TempDir(), "missing.sqlite"), "--data", filepath.Join(t.TempDir(), "missing-data"), "mcp")
 	if err == nil || !strings.Contains(err.Error(), "no index") {

@@ -325,9 +325,9 @@ func (s *Store) edges(id int64) ([]parse.Edge, error) {
 	return out, rows.Err()
 }
 
-// Names returns kind, name, source, text for fuzzy ranking.
+// Names returns kind, name, source, text, and SRD for fuzzy ranking.
 func (s *Store) Names() ([]Entity, error) {
-	rows, err := s.DB.Query(`SELECT kind, name, source, text FROM entities`)
+	rows, err := s.DB.Query(`SELECT kind, name, source, text, srd FROM entities`)
 	if err != nil {
 		return nil, err
 	}
@@ -335,12 +335,25 @@ func (s *Store) Names() ([]Entity, error) {
 	var out []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.Kind, &e.Name, &e.Source, &e.Text); err != nil {
+		var srd int
+		if err := rows.Scan(&e.Kind, &e.Name, &e.Source, &e.Text, &srd); err != nil {
 			return nil, err
 		}
+		e.SRD = srd != 0
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// SRDOnly keeps entities marked SRD / basic rules at ingest.
+func SRDOnly(ents []Entity) []Entity {
+	var out []Entity
+	for _, e := range ents {
+		if e.SRD {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Documents returns book/adventure sections for embedding and search.
@@ -362,7 +375,7 @@ func (s *Store) Documents() ([]Document, error) {
 }
 
 // FTSEntities runs FTS5 against entity text.
-func (s *Store) FTSEntities(match string, kind string, sources []string, limit int) ([]Hit, error) {
+func (s *Store) FTSEntities(match string, kind string, sources []string, srdOnly bool, limit int) ([]Hit, error) {
 	q := `
 SELECT e.kind, e.name, e.source, snippet(entity_fts, 1, '', '', '…', 16), rank
 FROM entity_fts
@@ -379,6 +392,9 @@ WHERE entity_fts MATCH ?
 		for _, src := range sources {
 			args = append(args, src)
 		}
+	}
+	if srdOnly {
+		q += ` AND e.srd = 1`
 	}
 	q += ` ORDER BY rank LIMIT ?`
 	args = append(args, limit)

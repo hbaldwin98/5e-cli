@@ -111,7 +111,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e mcp
 ```
 
-Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`).
+Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`), `--srd`.
 
 ### `ingest`
 
@@ -123,10 +123,11 @@ Idempotent. Cheap no-op when the submodule SHA already matches `ingest_meta`.
 
 Typed lookup. Kind is required so `5e get spell shield` and `5e get item shield` do not collide.
 
-Identity is `(kind, name, source)`. Names are matched case-insensitively. If `--source` is omitted and several sources match:
+Identity is `(kind, name, source)`. Names are matched case-insensitively.
 
-1. Apply `--edition` / `FIVE_E_EDITION` (default `2024`: `XPHB` over `PHB`, `XMM` over `MM`, `XDMG` over `DMG`).
-2. If still ambiguous, print the candidates and exit non-zero. Never silently pick among remaining reprints. `--edition all` keeps every match.
+1. If `--source` is omitted and several sources match, apply `--edition` / `FIVE_E_EDITION` (default `2024`: `XPHB` over `PHB`, `XMM` over `MM`, `XDMG` over `DMG`). `--edition all` keeps every match.
+2. If `--srd` is set, keep only rows ingested with 5etools `srd`, `srd52`, or `basicRules`. Book and adventure sections have no SRD flag and are dropped.
+3. If still ambiguous, print the candidates and exit non-zero. Never silently pick among remaining reprints.
 
 Human output is a compact stat block / entry. `--json` is the original normalized entity plus resolved fluff, not a screenshot of the TTY.
 
@@ -137,7 +138,7 @@ Two ranked lists, merged:
 1. **Name fuzzy** — typo-tolerant match on entity names (`firebal` → Fireball).
 2. **FTS5** — query against extracted plaintext (name, entries, fluff).
 
-Filters: `--kind`, `--source` (repeatable or comma-separated).
+Filters: `--kind`, `--source` (repeatable or comma-separated). `--srd` keeps SRD / basic-rules entities and skips book/adventure sections. FTS applies that filter in SQL so a tight `LIMIT` cannot hide SRD rows behind non-SRD hits.
 
 `--json` returns `{ kind, name, source, score, snippet }[]`. The IDs are the same ones `get` accepts.
 
@@ -145,7 +146,7 @@ Filters: `--kind`, `--source` (repeatable or comma-separated).
 
 Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
 
-`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM.
+`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; document chunks are excluded. The embedding cache still covers the full corpus.
 
 Provider is any OpenAI-compatible host:
 
@@ -161,7 +162,7 @@ Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxie
 
 ### `mcp`
 
-Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path. stdout is JSON-RPC; embedding progress goes to stderr.
+Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path. stdout is JSON-RPC; embedding progress goes to stderr. `--edition` and `--srd` on `5e mcp` apply to every tool the same way they apply to the CLI.
 
 ## Parser
 
@@ -190,6 +191,8 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 **Fluff.** Mechanical files and `fluff-*` files share `(name, source)`. Join at ingest. Search both. `get` shows mechanics first, lore second.
 
 **2014 vs 2024.** Treat `XPHB` / `XMM` / `XDMG` as distinct sources. `--edition` / `FIVE_E_EDITION` (`2014` | `2024` | `all`, default `2024`) only affects default `get` disambiguation and default search ranking, not what is ingested.
+
+**SRD.** `--srd` is a query filter, not a second ingest. An entity is SRD when ingest saw a truthy `srd`, `srd52`, or `basicRules` field. Book and adventure sections are never SRD.
 
 **Kinds (v1 entity rows)**
 
@@ -329,11 +332,10 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 
 ## Follow-ups
 
-Work after edition default. Do these in order unless a later item is unblocked.
+Work after `--srd`. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **`--srd` filter** if 5etools `srd` / `srd52` flags prove reliable.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Distribution
@@ -350,4 +352,5 @@ Work after edition default. Do these in order unless a later item is unblocked.
 - `ask --retrieve-only` (and MCP `semantic_search`) embeds the query without a generation call.
 - MCP is the official Go SDK over stdio, wrapping the same `get` / `search` / retrieve paths as the CLI.
 - Default edition is `2024`. `--edition 2014` or `all` opts out; `FIVE_E_EDITION` is the env equivalent.
+- `--srd` filters `get` / `search` / `ask` / MCP using ingested `srd`, `srd52`, and `basicRules`. Documents are excluded.
 

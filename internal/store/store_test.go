@@ -59,3 +59,65 @@ func TestLookup_entityAndBookSection(t *testing.T) {
 		t.Fatalf("want empty, got %+v", miss)
 	}
 }
+
+func TestNames_includesSRD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "srd spell"},
+		{Kind: "item", Name: "Secret Blade", Source: "PHB", SRD: false, JSON: json.RawMessage(`{}`), Text: "not srd"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	names, err := st.Names()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srd := map[string]bool{}
+	for _, e := range names {
+		srd[e.Name] = e.SRD
+	}
+	if !srd["Testbolt"] || srd["Secret Blade"] {
+		t.Fatalf("%v", srd)
+	}
+	only := SRDOnly(names)
+	if len(only) != 1 || only[0].Name != "Testbolt" {
+		t.Fatalf("SRDOnly %+v", only)
+	}
+}
+
+func TestFTSEntities_srdOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "a testing bolt"},
+		{Kind: "item", Name: "Secret Blade", Source: "PHB", SRD: false, JSON: json.RawMessage(`{}`), Text: "a testing blade"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	all, err := st.FTSEntities("testing", "", nil, false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unfiltered %+v", all)
+	}
+	srd, err := st.FTSEntities("testing", "", nil, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srd) != 1 || srd[0].Name != "Testbolt" {
+		t.Fatalf("srdOnly %+v", srd)
+	}
+}

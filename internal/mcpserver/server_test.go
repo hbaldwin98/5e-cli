@@ -164,11 +164,72 @@ func TestGet_ambiguousRequiresSource(t *testing.T) {
 	}
 }
 
+func TestGet_srdDropsNonSRD(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{SRD: true}))
+	defer session.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "get",
+		Arguments: map[string]any{
+			"kind": "spell",
+			"name": "Testbolt",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	out := toolJSON(t, res)
+	if out["name"] != "Testbolt" {
+		t.Fatalf("got %#v", out)
+	}
+
+	res, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "get",
+		Arguments: map[string]any{
+			"kind": "skill",
+			"name": "Testing",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected missing non-srd skill")
+	}
+
+	res, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "search",
+		Arguments: map[string]any{
+			"query": "testing",
+			"limit": 10,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("search error: %+v", res.Content)
+	}
+	hits, _ := toolJSON(t, res)["hits"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("srd search %#v", hits)
+	}
+	first, _ := hits[0].(map[string]any)
+	if first["name"] != "Testbolt" {
+		t.Fatalf("first hit %#v", first)
+	}
+}
+
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(path, store.Meta{SHA: "mcp", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
-		{Kind: "spell", Name: "Testbolt", Source: "PHB", JSON: json.RawMessage(`{"name":"Testbolt"}`), Text: "a bolt of testing"},
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Testbolt"}`), Text: "a bolt of testing"},
 		{Kind: "skill", Name: "Testing", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "phb"},
 		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb"},
 	}, []parse.Document{

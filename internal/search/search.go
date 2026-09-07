@@ -24,6 +24,7 @@ type Query struct {
 	Sources []string
 	Limit   int
 	Edition edition.Pref
+	SRD     bool
 }
 
 // Search merges fuzzy name hits with FTS5 body hits.
@@ -52,6 +53,9 @@ func addNameHits(st *store.Store, q Query, merged map[string]*Hit) error {
 		if q.Kind != "" && e.Kind != q.Kind {
 			continue
 		}
+		if q.SRD && !e.SRD {
+			continue
+		}
 		if !srcOK(e.Source) {
 			continue
 		}
@@ -74,13 +78,16 @@ func addFTSHits(st *store.Store, q Query, merged map[string]*Hit) error {
 		return nil
 	}
 	limit := q.Limit * 5
-	entHits, err := st.FTSEntities(fts, q.Kind, q.Sources, limit)
+	entHits, err := st.FTSEntities(fts, q.Kind, q.Sources, q.SRD, limit)
 	if err != nil {
 		return err
 	}
-	docHits, err := st.FTSDocuments(fts, q.Kind, q.Sources, limit)
-	if err != nil {
-		return err
+	var docHits []store.Hit
+	if !q.SRD {
+		docHits, err = st.FTSDocuments(fts, q.Kind, q.Sources, limit)
+		if err != nil {
+			return err
+		}
 	}
 	for _, h := range append(entHits, docHits...) {
 		put(merged, Hit{

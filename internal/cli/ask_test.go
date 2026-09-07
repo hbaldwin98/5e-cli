@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,21 +12,24 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
-func TestAskRetrieveOnlyJSON(t *testing.T) {
+func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")
-	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
-		{Kind: "spell", Name: "Fireball", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "Explodes in fire and flame."},
-		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A steel blade that slashes."},
-	}, nil)
+	err := store.Create(index, store.Meta{SHA: "ask", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
+	}, []parse.Document{
+		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater."},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var chat int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
-			chat++
-			http.Error(w, "chat should not run", 500)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"content": "Fireball explodes in fire (spell, Fireball, PHB)."}},
+				},
+			})
 			return
 		}
 		var req struct {
@@ -41,45 +42,47 @@ func TestAskRetrieveOnlyJSON(t *testing.T) {
 		}
 		var data []row
 		for i, s := range req.Input {
-			v := []float32{0.1, 0.1}
-			if strings.Contains(strings.ToLower(s), "fire") || strings.Contains(strings.ToLower(s), "flame") {
+			v := []float32{0.05, 0.05}
+			low := strings.ToLower(s)
+			if strings.Contains(low, "fire") || strings.Contains(low, "flame") {
 				v = []float32{1, 0}
 			}
-			if strings.Contains(strings.ToLower(s), "sword") || strings.Contains(strings.ToLower(s), "blade") {
+			if strings.Contains(low, "sword") || strings.Contains(low, "blade") {
 				v = []float32{0, 1}
 			}
 			data = append(data, row{Index: i, Embedding: v})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))
-	t.Cleanup(srv.Close)
-
+	t.Cleanup(api.Close)
 	t.Setenv("OPENAI_API_KEY", "test")
-	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_BASE_URL", api.URL)
 	t.Setenv("FIVE_E_EMBED_MODEL", "fake-embed")
-	t.Setenv("FIVE_E_EMBEDDINGS", filepath.Join(t.TempDir(), "embeddings.sqlite"))
+	t.Setenv("FIVE_E_ASK_MODEL", "fake-ask")
+	data := filepath.Join(t.TempDir(), "missing-data")
 
-	cmd := rootCmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{
-		"--index", index,
-		"--data", filepath.Join(t.TempDir(), "missing-data"),
-		"--json",
-		"ask", "--retrieve-only", "fire explosion",
-	})
-	if err := cmd.Execute(); err != nil {
+	out, err := runCLI("--srd", "--index", index, "--data", data, "--json", "ask", "--retrieve-only", "fire explosion")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if chat != 0 {
-		t.Fatalf("chat called %d times", chat)
-	}
 	var hits []map[string]any
-	if err := json.Unmarshal(out.Bytes(), &hits); err != nil {
-		t.Fatalf("json %v: %s", err, out.String())
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
 	}
 	if len(hits) == 0 || hits[0]["name"] != "Fireball" {
-		t.Fatalf("hits %s", out.String())
+		t.Fatalf("retrieve: %s", out)
+	}
+	for _, h := range hits {
+		if h["name"] == "Longsword" || h["name"] == "Holding Breath" {
+			t.Fatalf("srd leaked %s", out)
+		}
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "ask", "what does fireball do")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Fireball") {
+		t.Fatalf("ask: %s", out)
 	}
 }

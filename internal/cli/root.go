@@ -23,6 +23,7 @@ type options struct {
 	Data    string
 	Index   string
 	Edition string
+	SRD     bool
 }
 
 func rootCmd() *cobra.Command {
@@ -37,6 +38,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Data, "data", "", "path to 5etools data/ directory")
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
+	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
 	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), mcpCmd(opt))
 	return cmd
 }
@@ -127,6 +129,9 @@ func getCmd(opt *options) *cobra.Command {
 			if source == "" {
 				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
 			}
+			if opt.SRD {
+				ents = store.SRDOnly(ents)
+			}
 			if len(ents) == 0 {
 				return fmt.Errorf("no %s named %q", kind, name)
 			}
@@ -168,6 +173,7 @@ func searchCmd(opt *options) *cobra.Command {
 				Sources: splitSources(sources),
 				Limit:   limit,
 				Edition: ed,
+				SRD:     opt.SRD,
 			})
 			if err != nil {
 				return err
@@ -198,48 +204,7 @@ func askCmd(opt *options) *cobra.Command {
 		Short: "Answer a question from embedded 5e sources",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			data, index, err := resolve(opt)
-			if err != nil {
-				return err
-			}
-			st, err := paths.OpenIndex(index, data)
-			if err != nil {
-				return err
-			}
-			defer st.Close()
-			cfg := ask.ConfigFromEnv()
-			cfg.CachePath = paths.EmbeddingsForIndex(index)
-			cfg.Progress = cmd.ErrOrStderr()
-			q := ask.Query{
-				Text:    strings.Join(args, " "),
-				Kind:    kind,
-				Sources: splitSources(sources),
-				Limit:   limit,
-			}
-			if retrieveOnly {
-				hits, err := ask.Retrieve(cmd.Context(), st, cfg, q)
-				if err != nil {
-					return err
-				}
-				if opt.JSON {
-					return writeJSON(cmd.OutOrStdout(), hits)
-				}
-				return writeAskHits(cmd.OutOrStdout(), hits)
-			}
-			res, err := ask.Ask(cmd.Context(), st, cfg, q)
-			if err != nil {
-				return err
-			}
-			if opt.JSON {
-				return writeJSON(cmd.OutOrStdout(), res)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), res.Answer)
-			if len(res.Citations) > 0 {
-				fmt.Fprintln(cmd.OutOrStdout())
-				fmt.Fprintln(cmd.OutOrStdout(), "Sources:")
-				return writeAskHits(cmd.OutOrStdout(), res.Citations)
-			}
-			return nil
+			return runAsk(cmd, opt, args, retrieveOnly, kind, splitSources(sources), limit)
 		},
 	}
 	cmd.Flags().BoolVar(&retrieveOnly, "retrieve-only", false, "return ranked chunks without calling a chat model")
@@ -247,6 +212,60 @@ func askCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum retrieved chunks")
 	return cmd
+}
+
+func runAsk(cmd *cobra.Command, opt *options, args []string, retrieveOnly bool, kind string, sources []string, limit int) error {
+	data, index, err := resolve(opt)
+	if err != nil {
+		return err
+	}
+	st, err := paths.OpenIndex(index, data)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	cfg := ask.ConfigFromEnv()
+	cfg.CachePath = paths.EmbeddingsForIndex(index)
+	cfg.Progress = cmd.ErrOrStderr()
+	q := ask.Query{
+		Text:    strings.Join(args, " "),
+		Kind:    kind,
+		Sources: sources,
+		Limit:   limit,
+		SRD:     opt.SRD,
+	}
+	if retrieveOnly {
+		return writeRetrieve(cmd, opt.JSON, st, cfg, q)
+	}
+	return writeAskResult(cmd, opt.JSON, st, cfg, q)
+}
+
+func writeRetrieve(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Config, q ask.Query) error {
+	hits, err := ask.Retrieve(cmd.Context(), st, cfg, q)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return writeJSON(cmd.OutOrStdout(), hits)
+	}
+	return writeAskHits(cmd.OutOrStdout(), hits)
+}
+
+func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Config, q ask.Query) error {
+	res, err := ask.Ask(cmd.Context(), st, cfg, q)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), res.Answer)
+	if len(res.Citations) > 0 {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), "Sources:")
+		return writeAskHits(cmd.OutOrStdout(), res.Citations)
+	}
+	return nil
 }
 
 func mcpCmd(opt *options) *cobra.Command {
@@ -277,7 +296,7 @@ func runMCP(ctx context.Context, opt *options, errw io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return mcpserver.Run(ctx, st, mcpserver.Options{Ask: cfg, Edition: ed})
+	return mcpserver.Run(ctx, st, mcpserver.Options{Ask: cfg, Edition: ed, SRD: opt.SRD})
 }
 
 func writeAskHits(w io.Writer, hits []ask.Hit) error {

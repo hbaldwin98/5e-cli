@@ -64,3 +64,37 @@ func TestSearch_shorterNameBreaksTies(t *testing.T) {
 		t.Fatalf("shorter first: %+v", hits)
 	}
 }
+
+func TestSearch_srdDropsNonSRDAndDocuments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(path, store.Meta{SHA: "s", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "a testing bolt"},
+		{Kind: "item", Name: "Secret Blade", Source: "PHB", SRD: false, JSON: json.RawMessage(`{}`), Text: "a testing blade"},
+	}, []parse.Document{
+		{Kind: "bookSection", ParentID: "PHB", Section: "Testing Breath", JSON: json.RawMessage(`{}`), Text: "testing breath rules"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	all, err := Search(st, Query{Text: "testing", Limit: 10, Edition: edition.All})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) < 3 {
+		t.Fatalf("unfiltered %+v", all)
+	}
+
+	hits, err := Search(st, Query{Text: "testing", Limit: 10, Edition: edition.All, SRD: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Name != "Testbolt" {
+		t.Fatalf("srd %+v", hits)
+	}
+}

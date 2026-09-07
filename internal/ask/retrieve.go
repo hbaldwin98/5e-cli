@@ -15,6 +15,7 @@ type Query struct {
 	Kind    string
 	Sources []string
 	Limit   int
+	SRD     bool
 }
 
 // Hit is a ranked chunk. IDs match `5e get` (documents use section as name).
@@ -51,17 +52,56 @@ func Retrieve(ctx context.Context, st *store.Store, cfg Config, q Query) ([]Hit,
 		return nil, fmt.Errorf("embeddings: expected 1 query vector")
 	}
 	query := l2norm(qv[0])
-	srcOK := sourceSet(q.Sources)
+	srdOK, err := srdAllow(st, q.SRD)
+	if err != nil {
+		return nil, err
+	}
+	return rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK)), nil
+}
+
+func srdAllow(st *store.Store, only bool) (func(kind, name, source string) bool, error) {
+	if !only {
+		return func(string, string, string) bool { return true }, nil
+	}
+	names, err := st.Names()
+	if err != nil {
+		return nil, err
+	}
+	ok := make(map[string]bool, len(names))
+	for _, e := range names {
+		if e.SRD {
+			ok[chunkKey(e.Kind, e.Name, e.Source)] = true
+		}
+	}
+	return func(kind, name, source string) bool {
+		return ok[chunkKey(kind, name, source)]
+	}, nil
+}
+
+func chunkKey(kind, name, source string) string {
+	return strings.ToLower(kind) + "\x00" + strings.ToLower(name) + "\x00" + strings.ToLower(source)
+}
+
+func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source string) bool) func(vector) bool {
+	return func(v vector) bool {
+		if q.Kind != "" && !strings.EqualFold(v.Kind, q.Kind) {
+			return false
+		}
+		if !srcOK(v.Source) {
+			return false
+		}
+		return srdOK(v.Kind, v.Name, v.Source)
+	}
+}
+
+func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool) []Hit {
 	type scored struct {
 		v     vector
 		score float64
 	}
 	var ranked []scored
 	for _, v := range vecs {
-		if q.Kind != "" && !strings.EqualFold(v.Kind, q.Kind) {
-			continue
-		}
-		if !srcOK(v.Source) {
+		if !keep(v) {
 			continue
 		}
 		ranked = append(ranked, scored{v: v, score: dot(query, v.vec)})
@@ -85,7 +125,7 @@ func Retrieve(ctx context.Context, st *store.Store, cfg Config, q Query) ([]Hit,
 			Snippet: snippet(r.v.Text, 160),
 		}
 	}
-	return out, nil
+	return out
 }
 
 func sourceSet(sources []string) func(string) bool {

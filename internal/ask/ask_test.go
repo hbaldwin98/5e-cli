@@ -46,6 +46,34 @@ func TestRetrieve_ranksKeywordNeighbors(t *testing.T) {
 	}
 }
 
+func TestRetrieve_srdDropsNonSRDAndDocuments(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion", Limit: 8, SRD: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Fireball" {
+		t.Fatalf("want Fireball, got %+v", hits)
+	}
+	for _, h := range hits {
+		if h.Name == "Longsword" || h.Name == "Holding Breath" {
+			t.Fatalf("srd leaked %+v", hits)
+		}
+	}
+
+	hits, err = Retrieve(context.Background(), st, cfg, Query{Text: "steel blade slashing", Limit: 8, SRD: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Name == "Longsword" || h.Name == "Holding Breath" {
+			t.Fatalf("srd leaked %+v", hits)
+		}
+	}
+}
+
 func TestRetrieve_rebuildsWhenModelChanges(t *testing.T) {
 	st, cfg, api := harness(t)
 	defer st.Close()
@@ -108,7 +136,7 @@ func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 
 	index := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
-		{Kind: "spell", Name: "Fireball", Source: "PHB", JSON: json.RawMessage(`{"name":"Fireball"}`), Text: "A bright streak flashes and explodes in a bloom of fire and flame."},
+		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Fireball"}`), Text: "A bright streak flashes and explodes in a bloom of fire and flame."},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{"name":"Longsword"}`), Text: "A martial melee weapon with a steel blade that deals slashing damage."},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater before it starts suffocating."},

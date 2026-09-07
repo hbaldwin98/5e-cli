@@ -18,12 +18,14 @@ import (
 type Options struct {
 	Ask     ask.Config
 	Edition edition.Pref
+	SRD     bool
 }
 
 type handler struct {
 	st  *store.Store
 	ask ask.Config
 	ed  edition.Pref
+	srd bool
 }
 
 type getInput struct {
@@ -44,7 +46,7 @@ type getOutput struct {
 
 // New builds an MCP server over the local 5e index.
 func New(st *store.Store, opt Options) *mcp.Server {
-	h := &handler{st: st, ask: opt.Ask, ed: opt.Edition}
+	h := &handler{st: st, ask: opt.Ask, ed: opt.Edition, srd: opt.SRD}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "5e", Version: "0.1.0"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get",
@@ -73,6 +75,9 @@ func (h *handler) get(_ context.Context, _ *mcp.CallToolRequest, in getInput) (*
 	}
 	if in.Source == "" {
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
+	}
+	if h.srd {
+		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
 		return nil, getOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
@@ -124,6 +129,7 @@ func (h *handler) search(_ context.Context, _ *mcp.CallToolRequest, in searchInp
 		Sources: in.Sources,
 		Limit:   in.Limit,
 		Edition: h.ed,
+		SRD:     h.srd,
 	})
 	if err != nil {
 		return nil, searchOutput{}, err
@@ -140,6 +146,7 @@ func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in
 		Kind:    in.Kind,
 		Sources: in.Sources,
 		Limit:   in.Limit,
+		SRD:     h.srd,
 	})
 	if err != nil {
 		return nil, searchOutput{}, err
