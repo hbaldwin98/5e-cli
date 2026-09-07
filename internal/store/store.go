@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -66,6 +67,16 @@ CREATE VIRTUAL TABLE document_fts USING fts5(
   content='documents',
   content_rowid='id'
 );
+
+CREATE TABLE appearances (
+  adventure TEXT NOT NULL,
+  role      TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  name      TEXT NOT NULL,
+  source    TEXT NOT NULL DEFAULT '',
+  location  TEXT NOT NULL DEFAULT '',
+  UNIQUE (adventure, role, kind, name, source, location)
+);
 `
 
 // Meta is the ingest fingerprint stored in the index.
@@ -117,7 +128,7 @@ func Open(path string) (*Store, error) {
 }
 
 // Create writes a new index atomically at path.
-func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Document) error {
+func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Document, appearances []parse.Appearance) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -131,6 +142,16 @@ func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Docume
 		_ = db.Close()
 		_ = os.Remove(tmp)
 	}()
+	if err := populateIndex(db, meta, entities, docs, appearances); err != nil {
+		return err
+	}
+	if err := db.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func populateIndex(db *sql.DB, meta Meta, entities []parse.Entity, docs []parse.Document, appearances []parse.Appearance) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("schema: %w", err)
 	}
@@ -139,14 +160,35 @@ func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Docume
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-
 	if _, err := tx.Exec(
 		`INSERT INTO ingest_meta (submodule_sha, data_root, ingested_at) VALUES (?, ?, ?)`,
 		meta.SHA, meta.DataRoot, meta.IngestedAt,
 	); err != nil {
 		return err
 	}
+	if err := insertRows(tx, entities, docs, appearances); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO entity_fts(entity_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("entity fts: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO document_fts(document_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("document fts: %w", err)
+	}
+	return tx.Commit()
+}
 
+func insertRows(tx *sql.Tx, entities []parse.Entity, docs []parse.Document, appearances []parse.Appearance) error {
+	if err := insertEntities(tx, entities); err != nil {
+		return err
+	}
+	if err := insertDocuments(tx, docs); err != nil {
+		return err
+	}
+	return insertAppearances(tx, appearances)
+}
+
+func insertEntities(tx *sql.Tx, entities []parse.Entity) error {
 	insEnt, err := tx.Prepare(`INSERT OR REPLACE INTO entities (kind, name, source, page, srd, json, text) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
@@ -157,7 +199,6 @@ func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Docume
 		return err
 	}
 	defer insEdge.Close()
-
 	for _, e := range entities {
 		srd := 0
 		if e.SRD {
@@ -177,7 +218,10 @@ func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Docume
 			}
 		}
 	}
+	return nil
+}
 
+func insertDocuments(tx *sql.Tx, docs []parse.Document) error {
 	insDoc, err := tx.Prepare(`INSERT INTO documents (kind, parent_id, section, json, text) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
@@ -188,20 +232,21 @@ func Create(path string, meta Meta, entities []parse.Entity, docs []parse.Docume
 			return err
 		}
 	}
+	return nil
+}
 
-	if _, err := tx.Exec(`INSERT INTO entity_fts(entity_fts) VALUES('rebuild')`); err != nil {
-		return fmt.Errorf("entity fts: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO document_fts(document_fts) VALUES('rebuild')`); err != nil {
-		return fmt.Errorf("document fts: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
+func insertAppearances(tx *sql.Tx, appearances []parse.Appearance) error {
+	insApp, err := tx.Prepare(`INSERT OR IGNORE INTO appearances (adventure, role, kind, name, source, location) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
 		return err
 	}
-	if err := db.Close(); err != nil {
-		return err
+	defer insApp.Close()
+	for _, a := range appearances {
+		if _, err := insApp.Exec(a.Adventure, a.Role, a.Kind, a.Name, a.Source, a.Location); err != nil {
+			return err
+		}
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 func dsn(path string) string {
@@ -226,8 +271,12 @@ func (s *Store) Close() error {
 
 // Get returns entities matching kind+name, optionally filtered by source.
 func (s *Store) Get(kind, name, source string) ([]Entity, error) {
-	q := `SELECT id, kind, name, source, page, srd, json, text FROM entities WHERE kind = ? AND name = ? COLLATE NOCASE`
-	args := []any{kind, name}
+	q := `SELECT id, kind, name, source, page, srd, json, text FROM entities WHERE kind = ?`
+	args := []any{kind}
+	if name != "" {
+		q += ` AND name = ? COLLATE NOCASE`
+		args = append(args, name)
+	}
 	if source != "" {
 		q += ` AND source = ? COLLATE NOCASE`
 		args = append(args, source)
@@ -262,6 +311,12 @@ func (s *Store) Lookup(kind, name, source string) ([]Entity, error) {
 	ents, err := s.Get(kind, name, source)
 	if err != nil || len(ents) > 0 {
 		return ents, err
+	}
+	if kind == "adventure" && source == "" && name != "" {
+		ents, err = s.Get(kind, "", name)
+		if err != nil || len(ents) > 0 {
+			return ents, err
+		}
 	}
 	docs, err := s.GetDocument(kind, name, source)
 	if err != nil {
@@ -356,6 +411,15 @@ func SRDOnly(ents []Entity) []Entity {
 	return out
 }
 
+func AdventureDoc(kind string) bool {
+	switch kind {
+	case "adventureSection", "adventureLocation":
+		return true
+	default:
+		return false
+	}
+}
+
 // Documents returns book/adventure sections for embedding and search.
 func (s *Store) Documents() ([]Document, error) {
 	rows, err := s.DB.Query(`SELECT kind, parent_id, section, text FROM documents`)
@@ -370,6 +434,35 @@ func (s *Store) Documents() ([]Document, error) {
 			return nil, err
 		}
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// AppearanceKey identifies a mentioned creature or item.
+func AppearanceKey(kind, name, source string) string {
+	return strings.ToLower(kind) + "\x00" + strings.ToLower(name) + "\x00" + strings.ToLower(source)
+}
+
+// AppearanceSet returns kind/name/source keys mentioned in an adventure.
+func (s *Store) AppearanceSet(adventure, role string) (map[string]bool, error) {
+	q := `SELECT kind, name, source FROM appearances WHERE adventure = ? COLLATE NOCASE`
+	args := []any{adventure}
+	if role != "" {
+		q += ` AND role = ?`
+		args = append(args, role)
+	}
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var kind, name, source string
+		if err := rows.Scan(&kind, &name, &source); err != nil {
+			return nil, err
+		}
+		out[AppearanceKey(kind, name, source)] = true
 	}
 	return out, rows.Err()
 }

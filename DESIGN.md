@@ -108,6 +108,8 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
 
 5e ask <query> [--retrieve-only] [--limit 8] [--json]
+5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
+5e adventure <id-or-name> get <role> <name> [--json]
 5e mcp
 ```
 
@@ -140,13 +142,31 @@ Two ranked lists, merged:
 
 Filters: `--kind`, `--source` (repeatable or comma-separated). `--srd` keeps SRD / basic-rules entities and skips book/adventure sections. FTS applies that filter in SQL so a tight `LIMIT` cannot hide SRD rows behind non-SRD hits.
 
+Default `search` / `ask` is the **rules corpus**: entity rows plus `bookSection`. Adventure chapter and location text is not mixed in. Unique adventure monsters and items stay ordinary entity rows (`source` = the adventure id) and still appear in default search. To search inside a module, use `5e adventure`.
+
 `--json` returns `{ kind, name, source, score, snippet }[]`. The IDs are the same ones `get` accepts.
+
+### `adventure`
+
+A separate query context for one module. `<id-or-name>` is the 5etools adventure id (`LMoP`) or the catalog title (`Lost Mine of Phandelver`).
+
+Roles:
+
+| Role | What it is |
+|---|---|
+| `npc` | Every creature **mentioned** in the module: `{@creature}` tags, `statblock` with `tag: creature`, and bestiary rows whose source is this adventure. Reused MM creatures are links to `(monster, name, source)`, not copies. |
+| `location` | Named `type: "section"` / `type: "entries"` chunks in the adventure file |
+| `item` | Same appearance pattern as `npc`, for items |
+
+`search` ranks names and FTS inside that adventure only. `get npc` / `get location` / `get item` returns one hit using the same `(kind, name, source)` IDs as the global `get` (locations use `adventureLocation` + adventure id as source).
+
+Do not invent a 5etools `npc` kind. `npc` is a role over appearances.
 
 ### `ask`
 
 Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
 
-`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; document chunks are excluded. The embedding cache still covers the full corpus.
+`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; book and adventure document chunks are excluded. Default retrieve also skips adventure documents so module prose does not ground a rules question. The embedding cache still covers the full corpus.
 
 Provider is any OpenAI-compatible host:
 
@@ -162,7 +182,7 @@ Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxie
 
 ### `mcp`
 
-Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path. stdout is JSON-RPC; embedding progress goes to stderr. `--edition` and `--srd` on `5e mcp` apply to every tool the same way they apply to the CLI.
+Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`, plus adventure-scoped search using the same ids. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path. stdout is JSON-RPC; embedding progress goes to stderr. `--edition` and `--srd` on `5e mcp` apply to every tool the same way they apply to the CLI.
 
 ## Parser
 
@@ -176,7 +196,7 @@ The hard part. 5etools JSON is tagged, recursive, and source-keyed.
 - `text` — plaintext for FTS and human fallback
 - `edges` — extracted tags
 
-**Tags.** Keep `{@spell …}`, `{@creature …}`, `{@item …}`, `{@condition …}`, `{@class …}`, `{@feat …}`, `{@variantrule …}`, `{@book …}`, `{@adventure …}` as edges instead of flattening them away.
+**Tags.** Keep `{@spell …}`, `{@creature …}`, `{@item …}`, `{@condition …}`, `{@class …}`, `{@feat …}`, `{@variantrule …}`, `{@book …}`, `{@adventure …}` as edges instead of flattening them away. `{@adventure}` targets kind `adventure` (catalog row), not a section.
 
 Typical forms:
 
@@ -196,13 +216,17 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 
 **Kinds (v1 entity rows)**
 
-`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `cult`, `boon`, `deck`, `charoption`, `bastion`, `recipe`, `monsterfeature`
+`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `cult`, `boon`, `deck`, `charoption`, `bastion`, `recipe`, `monsterfeature`, `adventure`
 
 **Kinds (v1 document rows)**
 
-`bookSection`, `adventureSection`
+`bookSection`, `adventureSection`, `adventureLocation`
 
-Chunk books/adventures on 5etools section headings (`type: "section"` / chapter contents), not arbitrary token windows. Preserve the book/adventure id and section name.
+Chunk books on 5etools `type: "section"` headings. Chunk adventures on `type: "section"` (chapters) and named `type: "entries"` (locations). Preserve the book/adventure id and section name. Default search does not query adventure document kinds.
+
+**Adventure catalog.** Each `adventures.json` item is an `adventure` entity: title as name, 5etools id as source. `5e get adventure LMoP` resolves id or title.
+
+**Adventure appearances.** Derived rows (not a second monster/item copy): adventure id, role (`npc` / `item`), target `(kind, name, source)`, optional location name. Built from creature/item tags and statblocks in the adventure file, plus entity rows already sourced to that adventure.
 
 ## Store
 
@@ -257,6 +281,15 @@ document_fts USING fts5(
   text,
   content='documents',
   content_rowid='id'
+);
+
+appearances (
+  adventure TEXT NOT NULL,   -- LMoP
+  role      TEXT NOT NULL,   -- npc | item
+  kind      TEXT NOT NULL,   -- monster | item
+  name      TEXT NOT NULL,
+  source    TEXT NOT NULL,   -- MM, LMoP, …
+  location  TEXT             -- optional section/location name
 );
 ```
 
@@ -314,6 +347,7 @@ internal/parse/      // entries walker, tag lexer, plaintext render
 internal/store/      // sqlite schema, queries
 internal/search/     // fuzzy + FTS merge
 internal/edition/    // 2014 / 2024 / all preference
+internal/adventure/  // scoped module lookup, npc/location roles
 internal/ask/        // OpenAI-compatible embed + retrieve + generate
 internal/mcpserver/  // stdio MCP tools over get/search/retrieve
 internal/cli/        // cobra commands, human vs json
@@ -327,12 +361,36 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 
 1. **Submodule + ingest + get + search.** Done.
 2. **Formatted human rendering.** Done. Markdown stat blocks; Glamour on a TTY; `--json` unchanged.
-3. **`ask`.** OpenAI-compatible embeddings over existing `text` columns, then optional chat completions. Same IDs.
-4. **`mcp`.** Done. Stdio server wrapping `get` / `search` / `semantic_search`.
+3. **`ask`.** Done. OpenAI-compatible embeddings over existing `text` columns, then optional chat completions. Same IDs.
+4. **`mcp`.** Done. Stdio server wrapping `get` / `search` / `semantic_search` / `adventure_search`.
+5. **Edition default, `--srd`, adventure-scoped lookup.** Done.
+
+## Board
+
+The in-repo board. Argus mirrors this feature; git is the durable copy.
+
+### Done
+
+- Write DESIGN.md
+- Add 5etools-src submodule with `data/` sparse checkout
+- Implement ingest, get, and search against sqlite FTS
+- Formatted human CLI rendering for get and search
+- `ask` over OpenAI-compatible embeddings
+- MCP stdio server wrapping get/search/retrieve
+- Edition default for get disambiguation and search ranking
+- `--srd` filter using ingested `srd` / `srd52` / `basicRules`
+- Keep default search/ask on entities and book sections
+- Ingest adventure catalog as kind `adventure`
+- `5e adventure` command with scoped search
+- Location chunks and npc/item appearance index
+
+### Open
+
+- **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Follow-ups
 
-Work after `--srd`. Do these in order unless a later item is unblocked.
+Work after adventure-scoped lookup. Do these in order unless a later item is unblocked.
 
 ### Later
 
@@ -353,4 +411,5 @@ Work after `--srd`. Do these in order unless a later item is unblocked.
 - MCP is the official Go SDK over stdio, wrapping the same `get` / `search` / retrieve paths as the CLI.
 - Default edition is `2024`. `--edition 2014` or `all` opts out; `FIVE_E_EDITION` is the env equivalent.
 - `--srd` filters `get` / `search` / `ask` / MCP using ingested `srd`, `srd52`, and `basicRules`. Documents are excluded.
+- Adventures are a separate query context (`5e adventure`). Default search/ask stay entities + `bookSection`. `npc` is an appearance role, not a 5etools kind.
 

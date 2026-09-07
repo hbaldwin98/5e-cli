@@ -24,7 +24,7 @@ var tagKind = map[string]string{
 	"feat":        "feat",
 	"variantrule": "variantrule",
 	"book":        "bookSection",
-	"adventure":   "adventureSection",
+	"adventure":   "adventure",
 	"race":        "race",
 	"background":  "background",
 	"deity":       "deity",

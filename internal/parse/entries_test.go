@@ -78,3 +78,69 @@ func TestSections_namedChunks(t *testing.T) {
 		t.Fatalf("text %q", docs[0].Text)
 	}
 }
+
+func TestSections_adventureLocations(t *testing.T) {
+	root := map[string]any{
+		"data": []any{
+			map[string]any{
+				"type": "section",
+				"name": "Cragmaw Hideout",
+				"entries": []any{
+					"Goblins nest here.",
+					map[string]any{
+						"type":    "entries",
+						"name":    "Cave Mouth",
+						"entries": []any{"A {@creature Goblin|MM} watches."},
+					},
+				},
+			},
+		},
+	}
+	docs := Sections("adventureSection", "LMoP", root)
+	if len(docs) != 2 {
+		t.Fatalf("docs %+v", docs)
+	}
+	kinds := map[string]string{}
+	for _, d := range docs {
+		kinds[d.Section] = d.Kind
+	}
+	if kinds["Cragmaw Hideout"] != "adventureSection" || kinds["Cave Mouth"] != "adventureLocation" {
+		t.Fatalf("kinds %v", kinds)
+	}
+	apps := Appearances("LMoP", root)
+	if len(apps) != 1 || apps[0].Name != "Goblin" || apps[0].Source != "MM" || apps[0].Role != "npc" {
+		t.Fatalf("appearances %+v", apps)
+	}
+	if apps[0].Location != "Cave Mouth" {
+		t.Fatalf("location %q", apps[0].Location)
+	}
+}
+
+func TestAppearances_statblock(t *testing.T) {
+	root := map[string]any{
+		"data": []any{
+			map[string]any{
+				"type":   "statblock",
+				"tag":    "creature",
+				"name":   "Ash Zombie",
+				"source": "LMoP",
+			},
+			map[string]any{
+				"type":   "statblock",
+				"tag":    "item",
+				"name":   "Potion of Healing",
+				"source": "DMG",
+			},
+		},
+	}
+	apps := Appearances("LMoP", root)
+	if len(apps) != 2 {
+		t.Fatalf("%+v", apps)
+	}
+	if apps[0].Role != "npc" || apps[0].Kind != "monster" || apps[0].Name != "Ash Zombie" {
+		t.Fatalf("creature %+v", apps[0])
+	}
+	if apps[1].Role != "item" || apps[1].Kind != "item" {
+		t.Fatalf("item %+v", apps[1])
+	}
+}

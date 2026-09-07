@@ -19,12 +19,13 @@ type Hit struct {
 
 // Query is a search request.
 type Query struct {
-	Text    string
-	Kind    string
-	Sources []string
-	Limit   int
-	Edition edition.Pref
-	SRD     bool
+	Text      string
+	Kind      string
+	Sources   []string
+	Limit     int
+	Edition   edition.Pref
+	SRD       bool
+	Adventure string
 }
 
 // Search merges fuzzy name hits with FTS5 body hits.
@@ -47,16 +48,14 @@ func addNameHits(st *store.Store, q Query, merged map[string]*Hit) error {
 	if err != nil {
 		return err
 	}
+	seen, err := appearanceAllow(st, q)
+	if err != nil {
+		return err
+	}
 	prose := Prose(q.Text)
 	srcOK := sourceSet(q.Sources)
 	for _, e := range names {
-		if q.Kind != "" && e.Kind != q.Kind {
-			continue
-		}
-		if q.SRD && !e.SRD {
-			continue
-		}
-		if !srcOK(e.Source) {
+		if !keepNameHit(q, e, srcOK, seen) {
 			continue
 		}
 		ns := NameScore(q.Text, e.Name)
@@ -78,15 +77,18 @@ func addFTSHits(st *store.Store, q Query, merged map[string]*Hit) error {
 		return nil
 	}
 	limit := q.Limit * 5
-	entHits, err := st.FTSEntities(fts, q.Kind, q.Sources, q.SRD, limit)
+	entHits, err := st.FTSEntities(fts, q.Kind, entitySources(q), q.SRD, limit)
 	if err != nil {
 		return err
 	}
 	var docHits []store.Hit
 	if !q.SRD {
-		docHits, err = st.FTSDocuments(fts, q.Kind, q.Sources, limit)
-		if err != nil {
-			return err
+		docKind, docSources := documentFilter(q)
+		if docKind != "-" {
+			docHits, err = st.FTSDocuments(fts, docKind, docSources, limit)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	for _, h := range append(entHits, docHits...) {
@@ -152,6 +154,68 @@ func ftsScore(rank float64) float64 {
 		rank = -rank
 	}
 	return 0.25 + 1.0/(1.0+rank)
+}
+
+func entitySources(q Query) []string {
+	if q.Adventure != "" {
+		return []string{q.Adventure}
+	}
+	return q.Sources
+}
+
+func documentFilter(q Query) (kind string, sources []string) {
+	if q.Adventure != "" {
+		switch q.Kind {
+		case "location":
+			return "", []string{q.Adventure}
+		case "monster", "item":
+			return "-", nil
+		default:
+			return q.Kind, []string{q.Adventure}
+		}
+	}
+	if q.Kind == "" {
+		return "bookSection", q.Sources
+	}
+	if store.AdventureDoc(q.Kind) || q.Kind == "bookSection" {
+		return q.Kind, q.Sources
+	}
+	return "-", nil
+}
+
+func appearanceAllow(st *store.Store, q Query) (map[string]bool, error) {
+	if q.Adventure == "" {
+		return nil, nil
+	}
+	role := ""
+	switch q.Kind {
+	case "monster":
+		role = "npc"
+	case "item":
+		role = "item"
+	case "location", "adventureSection", "adventureLocation":
+		return map[string]bool{}, nil
+	}
+	return st.AppearanceSet(q.Adventure, role)
+}
+
+func keepNameHit(q Query, e store.Entity, srcOK func(string) bool, seen map[string]bool) bool {
+	if q.Kind != "" && e.Kind != q.Kind {
+		return false
+	}
+	if q.SRD && !e.SRD {
+		return false
+	}
+	if !srcOK(e.Source) {
+		return false
+	}
+	if q.Adventure == "" {
+		return true
+	}
+	if strings.EqualFold(e.Source, q.Adventure) {
+		return true
+	}
+	return seen[store.AppearanceKey(e.Kind, e.Name, e.Source)]
 }
 
 func sourceSet(sources []string) func(string) bool {

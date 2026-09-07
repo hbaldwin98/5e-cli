@@ -71,6 +71,37 @@ func TestSearch_ranksFuzzyName(t *testing.T) {
 	}
 }
 
+func TestAdventureSearch_npcAppearance(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{}))
+	defer session.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "adventure_search",
+		Arguments: map[string]any{
+			"adventure": "LMoP",
+			"query":     "goblin",
+			"kind":      "npc",
+			"limit":     5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	hits, _ := toolJSON(t, res)["hits"].([]any)
+	if len(hits) == 0 {
+		t.Fatalf("no hits")
+	}
+	first, _ := hits[0].(map[string]any)
+	if first["name"] != "Goblin" {
+		t.Fatalf("first hit %#v", first)
+	}
+}
+
 func TestSemanticSearch_doesNotCallChat(t *testing.T) {
 	st := testStore(t)
 	defer st.Close()
@@ -232,8 +263,13 @@ func testStore(t *testing.T) *store.Store {
 		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Testbolt"}`), Text: "a bolt of testing"},
 		{Kind: "skill", Name: "Testing", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "phb"},
 		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb"},
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+		{Kind: "monster", Name: "Goblin", Source: "MM", JSON: json.RawMessage(`{}`), Text: "a small humanoid"},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "hold breath"},
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "goblins nest in the hideout"},
+	}, []parse.Appearance{
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Location: "Cragmaw Hideout"},
 	})
 	if err != nil {
 		t.Fatal(err)

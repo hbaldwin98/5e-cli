@@ -1,0 +1,12 @@
+{
+  "adventure": [
+    {
+      "id": "LMoP",
+      "name": "Lost Mine of Testing",
+      "source": "LMoP",
+      "storyline": "Phandelver",
+      "level": {"start": 1, "end": 5},
+      "contents": [{"name": "Introduction", "headers": ["Background"]}]
+    }
+  ]
+}

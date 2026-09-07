@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "type": "section",
+      "name": "Cragmaw Hideout",
+      "entries": [
+        "Goblins nest in the Cragmaw hideout.",
+        {
+          "type": "entries",
+          "name": "Cave Mouth",
+          "entries": ["A {@creature Test Beast|MM} watches the trail."]
+        }
+      ]
+    }
+  ]
+}

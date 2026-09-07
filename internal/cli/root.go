@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
@@ -39,7 +40,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -266,6 +267,92 @@ func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Co
 		return writeAskHits(cmd.OutOrStdout(), res.Citations)
 	}
 	return nil
+}
+
+func adventureCmd(opt *options) *cobra.Command {
+	var kind string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "adventure <id-or-name> <search|get> ...",
+		Short: "Search and look up inside one adventure",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAdventure(cmd, opt, args, kind, limit)
+		},
+	}
+	cmd.Flags().StringVar(&kind, "kind", "", "npc, location, item, or a store kind")
+	cmd.Flags().IntVar(&limit, "limit", 10, "maximum search hits")
+	return cmd
+}
+
+func runAdventure(cmd *cobra.Command, opt *options, args []string, kind string, limit int) error {
+	data, index, err := resolve(opt)
+	if err != nil {
+		return err
+	}
+	st, err := paths.OpenIndex(index, data)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	adv, err := adventure.Resolve(st, args[0])
+	if err != nil {
+		return err
+	}
+	switch args[1] {
+	case "search":
+		return runAdventureSearch(cmd, opt, st, adv, strings.Join(args[2:], " "), kind, limit)
+	case "get":
+		return runAdventureGet(cmd, opt, st, adv, args[2:])
+	default:
+		return fmt.Errorf("adventure expected search or get, got %q", args[1])
+	}
+}
+
+func runAdventureSearch(cmd *cobra.Command, opt *options, st *store.Store, adv store.Entity, query, kind string, limit int) error {
+	if strings.TrimSpace(query) == "" {
+		return fmt.Errorf("adventure search requires a query")
+	}
+	hits, err := search.Search(st, search.Query{
+		Text:      query,
+		Kind:      adventure.SearchKind(kind),
+		Limit:     limit,
+		Edition:   edition.All,
+		SRD:       opt.SRD,
+		Adventure: adv.Source,
+	})
+	if err != nil {
+		return err
+	}
+	if opt.JSON {
+		return writeJSON(cmd.OutOrStdout(), hits)
+	}
+	if len(hits) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no matches")
+		return nil
+	}
+	return writeSearchResults(cmd.OutOrStdout(), hits)
+}
+
+func runAdventureGet(cmd *cobra.Command, opt *options, st *store.Store, adv store.Entity, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("adventure get <role> <name>")
+	}
+	name := strings.Join(args[1:], " ")
+	ents, err := adventure.Lookup(st, args[0], name, adv.Source)
+	if err != nil {
+		return err
+	}
+	if opt.SRD {
+		ents = store.SRDOnly(ents)
+	}
+	if len(ents) == 0 {
+		return fmt.Errorf("no %s named %q in %s", args[0], name, adv.Source)
+	}
+	if len(ents) > 1 {
+		return writeAmbiguous(cmd, opt.JSON, ents)
+	}
+	return writeEntity(cmd, opt.JSON, ents[0])
 }
 
 func mcpCmd(opt *options) *cobra.Command {

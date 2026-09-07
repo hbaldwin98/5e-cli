@@ -20,7 +20,7 @@ func TestGetJSON_entityAndSection(t *testing.T) {
 		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb skill"},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{"name":"Holding Breath"}`), Text: "hold breath"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestGet_editionDisambiguates(t *testing.T) {
 	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "skill", Name: "Testing", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "phb skill"},
 		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb skill"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestGet_srdFilters(t *testing.T) {
 		{Kind: "item", Name: "Secret Blade", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "a testing blade"},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "testing breath"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +139,126 @@ func TestGet_srdFilters(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0]["name"] != "Testbolt" {
 		t.Fatalf("srd search: %s", out)
+	}
+}
+
+func TestGet_adventureByNameOrID(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{"name":"Lost Mine of Testing"}`), Text: "phandelver"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLI("--index", index, "--data", data, "--json", "get", "adventure", "Lost Mine of Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"source":"LMoP"`) {
+		t.Fatalf("by name: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "get", "adventure", "LMoP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"name":"Lost Mine of Testing"`) {
+		t.Fatalf("by id: %s", out)
+	}
+}
+
+func TestAdventure_searchAndGet(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+		{Kind: "monster", Name: "Ash Zombie", Source: "LMoP", JSON: json.RawMessage(`{"name":"Ash Zombie"}`), Text: "a burned undead"},
+		{Kind: "monster", Name: "Goblin", Source: "MM", JSON: json.RawMessage(`{}`), Text: "a small humanoid"},
+	}, []parse.Document{
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "goblins nest in the cragmaw hideout"},
+		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Cave Mouth", JSON: json.RawMessage(`{}`), Text: "a goblin watches the trail"},
+		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "goblins can hold breath too"},
+	}, []parse.Appearance{
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Location: "Cave Mouth"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLI("--index", index, "--data", data, "--json", "search", "hideout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Cragmaw") {
+		t.Fatalf("default search mixed adventure: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "search", "hideout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0]["name"] != "Cragmaw Hideout" {
+		t.Fatalf("adventure search: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "search", "--kind", "npc", "zombie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0]["name"] != "Ash Zombie" {
+		t.Fatalf("npc search: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "get", "location", "Cragmaw Hideout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"name":"Cragmaw Hideout"`) {
+		t.Fatalf("get location: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "get", "npc", "Ash Zombie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"name":"Ash Zombie"`) {
+		t.Fatalf("get npc: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "search", "--kind", "npc", "goblin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0]["name"] != "Goblin" || hits[0]["source"] != "MM" {
+		t.Fatalf("appeared npc: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "get", "npc", "Goblin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"source":"MM"`) {
+		t.Fatalf("get appeared npc: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "get", "location", "Cave Mouth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"name":"Cave Mouth"`) {
+		t.Fatalf("get location: %s", out)
 	}
 }
 

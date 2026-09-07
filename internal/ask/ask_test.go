@@ -74,6 +74,29 @@ func TestRetrieve_srdDropsNonSRDAndDocuments(t *testing.T) {
 	}
 }
 
+func TestRetrieve_skipsAdventureDocs(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "goblin hideout cragmaw", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Kind == "adventureSection" {
+			t.Fatalf("default retrieve mixed adventure %+v", hits)
+		}
+	}
+
+	hits, err = Retrieve(context.Background(), st, cfg, Query{Text: "goblin hideout cragmaw", Limit: 8, Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Cragmaw Hideout" {
+		t.Fatalf("adventure retrieve %+v", hits)
+	}
+}
+
 func TestRetrieve_rebuildsWhenModelChanges(t *testing.T) {
 	st, cfg, api := harness(t)
 	defer st.Close()
@@ -140,7 +163,8 @@ func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{"name":"Longsword"}`), Text: "A martial melee weapon with a steel blade that deals slashing damage."},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater before it starts suffocating."},
-	})
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "Goblins nest in the Cragmaw hideout in the hills."},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,5 +250,6 @@ func keywordEmbed(text string) []float32 {
 	add(0, "fire", "flame", "burn", "explode", "bloom")
 	add(1, "sword", "blade", "slash", "steel")
 	add(2, "breath", "suffocat", "underwater")
+	add(3, "goblin", "hideout", "cragmaw")
 	return v
 }

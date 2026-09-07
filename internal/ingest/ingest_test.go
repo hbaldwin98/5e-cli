@@ -84,6 +84,63 @@ func TestRun_syntheticCorpus(t *testing.T) {
 		t.Fatalf("rule search %+v", ruleHits)
 	}
 
+	advs, err := st.Get("adventure", "Lost Mine of Testing", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(advs) != 1 || advs[0].Source != "LMoP" {
+		t.Fatalf("catalog %+v", advs)
+	}
+	byID, err := st.Lookup("adventure", "LMoP", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byID) != 1 || byID[0].Name != "Lost Mine of Testing" {
+		t.Fatalf("lookup id %+v", byID)
+	}
+
+	hide, err := search.Search(st, search.Query{Text: "hideout", Limit: 5, Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHide := false
+	for _, h := range hide {
+		if h.Kind == "adventureSection" && h.Name == "Cragmaw Hideout" {
+			foundHide = true
+		}
+	}
+	if !foundHide {
+		t.Fatalf("adventure section %+v", hide)
+	}
+
+	locs, err := search.Search(st, search.Query{Text: "cave mouth", Limit: 5, Adventure: "LMoP", Kind: "location"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundLoc := false
+	for _, h := range locs {
+		if h.Name == "Cave Mouth" && h.Kind == "adventureLocation" {
+			foundLoc = true
+		}
+	}
+	if !foundLoc {
+		t.Fatalf("location %+v", locs)
+	}
+
+	npcs, err := search.Search(st, search.Query{Text: "beast", Limit: 5, Adventure: "LMoP", Kind: "monster"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundNPC := false
+	for _, h := range npcs {
+		if h.Name == "Test Beast" && h.Source == "MM" {
+			foundNPC = true
+		}
+	}
+	if !foundNPC {
+		t.Fatalf("appeared npc %+v", npcs)
+	}
+
 	res2, err := Run(Options{DataDir: dir, Index: index, Force: false})
 	if err != nil {
 		t.Fatal(err)

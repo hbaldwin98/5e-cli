@@ -11,11 +11,12 @@ import (
 
 // Query is a semantic retrieve / ask request.
 type Query struct {
-	Text    string
-	Kind    string
-	Sources []string
-	Limit   int
-	SRD     bool
+	Text      string
+	Kind      string
+	Sources   []string
+	Limit     int
+	SRD       bool
+	Adventure string
 }
 
 // Hit is a ranked chunk. IDs match `5e get` (documents use section as name).
@@ -88,6 +89,12 @@ func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source
 			return false
 		}
 		if !srcOK(v.Source) {
+			return false
+		}
+		if store.AdventureDoc(v.Kind) {
+			return q.Adventure != "" && strings.EqualFold(v.Source, q.Adventure) && srdOK(v.Kind, v.Name, v.Source)
+		}
+		if q.Adventure != "" && !strings.EqualFold(v.Source, q.Adventure) {
 			return false
 		}
 		return srdOK(v.Kind, v.Name, v.Source)

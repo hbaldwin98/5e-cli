@@ -19,7 +19,7 @@ func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater."},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

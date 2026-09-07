@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -54,12 +55,16 @@ func New(st *store.Store, opt Options) *mcp.Server {
 	}, h.get)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search",
-		Description: "Fuzzy name and full-text search. Returns the same kind/name/source IDs as 5e get.",
+		Description: "Fuzzy name and full-text search of the rules corpus (entities and book sections). Use adventure_search for module text and NPCs.",
 	}, h.search)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
-		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record.",
+		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Skips adventure module text.",
 	}, h.semanticSearch)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "adventure_search",
+		Description: "Search inside one adventure. Kind may be npc, location, or item. npc is every creature mentioned in the module, including MM reprints.",
+	}, h.adventureSearch)
 	return srv
 }
 
@@ -162,4 +167,33 @@ func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in
 		})
 	}
 	return nil, searchOutput{Hits: out}, nil
+}
+
+type adventureSearchInput struct {
+	Adventure string `json:"adventure" jsonschema:"adventure id or catalog title such as LMoP"`
+	Query     string `json:"query" jsonschema:"name or text to search inside the adventure"`
+	Kind      string `json:"kind,omitempty" jsonschema:"optional role filter: npc, location, or item"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"maximum hits"`
+}
+
+func (h *handler) adventureSearch(_ context.Context, _ *mcp.CallToolRequest, in adventureSearchInput) (*mcp.CallToolResult, searchOutput, error) {
+	adv, err := adventure.Resolve(h.st, in.Adventure)
+	if err != nil {
+		return nil, searchOutput{}, err
+	}
+	hits, err := search.Search(h.st, search.Query{
+		Text:      in.Query,
+		Kind:      adventure.SearchKind(in.Kind),
+		Limit:     in.Limit,
+		Edition:   edition.All,
+		SRD:       h.srd,
+		Adventure: adv.Source,
+	})
+	if err != nil {
+		return nil, searchOutput{}, err
+	}
+	if hits == nil {
+		hits = []search.Hit{}
+	}
+	return nil, searchOutput{Hits: hits}, nil
 }
