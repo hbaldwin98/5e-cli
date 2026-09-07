@@ -257,6 +257,57 @@ func (s *Store) Get(kind, name, source string) ([]Entity, error) {
 	return out, rows.Err()
 }
 
+// Lookup returns entities, or book/adventure sections when kind+name match a document.
+func (s *Store) Lookup(kind, name, source string) ([]Entity, error) {
+	ents, err := s.Get(kind, name, source)
+	if err != nil || len(ents) > 0 {
+		return ents, err
+	}
+	docs, err := s.GetDocument(kind, name, source)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entity, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, Entity{
+			ID:     d.ID,
+			Kind:   d.Kind,
+			Name:   d.Section,
+			Source: d.ParentID,
+			JSON:   d.JSON,
+			Text:   d.Text,
+		})
+	}
+	return out, nil
+}
+
+// GetDocument returns book/adventure sections matching kind+section, optionally parent/source.
+func (s *Store) GetDocument(kind, section, parent string) ([]Document, error) {
+	q := `SELECT id, kind, parent_id, section, json, text FROM documents WHERE kind = ? AND section = ? COLLATE NOCASE`
+	args := []any{kind, section}
+	if parent != "" {
+		q += ` AND parent_id = ? COLLATE NOCASE`
+		args = append(args, parent)
+	}
+	q += ` ORDER BY parent_id`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Document
+	for rows.Next() {
+		var d Document
+		var raw string
+		if err := rows.Scan(&d.ID, &d.Kind, &d.ParentID, &d.Section, &raw, &d.Text); err != nil {
+			return nil, err
+		}
+		d.JSON = json.RawMessage(raw)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) edges(id int64) ([]parse.Edge, error) {
 	rows, err := s.DB.Query(`SELECT tag, to_kind, to_name, to_source, display FROM edges WHERE from_id = ?`, id)
 	if err != nil {

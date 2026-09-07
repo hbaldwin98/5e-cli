@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
+	"github.com/hbaldwin98/5e-cli/internal/mcpserver"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -31,7 +33,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&opt.JSON, "json", false, "machine-readable JSON output")
 	cmd.PersistentFlags().StringVar(&opt.Data, "data", "", "path to 5etools data/ directory")
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
-	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -102,7 +104,7 @@ func getCmd(opt *options) *cobra.Command {
 			}
 			defer st.Close()
 			kind, name := args[0], strings.Join(args[1:], " ")
-			ents, err := st.Get(kind, name, source)
+			ents, err := st.Lookup(kind, name, source)
 			if err != nil {
 				return err
 			}
@@ -221,6 +223,33 @@ func askCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum retrieved chunks")
 	return cmd
+}
+
+func mcpCmd(opt *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "mcp",
+		Short: "Run an MCP stdio server over the local index",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runMCP(cmd.Context(), opt, cmd.ErrOrStderr())
+		},
+	}
+}
+
+func runMCP(ctx context.Context, opt *options, errw io.Writer) error {
+	data, index, err := resolve(opt)
+	if err != nil {
+		return err
+	}
+	st, err := paths.OpenIndex(index, data)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	cfg := ask.ConfigFromEnv()
+	cfg.CachePath = paths.EmbeddingsForIndex(index)
+	cfg.Progress = errw
+	return mcpserver.Run(ctx, st, mcpserver.Options{Ask: cfg})
 }
 
 func writeAskHits(w io.Writer, hits []ask.Hit) error {

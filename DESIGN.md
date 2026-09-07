@@ -108,7 +108,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
 
 5e ask <query> [--retrieve-only] [--limit 8] [--json]
-5e mcp                  # phase 4
+5e mcp
 ```
 
 Global flags: `--json`, `--data`, `--index` (path to the sqlite file).
@@ -159,9 +159,9 @@ Provider is any OpenAI-compatible host:
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, and embed model. Do not store the API key.
 
-### `mcp` (later)
+### `mcp`
 
-Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path.
+Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path. stdout is JSON-RPC; embedding progress goes to stderr.
 
 ## Parser
 
@@ -311,6 +311,7 @@ internal/parse/      // entries walker, tag lexer, plaintext render
 internal/store/      // sqlite schema, queries
 internal/search/     // fuzzy + FTS merge
 internal/ask/        // OpenAI-compatible embed + retrieve + generate
+internal/mcpserver/  // stdio MCP tools over get/search/retrieve
 internal/cli/        // cobra commands, human vs json
 third_party/5etools-src/  // submodule, sparse data/
 DESIGN.md
@@ -323,15 +324,14 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 1. **Submodule + ingest + get + search.** Done.
 2. **Formatted human rendering.** Done. Markdown stat blocks; Glamour on a TTY; `--json` unchanged.
 3. **`ask`.** OpenAI-compatible embeddings over existing `text` columns, then optional chat completions. Same IDs.
-4. **`mcp`.** Stdio server wrapping `get` / `search` / `semantic_search`.
+4. **`mcp`.** Done. Stdio server wrapping `get` / `search` / `semantic_search`.
 
 ## Follow-ups
 
-Work after `ask`. Do these in order unless a later item is unblocked.
+Work after `mcp`. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **`mcp`:** stdio server wrapping `get` / `search` / `semantic_search`.
 - **Edition default** (`2014` / `2024` / `all`) for `get` disambiguation and search ranking.
 - **Homebrew:** extra JSON files in a user dir, same parser.
 - **`--srd` filter** if 5etools `srd` / `srd52` flags prove reliable.
@@ -347,5 +347,6 @@ Work after `ask`. Do these in order unless a later item is unblocked.
 - Fuzzy: prefix / contains / compact-name plus short Levenshtein. No subsequence matching.
 - Class files explode into `class` + `subclass` + feature rows. Feature names are stored as `Extra Attack (Fighter 5)` so `(kind, name, source)` stays unique. Subraces become `High (Elf)`.
 - Ask uses an OpenAI-compatible base URL (`OPENAI_API_KEY`, `OPENAI_BASE_URL`) rather than a bundled local model.
-- `ask --retrieve-only` (and later MCP `semantic_search`) embeds the query without a generation call.
+- `ask --retrieve-only` (and MCP `semantic_search`) embeds the query without a generation call.
+- MCP is the official Go SDK over stdio, wrapping the same `get` / `search` / retrieve paths as the CLI.
 
