@@ -99,6 +99,8 @@ func renderTag(body string) (string, []Edge) {
 	switch tag {
 	case "i", "b", "u", "s", "italic", "bold", "strike", "underline", "color", "font":
 		return RenderString(rest)
+	case "atk":
+		return attackLabel(pipePart(rest, 0)), nil
 	case "dice", "damage", "scaledice", "scaledamage", "hitYourSpellAttack":
 		inner, edges := RenderString(pipePart(rest, 0))
 		return inner, edges
@@ -121,10 +123,30 @@ func renderTag(body string) (string, []Edge) {
 	return inner, edges
 }
 
+func attackLabel(code string) string {
+	labels := map[string]string{
+		"mw": "Melee Weapon Attack: ",
+		"rw": "Ranged Weapon Attack: ",
+		"ms": "Melee Spell Attack: ",
+		"rs": "Ranged Spell Attack: ",
+	}
+	parts := strings.Split(code, ",")
+	var out []string
+	for _, part := range parts {
+		if label := labels[strings.TrimSpace(part)]; label != "" {
+			out = append(out, strings.TrimSuffix(label, ": "))
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, " or ") + ":"
+}
+
 func renderBareTag(tag string) string {
 	switch tag {
 	case "h":
-		return "Hit: "
+		return "Hit:"
 	case "atk", "atkm", "atkr":
 		return ""
 	default:

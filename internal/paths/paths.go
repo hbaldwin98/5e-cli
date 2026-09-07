@@ -53,6 +53,14 @@ func DefaultIndex() (string, error) {
 	return filepath.Join(base, "5e-cli", "index.sqlite"), nil
 }
 
+// EmbeddingsForIndex is the sidecar sqlite next to the entity index.
+func EmbeddingsForIndex(index string) string {
+	if v := os.Getenv("FIVE_E_EMBEDDINGS"); v != "" {
+		return v
+	}
+	return filepath.Join(filepath.Dir(index), "embeddings.sqlite")
+}
+
 // OpenIndex opens the sqlite index and optionally refuses a stale fingerprint.
 func OpenIndex(index, dataDir string) (*store.Store, error) {
 	st, err := os.Stat(index)

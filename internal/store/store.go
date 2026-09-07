@@ -292,6 +292,24 @@ func (s *Store) Names() ([]Entity, error) {
 	return out, rows.Err()
 }
 
+// Documents returns book/adventure sections for embedding and search.
+func (s *Store) Documents() ([]Document, error) {
+	rows, err := s.DB.Query(`SELECT kind, parent_id, section, text FROM documents`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Document
+	for rows.Next() {
+		var d Document
+		if err := rows.Scan(&d.Kind, &d.ParentID, &d.Section, &d.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // FTSEntities runs FTS5 against entity text.
 func (s *Store) FTSEntities(match string, kind string, sources []string, limit int) ([]Hit, error) {
 	q := `

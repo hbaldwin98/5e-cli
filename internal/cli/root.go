@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
 	"github.com/hbaldwin98/5e-cli/internal/search"
@@ -30,7 +31,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&opt.JSON, "json", false, "machine-readable JSON output")
 	cmd.PersistentFlags().StringVar(&opt.Data, "data", "", "path to 5etools data/ directory")
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
-	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt))
 	return cmd
 }
 
@@ -152,19 +153,85 @@ func searchCmd(opt *options) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "no matches")
 				return nil
 			}
-			for _, h := range hits {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t(%s)\n", h.Kind, h.Name, h.Source)
-				if h.Snippet != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", h.Snippet)
-				}
-			}
-			return nil
+			return writeSearchResults(cmd.OutOrStdout(), hits)
 		},
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "restrict to one entity kind")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
 	return cmd
+}
+
+func askCmd(opt *options) *cobra.Command {
+	var retrieveOnly bool
+	var kind string
+	var sources []string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "ask <query>",
+		Short: "Answer a question from embedded 5e sources",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			cfg := ask.ConfigFromEnv()
+			cfg.CachePath = paths.EmbeddingsForIndex(index)
+			cfg.Progress = cmd.ErrOrStderr()
+			q := ask.Query{
+				Text:    strings.Join(args, " "),
+				Kind:    kind,
+				Sources: splitSources(sources),
+				Limit:   limit,
+			}
+			if retrieveOnly {
+				hits, err := ask.Retrieve(cmd.Context(), st, cfg, q)
+				if err != nil {
+					return err
+				}
+				if opt.JSON {
+					return writeJSON(cmd.OutOrStdout(), hits)
+				}
+				return writeAskHits(cmd.OutOrStdout(), hits)
+			}
+			res, err := ask.Ask(cmd.Context(), st, cfg, q)
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), res)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), res.Answer)
+			if len(res.Citations) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprintln(cmd.OutOrStdout(), "Sources:")
+				return writeAskHits(cmd.OutOrStdout(), res.Citations)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&retrieveOnly, "retrieve-only", false, "return ranked chunks without calling a chat model")
+	cmd.Flags().StringVar(&kind, "kind", "", "restrict to one entity kind")
+	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
+	cmd.Flags().IntVar(&limit, "limit", 8, "maximum retrieved chunks")
+	return cmd
+}
+
+func writeAskHits(w io.Writer, hits []ask.Hit) error {
+	if len(hits) == 0 {
+		fmt.Fprintln(w, "no matches")
+		return nil
+	}
+	for _, h := range hits {
+		fmt.Fprintf(w, "- %s  %s  (%s)\n", h.Kind, h.Name, h.Source)
+	}
+	return nil
 }
 
 func splitSources(in []string) []string {
@@ -193,14 +260,7 @@ func writeEntity(cmd *cobra.Command, asJSON bool, e store.Entity) error {
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	text := e.Text
-	if strings.HasPrefix(text, e.Name+"\n") {
-		text = strings.TrimPrefix(text, e.Name+"\n")
-	} else if text == e.Name {
-		text = ""
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s  (%s • %s)\n\n%s\n", e.Name, e.Kind, e.Source, strings.TrimSpace(text))
-	return nil
+	return writeHumanEntity(cmd.OutOrStdout(), e)
 }
 
 func writeAmbiguous(cmd *cobra.Command, asJSON bool, ents []store.Entity) error {

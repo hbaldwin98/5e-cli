@@ -8,7 +8,7 @@ The 5etools JSON is the source of truth. This repo never copies, vendors, or shi
 
 - `5e get` returns one entity (spell, monster, item, …) by name and source.
 - `5e search` ranks names and rules text for typos, fragments, and “what was that called?”
-- `5e ask` (later) answers natural-language questions from the same entity IDs `get` uses.
+- `5e ask` answers natural-language questions from the same entity IDs `get` uses.
 - `--json` is a first-class output mode so a campaign TUI or MCP server can call this without scraping the terminal.
 - Offline after ingest. No runtime calls to 5e.tools.
 
@@ -90,7 +90,7 @@ Not allowed: copied 5etools files, a committed SQLite/embedding database, golden
 |---|---|
 | Source JSON | `--data` / `FIVE_E_DATA`, else `third_party/5etools-src/data` relative to the repo |
 | Derived index | `$XDG_CACHE_HOME/5e-cli/index.sqlite` (fallback `~/.cache/5e-cli/`) |
-| Embeddings (later) | `$XDG_CACHE_HOME/5e-cli/embeddings/` |
+| Embeddings | `$XDG_CACHE_HOME/5e-cli/embeddings.sqlite` (same directory as `--index`) |
 | Config (later) | `$XDG_CONFIG_HOME/5e-cli/config.toml` |
 
 The cache is gitignored local state. It is keyed by the submodule commit SHA (or a hash of `--data`). If the SHA changes, `ingest` rebuilds. `get` / `search` refuse to run against a stale index.
@@ -107,7 +107,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e get <kind> <name> [--source PHB] [--json]
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
 
-5e ask <query>          # phase 3
+5e ask <query> [--retrieve-only] [--limit 8] [--json]
 5e mcp                  # phase 4
 ```
 
@@ -141,13 +141,27 @@ Filters: `--kind`, `--source` (repeatable or comma-separated).
 
 `--json` returns `{ kind, name, source, score, snippet }[]`. The IDs are the same ones `get` accepts.
 
-### `ask` (later)
+### `ask`
 
-Embed the query, retrieve entity/document chunks, optionally call an LLM. Citations must be `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus.
+Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
+
+`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM.
+
+Provider is any OpenAI-compatible host:
+
+| Env | Default |
+|---|---|
+| `OPENAI_API_KEY` | required |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
+| `FIVE_E_EMBED_MODEL` | `text-embedding-3-small` |
+| `FIVE_E_ASK_MODEL` | `gpt-4o-mini` |
+| `FIVE_E_EMBEDDINGS` | sidecar next to `--index` |
+
+Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, and embed model. Do not store the API key.
 
 ### `mcp` (later)
 
-Thin stdio MCP server over the same store: `lookup_spell`, `lookup_monster`, `lookup_item`, `search`, `search_rules`. No extra ingest path.
+Thin stdio MCP server over the same store: `get`, `search`, `semantic_search`. `semantic_search` reuses `ask --retrieve-only`. No extra ingest path.
 
 ## Parser
 
@@ -258,11 +272,11 @@ For `search`:
 
 Name hits outrank body hits unless the query is clearly prose (“hold breath”, “opportunity attack”).
 
-v1 can skip embeddings entirely. FTS + fuzzy covers both “fireball” and a lot of rule lookup.
+FTS + fuzzy remains the default `search`. Embeddings are an extra index for `ask` / semantic retrieve, not a replacement.
 
 ## Output
 
-Human mode: compact, stable, pipeable. No TUI in v1 (a picker can come later). Color on a TTY, plain text otherwise.
+Human mode is compact, stable, and pipeable. No TUI in v1 (a picker can come later). Color on a TTY, Markdown otherwise. `--json` is the agent contract.
 
 JSON mode: one document per command.
 
@@ -286,7 +300,7 @@ JSON mode: one document per command.
 - **CLI:** `spf13/cobra` (or `github.com/alecthomas/kong` if cobra feels heavy — pick cobra unless a first spike says otherwise).
 - **SQLite:** `modernc.org/sqlite` (pure Go) unless we need a FTS5 extension that forces CGo.
 - **Fuzzy:** small in-process matcher on the name list (e.g. a trigram or smith-waterman style ranker). Do not shell out to `fzf`.
-- **Embeddings (phase 3):** local model writing into the cache dir; sqlite-vec or a sidecar file. Decision deferred until `get`/`search` exist.
+- **Embeddings:** OpenAI-compatible HTTP (`/v1/embeddings`, `/v1/chat/completions`). Vectors live in a sidecar sqlite file next to the index; similarity is cosine in-process (pure Go, no sqlite-vec).
 
 ## Layout
 
@@ -296,6 +310,7 @@ internal/ingest/     // discovery, parse, fluff join, atomic sqlite write
 internal/parse/      // entries walker, tag lexer, plaintext render
 internal/store/      // sqlite schema, queries
 internal/search/     // fuzzy + FTS merge
+internal/ask/        // OpenAI-compatible embed + retrieve + generate
 internal/cli/        // cobra commands, human vs json
 third_party/5etools-src/  // submodule, sparse data/
 DESIGN.md
@@ -305,10 +320,21 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 
 ## Phases
 
-1. **Submodule + ingest + get + search.** Synthetic fixtures for parser tests. No embeddings. Entity kinds listed above; books/adventures optional if they delay the rest — prefer including them once entity ingest works, because rule search is mostly book sections.
-2. **Tag edges + better renderer.** `get` can follow `{@spell}` to related names. Human output looks like a stat block, not a JSON dump.
-3. **`ask`.** Embeddings over `text` columns already in sqlite. Same IDs.
-4. **`mcp`.** Stdio server wrapping `get`/`search`.
+1. **Submodule + ingest + get + search.** Done.
+2. **Formatted human rendering.** Done. Markdown stat blocks; Glamour on a TTY; `--json` unchanged.
+3. **`ask`.** OpenAI-compatible embeddings over existing `text` columns, then optional chat completions. Same IDs.
+4. **`mcp`.** Stdio server wrapping `get` / `search` / `semantic_search`.
+
+## Follow-ups
+
+Work after `ask`. Do these in order unless a later item is unblocked.
+
+### Later
+
+- **`mcp`:** stdio server wrapping `get` / `search` / `semantic_search`.
+- **Edition default** (`2014` / `2024` / `all`) for `get` disambiguation and search ranking.
+- **Homebrew:** extra JSON files in a user dir, same parser.
+- **`--srd` filter** if 5etools `srd` / `srd52` flags prove reliable.
 
 ## Distribution
 
@@ -316,12 +342,10 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 - Releases: ship the binary only. Document that the user must clone 5etools-src (or this repo with submodules) and run `5e ingest --data …`.
 - Do not attach `data/` or `index.sqlite` to GitHub releases.
 
-## Open questions
+## Decided in v1
 
-These can wait until the matching phase; they should not block v1 ingest/`get`/`search`.
-
-- Exact Go fuzzy library. **v1: prefix/contains/compact-name plus short Levenshtein; no subsequence matching.**
+- Fuzzy: prefix / contains / compact-name plus short Levenshtein. No subsequence matching.
 - Class files explode into `class` + `subclass` + feature rows. Feature names are stored as `Extra Attack (Fighter 5)` so `(kind, name, source)` stays unique. Subraces become `High (Elf)`.
-- Edition default (`2024` vs `all`).
-- Homebrew: extra JSON files dropped into a user dir, same parser, later.
-- Whether `srd` flags in 5etools JSON are reliable enough to offer `--srd` as a filter.
+- Ask uses an OpenAI-compatible base URL (`OPENAI_API_KEY`, `OPENAI_BASE_URL`) rather than a bundled local model.
+- `ask --retrieve-only` (and later MCP `semantic_search`) embeds the query without a generation call.
+

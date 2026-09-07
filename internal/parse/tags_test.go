@@ -44,3 +44,27 @@ func TestRenderString_unbalancedLeavesText(t *testing.T) {
 		t.Fatalf("text=%q", text)
 	}
 }
+
+func TestRenderString_attackTag(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "melee weapon", in: "{@atk mw} {@hit 4} to hit", want: "Melee Weapon Attack: +4 to hit"},
+		{name: "multiple", in: "{@atk mw, rw}", want: "Melee Weapon Attack or Ranged Weapon Attack:"},
+		{name: "unknown", in: "{@atk special}", want: ""},
+		{name: "bare hit", in: "{@h} 5 damage", want: "Hit: 5 damage"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text, edges := RenderString(tt.in)
+			if text != tt.want {
+				t.Fatalf("text=%q, want %q", text, tt.want)
+			}
+			if len(edges) != 0 {
+				t.Fatalf("unexpected edges: %+v", edges)
+			}
+		})
+	}
+}
