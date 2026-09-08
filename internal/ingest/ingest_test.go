@@ -1,10 +1,12 @@
 package ingest
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -147,5 +149,46 @@ func TestRun_syntheticCorpus(t *testing.T) {
 	}
 	if !res2.Skipped {
 		t.Fatal("expected idempotent skip")
+	}
+}
+
+func TestIngest_discoversIdentityArraysAndSkipsSupportFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("encounters.json", `{"encounter":[{"name":"Forest Ambush","source":"DMG","entries":["A patrol appears."]}]}`)
+	write("future.json", `{"futureRecord":[{"name":"Future Record","source":"UA","entries":["Official content."]}],"futureRecordFluff":[{"name":"Future Record","source":"UA","entries":["Lore."]}]}`)
+	write("foundry-actions.json", `{"action":[{"name":"Foundry Action","source":"PHB"}]}`)
+	write("makebrew-custom.json", `{"custom":[{"name":"Builder Action","source":"PHB"}]}`)
+	write("loot.json", `{"individual":[{"name":"Loot Entry","source":"DMG"}]}`)
+
+	entities := map[string]parse.Entity{}
+	fluff := map[string]map[string]any{}
+	if err := ingestDirJSON(dir, entities, fluff); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"encounter\x00forest ambush\x00dmg",
+		"futureRecord\x00future record\x00ua",
+	} {
+		if _, ok := entities[key]; !ok {
+			t.Fatalf("missing discovered entity %q: %v", key, entities)
+		}
+	}
+	if _, ok := fluff["futureRecord\x00future record\x00ua"]; !ok {
+		t.Fatalf("missing generic fluff: %v", fluff)
+	}
+	for _, key := range []string{
+		"action\x00foundry action\x00phb",
+		"custom\x00builder action\x00phb",
+		"individual\x00loot entry\x00dmg",
+	} {
+		if _, ok := entities[key]; ok {
+			t.Fatalf("support file leaked entity %q", key)
+		}
 	}
 }

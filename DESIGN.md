@@ -46,11 +46,12 @@ Binary installs and checkouts without the submodule must pass an explicit data r
 
 ### What we ingest
 
-Discover files. Do not hard-code source filenames.
+Discover files. Do not hard-code source filenames or silently drop a new
+official identity-bearing dataset.
 
 | Kind of file | How we find it |
 |---|---|
-| Top-level datasets | known list of `data/*.json` (see below) |
+| Top-level datasets | every non-skipped `data/*.json` identity array |
 | Spells | `data/spells/index.json` → `data/spells/{file}` |
 | Spell fluff | `data/spells/fluff-index.json` |
 | Monsters | `data/bestiary/index.json` → `data/bestiary/{file}` |
@@ -60,11 +61,14 @@ Discover files. Do not hard-code source filenames.
 | Books | `data/books.json` → `data/book/book-{id lowercase}.json` |
 | Adventures | `data/adventures.json` → `data/adventure/adventure-{id lowercase}.json` |
 
-**Ingest (v1 mechanics + fluff)**
+**Ingest (searchable records)**
 
-- Direct: `actions`, `backgrounds`, `bastions`, `charcreationoptions`, `conditionsdiseases`, `cultsboons`, `decks`, `deities`, `feats`, `homecrafts`, `items`, `items-base`, `languages`, `magicvariants`, `monsterfeatures`, `objects`, `optionalfeatures`, `psionics`, `races`, `recipes`, `rewards`, `senses`, `skills`, `tables`, `trapshazards`, `variantrules`, `vehicles`
-- Matching `fluff-*.json` next to those
+- Every array entry in a direct data file with both `name` and `source`.
+- Known 5etools keys keep their canonical aliases; new keys use their array key
+  as the entity kind so a corpus update does not make them disappear.
+- Matching `fluff-*.json` entries are joined onto their mechanical records.
 - Every indexed spell, bestiary, and class file, plus their fluff indexes
+- Official encounter datasets are indexed as `encounter` records.
 
 **Ingest (v1 documents)**
 
@@ -75,8 +79,8 @@ Book and adventure files are searchable documents (chapter/section chunks), not 
 
 **Skip**
 
-- `foundry-*`, `makebrew-*`, `makecards`, `converter`, `renderdemo`, `encounterbuilder`, `encounters`, `changelog`, `life`, `loot`, `msbcr`, `names`
-- `data/generated/*` until we prove we cannot derive the same lookups ourselves
+- `foundry-*`, `makebrew-*`, `makecards`, `converter`, `renderdemo`, `encounterbuilder`, `changelog`, `life`, `loot`, `msbcr`, `names`
+- `data/generated/*` and other support payloads that are not searchable source records
 
 ### What this repo may contain
 
@@ -223,7 +227,7 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 
 **Kinds (v1 entity rows)**
 
-`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `cult`, `boon`, `deck`, `charoption`, `bastion`, `recipe`, `monsterfeature`, `adventure`
+`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `languageScript`, `cult`, `boon`, `deck`, `card`, `charoption`, `bastion`, `recipe`, `monsterfeature`, `encounter`, `itemEntry`, `itemMastery`, `itemProperty`, `itemType`, `itemTypeAdditionalEntries`, `adventure`, plus newly discovered identity-bearing array keys.
 
 **Kinds (v1 document rows)**
 

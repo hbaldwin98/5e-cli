@@ -53,7 +53,6 @@ var skipFiles = map[string]bool{
 	"changelog.json":         true,
 	"converter.json":         true,
 	"encounterbuilder.json":  true,
-	"encounters.json":        true,
 	"life.json":              true,
 	"loot.json":              true,
 	"makebrew-creature.json": true,
@@ -72,7 +71,13 @@ func classifyKey(key string) (kind string, fluff bool) {
 		k, _ := classifyKey(base)
 		return k, true
 	}
-	return kindByArray[key], false
+	if kind := kindByArray[key]; kind != "" {
+		return kind, false
+	}
+	// New official datasets are often added as a top-level array before this
+	// tool knows their canonical alias. ingestFile still requires name/source,
+	// so metadata and support arrays do not become searchable rows by accident.
+	return key, false
 }
 
 func skipFile(name string) bool {
@@ -81,6 +86,9 @@ func skipFile(name string) bool {
 		return true
 	}
 	if strings.HasPrefix(base, "foundry-") {
+		return true
+	}
+	if strings.HasPrefix(base, "makebrew-") {
 		return true
 	}
 	return false

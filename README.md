@@ -67,6 +67,19 @@ Check setup without running a lookup:
 the index matches the data. It exits nonzero when data is missing, the index
 is missing, or the index is stale.
 
+## Ingest Scope
+
+`ingest` scans every direct 5etools data file that is not an explicit support
+file skip. Any array record with both `name` and `source` becomes searchable;
+new array keys are retained as their own entity kinds. Books and adventures
+also become searchable section documents, and official encounter records are
+indexed as `encounter` entities.
+
+Foundry exports, homebrew builders, generated data, render demos, changelogs,
+loot/life/name helpers, and other support payloads stay out of lookup results.
+The source JSON remains in the submodule; only normalized rows and derived
+text are written to the local SQLite index.
+
 ## Compare Sources
 
 Compare all available source records for one entity:
