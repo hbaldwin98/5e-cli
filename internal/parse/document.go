@@ -30,8 +30,9 @@ func collectSections(kind, parentID string, v any, out *[]Document) {
 		typ, _ := t["type"].(string)
 		name, _ := t["name"].(string)
 		if typ == "section" && name != "" {
-			raw, _ := json.Marshal(t)
-			text, _ := Flatten(t)
+			payload := documentPayload(kind, t)
+			raw, _ := json.Marshal(payload)
+			text, _ := Flatten(payload)
 			*out = append(*out, Document{
 				Kind:     kind,
 				ParentID: parentID,
@@ -41,8 +42,9 @@ func collectSections(kind, parentID string, v any, out *[]Document) {
 			})
 		}
 		if kind == "adventureSection" && typ == "entries" && name != "" {
-			raw, _ := json.Marshal(t)
-			text, _ := Flatten(t)
+			payload := documentPayload("adventureLocation", t)
+			raw, _ := json.Marshal(payload)
+			text, _ := Flatten(payload)
 			*out = append(*out, Document{
 				Kind:     "adventureLocation",
 				ParentID: parentID,
@@ -58,6 +60,55 @@ func collectSections(kind, parentID string, v any, out *[]Document) {
 			collectSections(kind, parentID, data, out)
 		}
 	}
+}
+
+func documentPayload(kind string, root map[string]any) map[string]any {
+	payload, _ := pruneDocumentChildren(kind, root, true)
+	return payload.(map[string]any)
+}
+
+func pruneDocumentChildren(kind string, v any, root bool) (any, bool) {
+	if !root && isDocumentBoundary(kind, v) {
+		return nil, false
+	}
+	switch t := v.(type) {
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, item := range t {
+			child, ok := pruneDocumentChildren(kind, item, false)
+			if ok {
+				out = append(out, child)
+			}
+		}
+		return out, true
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for key, value := range t {
+			child, ok := pruneDocumentChildren(kind, value, false)
+			if ok {
+				out[key] = child
+			}
+		}
+		return out, true
+	default:
+		return v, true
+	}
+}
+
+func isDocumentBoundary(kind string, v any) bool {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	typ, _ := obj["type"].(string)
+	name, _ := obj["name"].(string)
+	if name == "" {
+		return false
+	}
+	if typ == "section" {
+		return true
+	}
+	return (kind == "adventureSection" || kind == "adventureLocation") && typ == "entries"
 }
 
 // Appearance is a creature or item mentioned in an adventure.

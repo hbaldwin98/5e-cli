@@ -117,6 +117,42 @@ func TestSections_adventureLocations(t *testing.T) {
 	}
 }
 
+func TestSections_doesNotFlattenNamedChildrenIntoParent(t *testing.T) {
+	root := map[string]any{
+		"data": []any{
+			map[string]any{
+				"type": "section",
+				"name": "Phandalin",
+				"entries": []any{
+					"The town stands on old ruins.",
+					map[string]any{
+						"type":    "entries",
+						"name":    "Redbrand Ruffians",
+						"entries": []any{"The ruffians control the town."},
+					},
+				},
+			},
+		},
+	}
+
+	docs := Sections("adventureSection", "LMoP", root)
+	if len(docs) != 2 {
+		t.Fatalf("docs %+v", docs)
+	}
+	if !strings.Contains(docs[0].Text, "The town stands") {
+		t.Fatalf("parent text %q", docs[0].Text)
+	}
+	if strings.Contains(docs[0].Text, "control the town") {
+		t.Fatalf("parent included child text %q", docs[0].Text)
+	}
+	if strings.Contains(string(docs[0].JSON), "control the town") {
+		t.Fatalf("parent JSON included child text %s", docs[0].JSON)
+	}
+	if !strings.Contains(docs[1].Text, "control the town") {
+		t.Fatalf("child text %q", docs[1].Text)
+	}
+}
+
 func TestAppearances_statblock(t *testing.T) {
 	root := map[string]any{
 		"data": []any{

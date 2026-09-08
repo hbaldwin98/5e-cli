@@ -240,6 +240,7 @@ func insertEntities(tx *sql.Tx, entities []parse.Entity) error {
 }
 
 func insertDocuments(tx *sql.Tx, docs []parse.Document) error {
+	docs = mergeDocuments(docs)
 	insDoc, err := tx.Prepare(`INSERT INTO documents (kind, parent_id, section, json, text) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
@@ -251,6 +252,65 @@ func insertDocuments(tx *sql.Tx, docs []parse.Document) error {
 		}
 	}
 	return nil
+}
+
+func mergeDocuments(docs []parse.Document) []parse.Document {
+	positions := make(map[string]int, len(docs))
+	out := make([]parse.Document, 0, len(docs))
+	for _, doc := range docs {
+		key := strings.ToLower(doc.Kind) + "\x00" + strings.ToLower(doc.ParentID) + "\x00" + strings.ToLower(doc.Section)
+		position, ok := positions[key]
+		if !ok {
+			positions[key] = len(out)
+			out = append(out, doc)
+			continue
+		}
+		merged := &out[position]
+		if len(doc.Text) >= len(merged.Text) {
+			merged.JSON = mergeDocumentJSON(doc.JSON, merged.JSON)
+		} else {
+			merged.JSON = mergeDocumentJSON(merged.JSON, doc.JSON)
+		}
+		merged.Text = mergeDocumentText(merged.Text, doc.Text)
+	}
+	return out
+}
+
+func mergeDocumentJSON(primary, secondary json.RawMessage) json.RawMessage {
+	var first, second map[string]any
+	if json.Unmarshal(primary, &first) != nil || json.Unmarshal(secondary, &second) != nil {
+		return primary
+	}
+	for _, key := range []string{"entries", "data"} {
+		firstEntries, firstOK := first[key].([]any)
+		secondEntries, secondOK := second[key].([]any)
+		if !secondOK {
+			continue
+		}
+		if !firstOK {
+			first[key] = secondEntries
+			continue
+		}
+		first[key] = append(firstEntries, secondEntries...)
+	}
+	merged, err := json.Marshal(first)
+	if err != nil {
+		return primary
+	}
+	return merged
+}
+
+func mergeDocumentText(existing, incoming string) string {
+	if existing == "" {
+		return incoming
+	}
+	if incoming == "" || strings.Contains(existing, incoming) {
+		return existing
+	}
+	if strings.Contains(incoming, existing) {
+		return incoming
+	}
+	return existing + "\n" + incoming
 }
 
 func insertAppearances(tx *sql.Tx, appearances []parse.Appearance) error {

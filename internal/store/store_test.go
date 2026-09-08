@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -96,6 +97,39 @@ func TestGetDocument_optionalSectionAndParentFilters(t *testing.T) {
 				t.Fatalf("got %d documents: %+v", len(docs), docs)
 			}
 		})
+	}
+}
+
+func TestLookup_mergesDuplicateDocumentNamesWithinParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, nil, []parse.Document{
+		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Redbrand Ruffians", JSON: json.RawMessage(`{"page":15,"entries":["The town encounter."]}`), Text: "The town encounter."},
+		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Redbrand Ruffians", JSON: json.RawMessage(`{"page":19,"entries":["The full encounter."]}`), Text: "The full encounter."},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ents, err := st.Lookup("adventureLocation", "Redbrand Ruffians", "LMoP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 {
+		t.Fatalf("duplicate document lookup %+v", ents)
+	}
+	if !strings.Contains(ents[0].Text, "The town encounter.") || !strings.Contains(ents[0].Text, "The full encounter.") {
+		t.Fatalf("merged text %q", ents[0].Text)
+	}
+	if !strings.Contains(string(ents[0].JSON), `"page":19`) {
+		t.Fatalf("merged JSON %s", ents[0].JSON)
+	}
+	if !strings.Contains(string(ents[0].JSON), "The town encounter.") {
+		t.Fatalf("merged JSON lost first document %s", ents[0].JSON)
 	}
 }
 
