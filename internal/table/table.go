@@ -155,18 +155,32 @@ func rowRange(value string) (int, int, bool) {
 	if len(parts) > 2 {
 		return 0, 0, false
 	}
-	min, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
+	min, ok := rollValue(parts[0])
+	if !ok {
 		return 0, 0, false
 	}
 	max := min
 	if len(parts) == 2 {
-		max, err = strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err != nil || max < min {
+		if max, ok = rollValue(parts[1]); !ok || max < min {
 			return 0, 0, false
 		}
 	}
 	return min, max, true
+}
+
+// rollValue parses one end of a table range. Percentile tables write 100 as
+// "00", so a d100 row reads "97-00"; without this every d100 table would fail
+// range parsing and fall back to picking rows by ordinal.
+func rollValue(part string) (int, bool) {
+	part = strings.TrimSpace(part)
+	if part == "00" {
+		return 100, true
+	}
+	n, err := strconv.Atoi(part)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func values(value any) []string {

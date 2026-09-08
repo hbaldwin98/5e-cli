@@ -80,3 +80,13 @@ func TestRollTable_rendersTaggedCellsAndValidatesInput(t *testing.T) {
 		t.Fatal("expected missing rows")
 	}
 }
+
+func TestRowRange_percentileZeroZeroIsHundred(t *testing.T) {
+	min, max, ok := rowRange("97–00")
+	if !ok || min != 97 || max != 100 {
+		t.Fatalf("want 97..100, got %d..%d ok=%v", min, max, ok)
+	}
+	if _, _, ok := rowRange("00"); !ok {
+		t.Fatal("bare 00 should parse as 100")
+	}
+}
