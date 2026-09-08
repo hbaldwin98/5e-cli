@@ -191,3 +191,16 @@ func TestIngest_discoversIdentityArraysAndSkipsSupportFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyKey_dropsRendererSupportArrays(t *testing.T) {
+	for _, key := range []string{"itemEntry", "itemType", "itemProperty", "languageScript", "itemTypeAdditionalEntries"} {
+		if kind, _ := classifyKey(key); kind != "" {
+			t.Fatalf("%s should not become a kind, got %q", key, kind)
+		}
+	}
+	for _, key := range []string{"itemMastery", "spell", "futureRecord"} {
+		if kind, _ := classifyKey(key); kind == "" {
+			t.Fatalf("%s should stay indexable", key)
+		}
+	}
+}

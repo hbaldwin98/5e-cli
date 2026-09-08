@@ -62,8 +62,23 @@ var skipFiles = map[string]bool{
 	"renderdemo.json":        true,
 }
 
+// supportArrays are top-level arrays that exist to drive 5etools' renderer
+// rather than to describe content: font manifests, type abbreviations, and
+// entry templates full of {{placeholders}}. The catch-all in classifyKey
+// would otherwise index them as their own entity kinds.
+var supportArrays = map[string]bool{
+	"itemEntry":                 true,
+	"itemTypeAdditionalEntries": true,
+	"itemType":                  true,
+	"itemProperty":              true,
+	"languageScript":            true,
+}
+
 func classifyKey(key string) (kind string, fluff bool) {
 	if key == "_meta" || strings.HasSuffix(key, "FluffMeta") {
+		return "", false
+	}
+	if supportArrays[key] {
 		return "", false
 	}
 	if strings.HasSuffix(key, "Fluff") {

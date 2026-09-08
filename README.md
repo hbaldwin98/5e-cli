@@ -75,7 +75,9 @@ adventures, and class-feature tables are reachable by `get`, `search`, and
 
 `ingest` scans every direct 5etools data file that is not an explicit support
 file skip. Any array record with both `name` and `source` becomes searchable;
-new array keys are retained as their own entity kinds. Books and adventures
+new array keys are retained as their own entity kinds, apart from a small set
+of renderer support arrays (font manifests, type abbreviations, and entry
+templates) that describe presentation rather than content. Books and adventures
 also become searchable section documents, and official encounter records are
 indexed as `encounter` entities.
 
