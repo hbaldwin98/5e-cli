@@ -625,9 +625,42 @@ func (s *Store) incomingReferences(kind, name, source, tag string) ([]Reference,
 	return out, rows.Err()
 }
 
-// Names returns kind, name, source, text, and SRD for fuzzy ranking.
+// NameFilter narrows Names before rows leave sqlite. Zero values match all.
+type NameFilter struct {
+	Kind    string
+	Sources []string
+	SRDOnly bool
+}
+
+// Names returns kind, name, source, text, and SRD for every entity.
 func (s *Store) Names() ([]Entity, error) {
-	rows, err := s.DB.Query(`SELECT kind, name, source, text, srd FROM entities`)
+	return s.FilteredNames(NameFilter{})
+}
+
+// FilteredNames is Names with the filter applied in sqlite. Fuzzy ranking
+// reads the whole table, so a caller that only wants one kind or source
+// should not pull every row's text into Go to discard it.
+func (s *Store) FilteredNames(f NameFilter) ([]Entity, error) {
+	q := `SELECT kind, name, source, text, srd FROM entities`
+	var args []any
+	var where []string
+	if f.Kind != "" {
+		where = append(where, `kind = ?`)
+		args = append(args, f.Kind)
+	}
+	if len(f.Sources) > 0 {
+		where = append(where, `source COLLATE NOCASE IN (`+placeholders(len(f.Sources))+`)`)
+		for _, src := range f.Sources {
+			args = append(args, src)
+		}
+	}
+	if f.SRDOnly {
+		where = append(where, `srd = 1`)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

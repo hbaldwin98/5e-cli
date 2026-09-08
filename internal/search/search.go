@@ -44,7 +44,13 @@ func Search(st *store.Store, q Query) ([]Hit, error) {
 }
 
 func addNameHits(st *store.Store, q Query, merged map[string]*Hit) error {
-	names, err := st.Names()
+	// An adventure query keeps entities reprinted from elsewhere, so its
+	// source filter cannot be pushed into sqlite; keepNameHit still applies it.
+	filter := store.NameFilter{Kind: q.Kind, SRDOnly: q.SRD}
+	if q.Adventure == "" {
+		filter.Sources = q.Sources
+	}
+	names, err := st.FilteredNames(filter)
 	if err != nil {
 		return err
 	}

@@ -327,3 +327,47 @@ func TestGetBare_skipsEdges(t *testing.T) {
 		t.Fatalf("GetBare json %s", bare[0].JSON)
 	}
 }
+
+func TestFilteredNames_narrowsInSQL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "a"},
+		{Kind: "spell", Name: "Testbolt", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "b"},
+		{Kind: "monster", Name: "Testgoblin", Source: "MM", JSON: json.RawMessage(`{}`), Text: "c"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	all, err := st.Names()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("want 3 rows unfiltered, got %d", len(all))
+	}
+	for _, tc := range []struct {
+		name   string
+		filter NameFilter
+		want   int
+	}{
+		{"kind", NameFilter{Kind: "spell"}, 2},
+		{"source", NameFilter{Sources: []string{"xphb"}}, 1},
+		{"srd", NameFilter{SRDOnly: true}, 1},
+		{"combined", NameFilter{Kind: "spell", Sources: []string{"PHB"}, SRDOnly: true}, 1},
+		{"no match", NameFilter{Kind: "item"}, 0},
+	} {
+		got, err := st.FilteredNames(tc.filter)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(got) != tc.want {
+			t.Fatalf("%s: want %d rows, got %d (%+v)", tc.name, tc.want, len(got), got)
+		}
+	}
+}
