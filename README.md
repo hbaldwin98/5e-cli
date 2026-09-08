@@ -12,6 +12,7 @@ make setup
 bin/5e doctor
 bin/5e search fireball
 bin/5e get spell fireball
+bin/5e compare spell fireball --json
 ```
 
 `make setup` initializes the shallow 5etools submodule with only its `data/`
@@ -63,6 +64,20 @@ Check setup without running a lookup:
 `doctor` reports the resolved paths, data and index fingerprints, and whether
 the index matches the data. It exits nonzero when data is missing, the index
 is missing, or the index is stale.
+
+## Compare Sources
+
+Compare all available source records for one entity:
+
+```sh
+5e compare spell fireball
+5e compare spell fireball --source PHB,XPHB --json
+5e compare spell fireball --edition 2014
+```
+
+Comparison defaults to all editions so reprints can be compared directly.
+`--edition` or `FIVE_E_EDITION` restricts the records before comparison.
+`--srd` applies the same SRD filter as the other lookup commands.
 
 ## Development
 

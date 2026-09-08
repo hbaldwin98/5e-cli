@@ -11,6 +11,7 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/compare"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
 	"github.com/hbaldwin98/5e-cli/internal/mcpserver"
@@ -41,7 +42,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -220,6 +221,78 @@ func searchCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
 	return cmd
+}
+
+func compareCmd(opt *options) *cobra.Command {
+	var sources []string
+	cmd := &cobra.Command{
+		Use:   "compare <kind> <name>",
+		Short: "Compare source-specific versions of one entity",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			kind, name := args[0], strings.Join(args[1:], " ")
+			ents, err := st.Lookup(kind, name, "")
+			if err != nil {
+				return err
+			}
+			if wanted := splitSources(sources); len(wanted) > 0 {
+				ents = filterSources(ents, wanted)
+			}
+			if opt.SRD {
+				ents = store.SRDOnly(ents)
+			}
+			ed, err := comparisonEdition(opt)
+			if err != nil {
+				return err
+			}
+			if ed != edition.All {
+				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
+			}
+			if len(ents) == 0 {
+				return fmt.Errorf("no %s named %q", kind, name)
+			}
+			result, err := compare.Compare(ents)
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), result)
+			}
+			return writeComparison(cmd.OutOrStdout(), result)
+		},
+	}
+	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids (repeatable or comma-separated)")
+	return cmd
+}
+
+func comparisonEdition(opt *options) (edition.Pref, error) {
+	if opt.Edition == "" && os.Getenv("FIVE_E_EDITION") == "" {
+		return edition.All, nil
+	}
+	return opt.editionPref()
+}
+
+func filterSources(entities []store.Entity, sources []string) []store.Entity {
+	wanted := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		wanted[strings.ToLower(source)] = true
+	}
+	out := make([]store.Entity, 0, len(entities))
+	for _, entity := range entities {
+		if wanted[strings.ToLower(entity.Source)] {
+			out = append(out, entity)
+		}
+	}
+	return out
 }
 
 func refsCmd(opt *options) *cobra.Command {
@@ -581,6 +654,60 @@ func writeAdventureReport(w io.Writer, report adventure.Report) error {
 		return nil
 	}
 	return renderMarkdown(w, markdown.String())
+}
+
+func writeComparison(w io.Writer, result compare.Result) error {
+	var markdown bytes.Buffer
+	fmt.Fprintf(&markdown, "# Compare %s %s\n\n", result.Kind, result.Name)
+	fmt.Fprint(&markdown, "*Sources: ")
+	for i, record := range result.Records {
+		if i > 0 {
+			fmt.Fprint(&markdown, ", ")
+		}
+		fmt.Fprint(&markdown, markdownCell(record.Source))
+	}
+	fmt.Fprint(&markdown, "*\n\n")
+	if len(result.Differences) == 0 {
+		fmt.Fprintln(&markdown, "No top-level differences.")
+		return renderMarkdown(w, markdown.String())
+	}
+	fmt.Fprint(&markdown, "| Field |")
+	for _, record := range result.Records {
+		fmt.Fprintf(&markdown, " %s |", markdownCell(record.Source))
+	}
+	fmt.Fprintln(&markdown)
+	fmt.Fprint(&markdown, "| --- |")
+	for range result.Records {
+		fmt.Fprint(&markdown, " --- |")
+	}
+	fmt.Fprintln(&markdown)
+	for _, difference := range result.Differences {
+		values := make(map[string]compare.Value, len(difference.Values))
+		for _, value := range difference.Values {
+			values[strings.ToLower(value.Source)] = value
+		}
+		fmt.Fprintf(&markdown, "| %s |", markdownCell(difference.Field))
+		for _, record := range result.Records {
+			value := values[strings.ToLower(record.Source)]
+			fmt.Fprintf(&markdown, " %s |", markdownCell(comparisonValue(value)))
+		}
+		fmt.Fprintln(&markdown)
+	}
+	return renderMarkdown(w, markdown.String())
+}
+
+func comparisonValue(value compare.Value) string {
+	if !value.Present {
+		return "(missing)"
+	}
+	if value.Value == nil {
+		return "null"
+	}
+	raw, err := json.Marshal(value.Value)
+	if err != nil {
+		return fmt.Sprint(value.Value)
+	}
+	return string(raw)
 }
 
 func splitSources(in []string) []string {
