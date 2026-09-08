@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -166,11 +165,11 @@ func TestIngest_discoversIdentityArraysAndSkipsSupportFiles(t *testing.T) {
 	write("makebrew-custom.json", `{"custom":[{"name":"Builder Action","source":"PHB"}]}`)
 	write("loot.json", `{"individual":[{"name":"Loot Entry","source":"DMG"}]}`)
 
-	entities := map[string]parse.Entity{}
-	fluff := map[string]map[string]any{}
-	if err := ingestDirJSON(dir, entities, fluff); err != nil {
+	col := newCollector()
+	if err := ingestDirJSON(dir, col); err != nil {
 		t.Fatal(err)
 	}
+	entities, fluff := col.entities, col.fluff
 	for _, key := range []string{
 		"encounter\x00forest ambush\x00dmg",
 		"futureRecord\x00future record\x00ua",

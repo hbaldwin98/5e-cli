@@ -62,18 +62,31 @@ func Run(opt Options) (Result, error) {
 }
 
 func writeIndex(dataDir, index, sha string) (Result, error) {
-	entities, fluff, err := loadEntities(dataDir)
+	col, err := loadEntities(dataDir)
 	if err != nil {
 		return Result{}, err
 	}
-	for k, f := range fluff {
+	entities := col.entities
+	for k, f := range col.fluff {
 		if e, ok := entities[k]; ok {
 			entities[k] = parse.MergeFluff(e, f)
 		}
 	}
-	docs, apps, err := loadDocuments(dataDir)
+	docs, apps, inline, err := loadDocuments(dataDir)
 	if err != nil {
 		return Result{}, err
+	}
+	// data/tables.json holds only a handful of tables; keep the standalone
+	// records authoritative and fill in the rest from prose.
+	for _, e := range col.tables {
+		if _, ok := entities[e.Key()]; !ok {
+			entities[e.Key()] = e
+		}
+	}
+	for _, e := range inline {
+		if _, ok := entities[e.Key()]; !ok {
+			entities[e.Key()] = e
+		}
 	}
 	list := make([]parse.Entity, 0, len(entities))
 	for _, e := range entities {
@@ -87,25 +100,48 @@ func writeIndex(dataDir, index, sha string) (Result, error) {
 	return Result{Entities: len(list), Documents: len(docs), Index: index, SHA: sha}, nil
 }
 
-func loadEntities(dataDir string) (map[string]parse.Entity, map[string]map[string]any, error) {
-	entities := map[string]parse.Entity{}
-	fluff := map[string]map[string]any{}
-
-	if err := ingestDirJSON(dataDir, entities, fluff); err != nil {
-		return nil, nil, err
-	}
-	for _, dir := range []string{"spells", "bestiary", "class"} {
-		if err := ingestIndexed(filepath.Join(dataDir, dir), entities, fluff); err != nil {
-			return nil, nil, err
-		}
-	}
-	if err := loadAdventureCatalog(dataDir, entities); err != nil {
-		return nil, nil, err
-	}
-	return entities, fluff, nil
+// collector accumulates everything one pass over the data tree produces.
+// Tables are kept apart from entities because harvested tables must never
+// displace a standalone record with the same kind/name/source.
+type collector struct {
+	entities map[string]parse.Entity
+	fluff    map[string]map[string]any
+	tables   map[string]parse.Entity
 }
 
-func ingestDirJSON(dir string, entities map[string]parse.Entity, fluff map[string]map[string]any) error {
+func newCollector() *collector {
+	return &collector{
+		entities: map[string]parse.Entity{},
+		fluff:    map[string]map[string]any{},
+		tables:   map[string]parse.Entity{},
+	}
+}
+
+func (c *collector) addTables(source string, obj map[string]any) {
+	for _, t := range parse.Tables(source, obj) {
+		if _, ok := c.tables[t.Key()]; !ok {
+			c.tables[t.Key()] = t
+		}
+	}
+}
+
+func loadEntities(dataDir string) (*collector, error) {
+	col := newCollector()
+	if err := ingestDirJSON(dataDir, col); err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{"spells", "bestiary", "class"} {
+		if err := ingestIndexed(filepath.Join(dataDir, dir), col); err != nil {
+			return nil, err
+		}
+	}
+	if err := loadAdventureCatalog(dataDir, col.entities); err != nil {
+		return nil, err
+	}
+	return col, nil
+}
+
+func ingestDirJSON(dir string, col *collector) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -114,14 +150,14 @@ func ingestDirJSON(dir string, entities map[string]parse.Entity, fluff map[strin
 		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") || skipFile(ent.Name()) {
 			continue
 		}
-		if err := ingestFile(filepath.Join(dir, ent.Name()), entities, fluff); err != nil {
+		if err := ingestFile(filepath.Join(dir, ent.Name()), col); err != nil {
 			return fmt.Errorf("%s: %w", ent.Name(), err)
 		}
 	}
 	return nil
 }
 
-func ingestIndexed(dir string, entities map[string]parse.Entity, fluff map[string]map[string]any) error {
+func ingestIndexed(dir string, col *collector) error {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil
 	}
@@ -140,7 +176,7 @@ func ingestIndexed(dir string, entities map[string]parse.Entity, fluff map[strin
 		}
 		for _, file := range idx {
 			fp := filepath.Join(dir, file)
-			if err := ingestFile(fp, entities, fluff); err != nil {
+			if err := ingestFile(fp, col); err != nil {
 				return fmt.Errorf("%s: %w", fp, err)
 			}
 		}
@@ -148,7 +184,7 @@ func ingestIndexed(dir string, entities map[string]parse.Entity, fluff map[strin
 	return nil
 }
 
-func ingestFile(path string, entities map[string]parse.Entity, fluff map[string]map[string]any) error {
+func ingestFile(path string, col *collector) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -181,43 +217,48 @@ func ingestFile(path string, entities map[string]parse.Entity, fluff map[string]
 					continue
 				}
 				k := parse.Entity{Kind: kind, Name: name, Source: source}.Key()
-				fluff[k] = obj
+				col.fluff[k] = obj
 				continue
 			}
 			e, ok := parse.FromObject(kind, obj, item)
 			if !ok {
 				continue
 			}
-			entities[e.Key()] = e
+			col.entities[e.Key()] = e
+			col.addTables(e.Source, obj)
 		}
 	}
 	return nil
 }
 
-func loadDocuments(dataDir string) ([]parse.Document, []parse.Appearance, error) {
+func loadDocuments(dataDir string) ([]parse.Document, []parse.Appearance, []parse.Entity, error) {
 	bookIDs, err := loadIDMap(filepath.Join(dataDir, "books.json"), "book")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	advIDs, err := loadIDMap(filepath.Join(dataDir, "adventures.json"), "adventure")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	var docs []parse.Document
-	var apps []parse.Appearance
-	books, bookApps, err := ingestDocumentDir(filepath.Join(dataDir, "book"), "book-", "bookSection", bookIDs)
+	books, err := ingestDocumentDir(filepath.Join(dataDir, "book"), "book-", "bookSection", bookIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	advs, advApps, err := ingestDocumentDir(filepath.Join(dataDir, "adventure"), "adventure-", "adventureSection", advIDs)
+	advs, err := ingestDocumentDir(filepath.Join(dataDir, "adventure"), "adventure-", "adventureSection", advIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	docs = append(docs, books...)
-	docs = append(docs, advs...)
-	apps = append(apps, bookApps...)
-	apps = append(apps, advApps...)
-	return docs, apps, nil
+	docs := append(books.docs, advs.docs...)
+	apps := append(books.apps, advs.apps...)
+	tables := append(books.tables, advs.tables...)
+	return docs, apps, tables, nil
+}
+
+// documentHarvest is everything one book/adventure directory contributes.
+type documentHarvest struct {
+	docs   []parse.Document
+	apps   []parse.Appearance
+	tables []parse.Entity
 }
 
 func loadIDMap(path, arrayKey string) (map[string]string, error) {
@@ -247,12 +288,11 @@ func loadIDMap(path, arrayKey string) (map[string]string, error) {
 	return out, nil
 }
 
-func ingestDocumentDir(dir, prefix, kind string, ids map[string]string) ([]parse.Document, []parse.Appearance, error) {
+func ingestDocumentDir(dir, prefix, kind string, ids map[string]string) (documentHarvest, error) {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return nil, nil, nil
+		return documentHarvest{}, nil
 	}
-	var docs []parse.Document
-	var apps []parse.Appearance
+	var harvest documentHarvest
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -275,13 +315,14 @@ func ingestDocumentDir(dir, prefix, kind string, ids map[string]string) ([]parse
 		if err := dec.Decode(&root); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		docs = append(docs, parse.Sections(kind, parent, root)...)
+		harvest.docs = append(harvest.docs, parse.Sections(kind, parent, root)...)
+		harvest.tables = append(harvest.tables, parse.Tables(parent, root)...)
 		if kind == "adventureSection" {
-			apps = append(apps, parse.Appearances(parent, root)...)
+			harvest.apps = append(harvest.apps, parse.Appearances(parent, root)...)
 		}
 		return nil
 	})
-	return docs, apps, err
+	return harvest, err
 }
 
 func sourcedAppearances(entities []parse.Entity) []parse.Appearance {
