@@ -19,6 +19,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/paths"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
+	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +44,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -321,6 +322,65 @@ func encounterCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringVar(&size, "size", "", "restrict to creature size")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
+	return cmd
+}
+
+func rollCmd(opt *options) *cobra.Command {
+	var source string
+	var count int
+	var seed int64
+	cmd := &cobra.Command{
+		Use:   "roll <table name>",
+		Short: "Roll an indexed random table",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			name := strings.Join(args, " ")
+			ents, err := st.Lookup("table", name, source)
+			if err != nil {
+				return err
+			}
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
+			}
+			if opt.SRD {
+				ents = store.SRDOnly(ents)
+			}
+			if len(ents) == 0 {
+				return fmt.Errorf("no table named %q", name)
+			}
+			if len(ents) > 1 {
+				return writeAmbiguous(cmd, opt.JSON, ents)
+			}
+			var seedPtr *int64
+			if cmd.Flags().Changed("seed") {
+				seedPtr = &seed
+			}
+			report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: count, Seed: seedPtr})
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), report)
+			}
+			return writeRandomTable(cmd.OutOrStdout(), report)
+		},
+	}
+	cmd.Flags().StringVar(&source, "source", "", "disambiguate by 5etools source id")
+	cmd.Flags().IntVar(&count, "count", 1, "number of rows to roll")
+	cmd.Flags().Int64Var(&seed, "seed", 0, "random seed for reproducible rolls")
 	return cmd
 }
 
@@ -757,6 +817,33 @@ func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
 	for _, hit := range hits {
 		fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s | %.2f |\n",
 			markdownCell(hit.Name), markdownCell(hit.CR), markdownCell(hit.Type), markdownCell(hit.Size), markdownCell(hit.Source), hit.Score)
+	}
+	return renderMarkdown(w, markdown.String())
+}
+
+func writeRandomTable(w io.Writer, report randomtable.Report) error {
+	var markdown bytes.Buffer
+	fmt.Fprintf(&markdown, "# %s\n\n*table | %s*\n\n", report.Name, report.Source)
+	headers := report.Headers
+	if len(headers) == 0 {
+		headers = []string{"Result"}
+	}
+	fmt.Fprint(&markdown, "| Roll |")
+	for _, header := range headers {
+		fmt.Fprintf(&markdown, " %s |", markdownCell(header))
+	}
+	fmt.Fprintln(&markdown)
+	fmt.Fprint(&markdown, "| ---: |")
+	for range headers {
+		fmt.Fprint(&markdown, " --- |")
+	}
+	fmt.Fprintln(&markdown)
+	for _, roll := range report.Rolls {
+		fmt.Fprintf(&markdown, "| %d |", roll.Roll)
+		for _, value := range roll.Values {
+			fmt.Fprintf(&markdown, " %s |", markdownCell(value))
+		}
+		fmt.Fprintln(&markdown)
 	}
 	return renderMarkdown(w, markdown.String())
 }

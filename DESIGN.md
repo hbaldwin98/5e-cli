@@ -109,6 +109,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
 5e compare <kind> <name> [--source PHB,XPHB] [--edition 2014|2024|all] [--json]
 5e encounter <query> [--cr CR] [--type TYPE] [--size SIZE] [--source SOURCE] [--limit 10] [--json]
+5e roll <table name> [--source PHB] [--count 1] [--seed N] [--json]
 
 5e refs <kind> <name> [--source PHB] [--direction outgoing|incoming|both] [--tag spell] [--json]
 
@@ -375,6 +376,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 8. **Distribution workflow.** Done. `doctor` diagnoses local setup; Make targets cover build, install, data, ingest, and tests.
 9. **Source comparison.** Done. Compare same-name records across sources and report top-level field differences.
 10. **Encounter lookup.** Done. Filter indexed monsters by name/text, CR, type, size, source, edition, and SRD.
+11. **Random tables.** Done. Roll indexed tables with repeat counts, deterministic seeds, and numeric ranges.
 
 ## Board
 
@@ -398,19 +400,18 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 - `adventure list` command and MCP `adventure_list` report with chapter/location filters
 - `compare` command for source/edition differences
 - `encounter` command for pre-filtered monster lookup
+- `roll` command for indexed random tables
 
 ### Open
 
-- **Utilities:** random-table helpers.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Follow-ups
 
-Work after encounter lookup. Do these in order unless a later item is unblocked.
+Work after random tables. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **Utilities:** random-table rolling.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Distribution

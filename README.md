@@ -14,6 +14,7 @@ bin/5e search fireball
 bin/5e get spell fireball
 bin/5e compare spell fireball --json
 bin/5e encounter goblin --type humanoid --size small
+bin/5e roll "Weather" --seed 42
 ```
 
 `make setup` initializes the shallow 5etools submodule with only its `data/`
@@ -93,6 +94,20 @@ challenge rating, creature type, size, source, edition, or SRD status:
 
 Encounter lookup filters the full monster set before applying `--limit`, so
 metadata filters do not hide later matches.
+
+## Random Tables
+
+Roll an indexed 5etools table. Use `--count` for repeated rolls and `--seed`
+when a reproducible result is useful:
+
+```sh
+5e roll "Weather"
+5e roll "Weather" --count 5 --seed 42 --json
+5e roll "Encounter Names" --source XGE
+```
+
+Numeric first-column ranges are honored when present. Other tables use uniform
+row selection.
 
 ## Development
 
