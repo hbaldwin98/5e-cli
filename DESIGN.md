@@ -227,13 +227,17 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 
 **Kinds (v1 entity rows)**
 
-`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `languageScript`, `cult`, `boon`, `deck`, `card`, `charoption`, `bastion`, `recipe`, `monsterfeature`, `encounter`, `itemEntry`, `itemMastery`, `itemProperty`, `itemType`, `itemTypeAdditionalEntries`, `adventure`, plus newly discovered identity-bearing array keys.
+`spell`, `monster`, `item`, `itemBase`, `class`, `subclass`, `classFeature`, `subclassFeature`, `feat`, `race`, `background`, `optionalfeature`, `condition`, `disease`, `action`, `sense`, `skill`, `reward`, `deity`, `object`, `vehicle`, `trap`, `hazard`, `psionic`, `table`, `variantrule`, `language`, `cult`, `boon`, `deck`, `card`, `charoption`, `bastion`, `recipe`, `monsterfeature`, `encounter`, `itemMastery`, `adventure`, plus newly discovered identity-bearing array keys.
+
+Renderer support arrays are excluded: `itemEntry`, `itemType`, `itemProperty`, `itemTypeAdditionalEntries`, and `languageScript` carry abbreviations, font manifests, and `{{placeholder}}` templates rather than content.
 
 **Kinds (v1 document rows)**
 
 `bookSection`, `adventureSection`, `adventureLocation`
 
 Chunk books on 5etools `type: "section"` headings. Chunk adventures on `type: "section"` (chapters) and named `type: "entries"` (locations). Preserve the book/adventure id and section name. Default search does not query adventure document kinds.
+
+**Embedded tables.** `data/tables.json` holds only a handful of tables; the rest are `type: "table"` nodes inside book, adventure, and entity bodies. Captioned table nodes become `table` entities under their parent source, and never displace a standalone record with the same kind/name/source.
 
 **Adventure catalog.** Each `adventures.json` item is an `adventure` entity: title as name, 5etools id as source. `5e get adventure LMoP` resolves id or title.
 
@@ -380,7 +384,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 8. **Distribution workflow.** Done. `doctor` diagnoses local setup; Make targets cover build, install, data, ingest, and tests.
 9. **Source comparison.** Done. Compare same-name records across sources and report top-level field differences.
 10. **Encounter lookup.** Done. Filter indexed monsters by name/text, CR, type, size, source, edition, and SRD.
-11. **Random tables.** Done. Roll indexed tables with repeat counts, deterministic seeds, and numeric ranges.
+11. **Random tables.** Done. Roll indexed tables with repeat counts, deterministic seeds, and numeric ranges (including the `00` that percentile tables use for 100), sourced from `tables.json` and from tables embedded in prose.
 
 ## Board
 
@@ -405,6 +409,7 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 - `compare` command for source/edition differences
 - `encounter` command for pre-filtered monster lookup
 - `roll` command for indexed random tables
+- MCP `compare`, `encounter`, and `roll` tools matching the CLI commands
 
 ### Open
 
