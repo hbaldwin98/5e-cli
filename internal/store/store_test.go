@@ -289,3 +289,41 @@ func TestReferences_incomingAndOutgoing(t *testing.T) {
 		t.Fatalf("incoming: %v %+v", err, in)
 	}
 }
+
+func TestGetBare_skipsEdges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "monster", Name: "Testgoblin", Source: "MM", JSON: json.RawMessage(`{"name":"Testgoblin"}`), Text: "a goblin",
+			Edges: []parse.Edge{{Tag: "spell", ToKind: "spell", ToName: "Fireball", ToSource: "PHB"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	full, err := st.Get("monster", "Testgoblin", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 1 || len(full[0].Edges) != 1 {
+		t.Fatalf("Get should load edges: %+v", full)
+	}
+
+	bare, err := st.GetBare("monster", "Testgoblin", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bare) != 1 || bare[0].Name != "Testgoblin" {
+		t.Fatalf("GetBare row %+v", bare)
+	}
+	if bare[0].Edges != nil {
+		t.Fatalf("GetBare should not load edges: %+v", bare[0].Edges)
+	}
+	if string(bare[0].JSON) != `{"name":"Testgoblin"}` {
+		t.Fatalf("GetBare json %s", bare[0].JSON)
+	}
+}

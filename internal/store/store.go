@@ -78,6 +78,12 @@ CREATE TABLE appearances (
   location  TEXT NOT NULL DEFAULT '',
   UNIQUE (adventure, role, kind, name, source, chapter, location)
 );
+
+CREATE INDEX edges_from        ON edges (from_id);
+CREATE INDEX edges_to          ON edges (to_kind, to_name);
+CREATE INDEX documents_lookup  ON documents (kind, section);
+CREATE INDEX documents_parent  ON documents (parent_id);
+CREATE INDEX appearances_scope ON appearances (adventure, role);
 `
 
 // Meta is the ingest fingerprint stored in the index.
@@ -390,8 +396,20 @@ func (s *Store) Close() error {
 	return s.DB.Close()
 }
 
-// Get returns entities matching kind+name, optionally filtered by source.
+// Get returns entities matching kind+name, optionally filtered by source,
+// with their reference edges loaded.
 func (s *Store) Get(kind, name, source string) ([]Entity, error) {
+	return s.get(kind, name, source, true)
+}
+
+// GetBare is Get without the per-row edge lookup. Callers that scan a whole
+// kind — every monster, say — would otherwise issue one edges query per row
+// for data they never read.
+func (s *Store) GetBare(kind, name, source string) ([]Entity, error) {
+	return s.get(kind, name, source, false)
+}
+
+func (s *Store) get(kind, name, source string, withEdges bool) ([]Entity, error) {
 	q := `SELECT id, kind, name, source, page, srd, json, text FROM entities WHERE kind = ?`
 	args := []any{kind}
 	if name != "" {
@@ -418,9 +436,10 @@ func (s *Store) Get(kind, name, source string) ([]Entity, error) {
 		}
 		e.SRD = srd != 0
 		e.JSON = json.RawMessage(raw)
-		e.Edges, err = s.edges(e.ID)
-		if err != nil {
-			return nil, err
+		if withEdges {
+			if e.Edges, err = s.edges(e.ID); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, e)
 	}

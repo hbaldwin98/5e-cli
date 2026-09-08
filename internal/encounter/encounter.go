@@ -41,18 +41,20 @@ type Hit struct {
 
 // Search returns monsters matching all metadata filters before applying Limit.
 func Search(st *store.Store, q Query) ([]Hit, error) {
-	entities, err := st.Get("monster", "", "")
+	// GetBare skips the per-row edge lookup: this scans every monster in the
+	// index and never reads their edges.
+	entities, err := st.GetBare("monster", "", "")
 	if err != nil {
 		return nil, err
 	}
-	entities = filterEntities(entities, q)
+	candidates := filterEntities(entities, q)
 	if q.Limit <= 0 {
 		q.Limit = 10
 	}
 
-	hits := make([]Hit, 0, len(entities))
-	for _, entity := range entities {
-		hit, ok := makeHit(entity, q.Text)
+	hits := make([]Hit, 0, len(candidates))
+	for _, candidate := range candidates {
+		hit, ok := makeHit(candidate, q.Text)
 		if ok {
 			hits = append(hits, hit)
 		}
@@ -72,9 +74,16 @@ func Search(st *store.Store, q Query) ([]Hit, error) {
 	return hits, nil
 }
 
-func filterEntities(entities []store.Entity, q Query) []store.Entity {
+// candidate pairs a stored monster with its decoded JSON so the filter pass
+// and the hit pass share one unmarshal per row.
+type candidate struct {
+	entity store.Entity
+	obj    map[string]any
+}
+
+func filterEntities(entities []store.Entity, q Query) []candidate {
 	sources := sourceSet(q.Sources)
-	filtered := make([]store.Entity, 0, len(entities))
+	filtered := make([]candidate, 0, len(entities))
 	for _, entity := range entities {
 		if len(sources) > 0 && !sources[strings.ToLower(entity.Source)] {
 			continue
@@ -83,6 +92,9 @@ func filterEntities(entities []store.Entity, q Query) []store.Entity {
 			continue
 		}
 		if q.Edition != edition.All && !edition.Match(entity.Source, q.Edition) {
+			continue
+		}
+		if q.Text != "" && !matchesText(entity, q.Text) {
 			continue
 		}
 		obj, err := decode(entity.JSON)
@@ -98,16 +110,19 @@ func filterEntities(entities []store.Entity, q Query) []store.Entity {
 		if q.Size != "" && !hasSize(obj, q.Size) {
 			continue
 		}
-		filtered = append(filtered, entity)
+		filtered = append(filtered, candidate{entity: entity, obj: obj})
 	}
 	return filtered
 }
 
-func makeHit(entity store.Entity, query string) (Hit, bool) {
-	obj, err := decode(entity.JSON)
-	if err != nil {
-		return Hit{}, false
-	}
+// matchesText is the cheap string-only half of scoring, applied before the
+// JSON decode so non-matching monsters are never unmarshalled.
+func matchesText(entity store.Entity, query string) bool {
+	return search.NameScore(query, entity.Name) > 0 || containsAll(entity.Text, query)
+}
+
+func makeHit(c candidate, query string) (Hit, bool) {
+	entity, obj := c.entity, c.obj
 	score := search.NameScore(query, entity.Name)
 	if strings.TrimSpace(query) == "" {
 		score = 0
