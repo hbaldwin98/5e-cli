@@ -522,9 +522,12 @@ func adventureCmd(opt *options) *cobra.Command {
 	var kind, chapter, location string
 	var limit int
 	cmd := &cobra.Command{
-		Use:   "adventure <id-or-name> <search|get> ...",
-		Short: "Search and look up inside one adventure",
-		Args:  cobra.MinimumNArgs(2),
+		Use:   "adventure <id-or-name> <list|search|get> ...",
+		Short: "List, search, and look up inside one adventure",
+		Example: `  5e adventure LMoP list --kind npc
+  5e adventure LMoP search goblin
+  5e adventure LMoP get npc "Sildar Hallwinter"`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAdventure(cmd, opt, args, kind, chapter, location, limit)
 		},
@@ -562,7 +565,7 @@ func dispatchAdventure(cmd *cobra.Command, opt *options, st *store.Store, adv st
 	case "get":
 		return runAdventureGet(cmd, opt, st, adv, args[2:])
 	default:
-		return fmt.Errorf("adventure expected search or get, got %q", args[1])
+		return fmt.Errorf("adventure expected list, search, or get, got %q", args[1])
 	}
 }
 

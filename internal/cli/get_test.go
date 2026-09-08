@@ -262,7 +262,7 @@ func TestAdventure_searchAndGet(t *testing.T) {
 	}
 
 	_, err = runCLI("--index", index, "--data", data, "adventure", "LMoP", "unknown")
-	if err == nil || !strings.Contains(err.Error(), "adventure expected search or get") {
+	if err == nil || !strings.Contains(err.Error(), "adventure expected list, search, or get") {
 		t.Fatalf("unknown adventure action: %v", err)
 	}
 }

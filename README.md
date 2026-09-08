@@ -13,7 +13,7 @@ bin/5e doctor
 bin/5e search fireball
 bin/5e get spell fireball
 bin/5e compare spell fireball --json
-bin/5e encounter goblin --type humanoid --size small
+bin/5e encounter goblin --type fey --size small
 bin/5e roll "Weather" --seed 42
 ```
 
@@ -67,6 +67,10 @@ Check setup without running a lookup:
 the index matches the data. It exits nonzero when data is missing, the index
 is missing, or the index is stale.
 
+Sections and rollable tables embedded in the prose are indexed too, so books,
+adventures, and class-feature tables are reachable by `get`, `search`, and
+`roll`.
+
 ## Ingest Scope
 
 `ingest` scans every direct 5etools data file that is not an explicit support
@@ -79,6 +83,22 @@ Foundry exports, homebrew builders, generated data, render demos, changelogs,
 loot/life/name helpers, and other support payloads stay out of lookup results.
 The source JSON remains in the submodule; only normalized rows and derived
 text are written to the local SQLite index.
+
+## Adventures
+
+Work inside one adventure by id or catalog title:
+
+```sh
+5e adventure LMoP list
+5e adventure LMoP list --kind npc --chapter "Cragmaw Hideout"
+5e adventure LMoP search goblin
+5e adventure LMoP get npc "Sildar Hallwinter"
+```
+
+`list` reports the adventure's chapters, locations, and NPC/item appearances,
+optionally narrowed by `--kind`, `--chapter`, or `--location`. `search` and
+`get` are scoped to that module, and `npc` covers every creature the module
+mentions, including reprints from the Monster Manual.
 
 ## Compare Sources
 
@@ -100,13 +120,18 @@ Find indexed monsters by name or rules text, then narrow the results by
 challenge rating, creature type, size, source, edition, or SRD status:
 
 ```sh
-5e encounter goblin --type humanoid --size small --cr 1/4
+5e encounter goblin --type fey --size small --cr 1/4
+5e encounter goblin --type humanoid --cr 1/4 --edition 2014
 5e encounter "fire resistance" --limit 20 --json
 5e encounter dragon --edition 2024 --srd
 ```
 
 Encounter lookup filters the full monster set before applying `--limit`, so
 metadata filters do not hide later matches.
+
+Creature types are whatever the selected edition says: 2024 goblins are `fey`
+in XMM, while their 2014 MM statblocks are `humanoid`. Pass `--edition 2014`
+or `--edition all` when a type filter comes from an older book.
 
 ## Random Tables
 
@@ -116,11 +141,15 @@ when a reproducible result is useful:
 ```sh
 5e roll "Weather"
 5e roll "Weather" --count 5 --seed 42 --json
-5e roll "Encounter Names" --source XGE
+5e roll "Wild Magic Surge" --source XPHB
 ```
 
-Numeric first-column ranges are honored when present. Other tables use uniform
-row selection.
+Tables come from `data/tables.json` and from the thousands more embedded in
+book, adventure, and class-feature prose, indexed under their parent source.
+Pass `--source` when several books share a table name.
+
+Numeric first-column ranges are honored when present, including the `00` that
+percentile tables use for 100. Other tables use uniform row selection.
 
 ## Development
 
