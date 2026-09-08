@@ -247,7 +247,7 @@ func compareCmd(opt *options) *cobra.Command {
 				return err
 			}
 			if wanted := splitSources(sources); len(wanted) > 0 {
-				ents = filterSources(ents, wanted)
+				ents = compare.FilterSources(ents, wanted)
 			}
 			if opt.SRD {
 				ents = store.SRDOnly(ents)
@@ -389,20 +389,6 @@ func comparisonEdition(opt *options) (edition.Pref, error) {
 		return edition.All, nil
 	}
 	return opt.editionPref()
-}
-
-func filterSources(entities []store.Entity, sources []string) []store.Entity {
-	wanted := make(map[string]bool, len(sources))
-	for _, source := range sources {
-		wanted[strings.ToLower(source)] = true
-	}
-	out := make([]store.Entity, 0, len(entities))
-	for _, entity := range entities {
-		if wanted[strings.ToLower(entity.Source)] {
-			out = append(out, entity)
-		}
-	}
-	return out
 }
 
 func refsCmd(opt *options) *cobra.Command {

@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -343,7 +345,8 @@ func testStore(t *testing.T) *store.Store {
 		{Kind: "skill", Name: "Testing", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "phb"},
 		{Kind: "skill", Name: "Testing", Source: "XPHB", JSON: json.RawMessage(`{}`), Text: "xphb"},
 		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
-		{Kind: "monster", Name: "Goblin", Source: "MM", JSON: json.RawMessage(`{}`), Text: "a small humanoid"},
+		{Kind: "monster", Name: "Goblin", Source: "MM", JSON: json.RawMessage(`{"name":"Goblin","cr":"1/4","type":"humanoid","size":["S"]}`), Text: "a small humanoid"},
+		{Kind: "table", Name: "Testing Table", Source: "PHB", JSON: json.RawMessage(`{"colLabels":["1d4","Effect"],"rows":[["1-2","low"],["3-4","high"]]}`), Text: "a table"},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "hold breath"},
 		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "goblins nest in the hideout"},
@@ -399,4 +402,84 @@ func toolJSON(t *testing.T, res *mcp.CallToolResult) map[string]any {
 		t.Fatalf("json %v: %s", err, text.Text)
 	}
 	return out
+}
+
+func TestCompare_reportsSourceDifferences(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{}))
+	defer session.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "compare",
+		Arguments: map[string]any{"kind": "skill", "name": "Testing"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	out := toolJSON(t, res)
+	records, _ := out["records"].([]any)
+	if len(records) != 2 {
+		t.Fatalf("want PHB and XPHB records, got %#v", out["records"])
+	}
+}
+
+func TestEncounter_filtersByTypeAndSize(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	// MM is a 2014 source, so the fixture needs an edition-agnostic server.
+	session := connect(t, New(st, Options{Edition: edition.All}))
+	defer session.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "encounter",
+		Arguments: map[string]any{"query": "goblin", "type": "humanoid", "size": "small"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	out := toolJSON(t, res)
+	hits, _ := out["hits"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("want one goblin, got %#v", out["hits"])
+	}
+	hit, _ := hits[0].(map[string]any)
+	if hit["name"] != "Goblin" || hit["cr"] != "1/4" {
+		t.Fatalf("got %#v", hit)
+	}
+}
+
+func TestRoll_isReproducibleWithSeed(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{}))
+	defer session.Close()
+
+	roll := func() map[string]any {
+		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "roll",
+			Arguments: map[string]any{"name": "Testing Table", "seed": 42, "count": 3},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("tool error: %+v", res.Content)
+		}
+		return toolJSON(t, res)
+	}
+	first, second := roll(), roll()
+	rolls, _ := first["rolls"].([]any)
+	if len(rolls) != 3 {
+		t.Fatalf("want 3 rolls, got %#v", first["rolls"])
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("seeded rolls differ:\n%#v\n%#v", first, second)
+	}
 }

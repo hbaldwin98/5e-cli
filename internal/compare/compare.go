@@ -47,6 +47,21 @@ type Value struct {
 	Value   any    `json:"value"`
 }
 
+// FilterSources keeps only the records whose source is in sources.
+func FilterSources(entities []store.Entity, sources []string) []store.Entity {
+	wanted := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		wanted[strings.ToLower(source)] = true
+	}
+	out := make([]store.Entity, 0, len(entities))
+	for _, entity := range entities {
+		if wanted[strings.ToLower(entity.Source)] {
+			out = append(out, entity)
+		}
+	}
+	return out
+}
+
 // Compare compares at least two source-specific records for one entity.
 func Compare(entities []store.Entity) (Result, error) {
 	if len(entities) < 2 {

@@ -8,10 +8,13 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/compare"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
+	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
+	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -70,6 +73,18 @@ func New(st *store.Store, opt Options) *mcp.Server {
 		Description: "Search inside one adventure. Kind may be npc, location, or item. npc is every creature mentioned in the module, including MM reprints.",
 	}, h.adventureSearch)
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "compare",
+		Description: "Compare the source-specific versions of one entity and report the top-level fields that differ. Spans editions by default.",
+	}, h.compare)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "encounter",
+		Description: "Find monsters for an encounter, filtered by challenge rating, creature type, and size.",
+	}, h.encounter)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "roll",
+		Description: "Roll an indexed random table by name. Pass seed for a reproducible result and source when several books share a table name.",
+	}, h.roll)
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "adventure_list",
 		Description: "List an adventure's chapters, locations, and NPC/item appearances, optionally filtered by role, chapter, or location.",
 	}, h.adventureList)
@@ -99,19 +114,13 @@ func (h *handler) get(_ context.Context, _ *mcp.CallToolRequest, in getInput) (*
 		return nil, getOutput{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
 	}
 	e := ents[0]
-	var raw any
-	if len(e.JSON) > 0 {
-		if err := json.Unmarshal(e.JSON, &raw); err != nil {
-			raw = json.RawMessage(e.JSON)
-		}
-	}
 	return nil, getOutput{
 		Kind:   e.Kind,
 		Name:   e.Name,
 		Source: e.Source,
 		Page:   e.Page,
 		Text:   e.Text,
-		JSON:   raw,
+		JSON:   decodeJSON(e.JSON),
 		Edges:  e.Edges,
 	}, nil
 }
@@ -260,6 +269,146 @@ func (h *handler) adventureList(_ context.Context, _ *mcp.CallToolRequest, in ad
 	report, err := adventure.List(h.st, adv.Source, in.Kind, in.Chapter, in.Location)
 	if err != nil {
 		return nil, adventure.Report{}, err
+	}
+	return nil, report, nil
+}
+
+type compareInput struct {
+	Kind    string   `json:"kind" jsonschema:"entity kind such as spell, monster, or item"`
+	Name    string   `json:"name" jsonschema:"entity name"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids to restrict the comparison to"`
+}
+
+// compareOutput mirrors compare.Result with the record payload typed as any.
+// compare.Record.JSON is a json.RawMessage, which the MCP schema generator
+// reads as a byte array and then rejects when it marshals as an object.
+type compareOutput struct {
+	Kind        string               `json:"kind"`
+	Name        string               `json:"name"`
+	Records     []compareRecord      `json:"records"`
+	Differences []compare.Difference `json:"differences"`
+}
+
+type compareRecord struct {
+	Kind   string       `json:"kind"`
+	Name   string       `json:"name"`
+	Source string       `json:"source"`
+	Page   int          `json:"page"`
+	SRD    bool         `json:"srd"`
+	Text   string       `json:"text"`
+	JSON   any          `json:"json"`
+	Edges  []parse.Edge `json:"edges"`
+}
+
+// compare spans editions unless the caller narrows it with sources: comparing
+// a 2014 record against its 2024 reprint is the common case.
+func (h *handler) compare(_ context.Context, _ *mcp.CallToolRequest, in compareInput) (*mcp.CallToolResult, compareOutput, error) {
+	ents, err := h.st.Lookup(in.Kind, in.Name, "")
+	if err != nil {
+		return nil, compareOutput{}, err
+	}
+	if len(in.Sources) > 0 {
+		ents = compare.FilterSources(ents, in.Sources)
+	}
+	if h.srd {
+		ents = store.SRDOnly(ents)
+	}
+	if len(ents) == 0 {
+		return nil, compareOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
+	}
+	result, err := compare.Compare(ents)
+	if err != nil {
+		return nil, compareOutput{}, err
+	}
+	out := compareOutput{Kind: result.Kind, Name: result.Name, Differences: result.Differences}
+	for _, record := range result.Records {
+		out.Records = append(out.Records, compareRecord{
+			Kind:   record.Kind,
+			Name:   record.Name,
+			Source: record.Source,
+			Page:   record.Page,
+			SRD:    record.SRD,
+			Text:   record.Text,
+			JSON:   decodeJSON(record.JSON),
+			Edges:  record.Edges,
+		})
+	}
+	return nil, out, nil
+}
+
+// decodeJSON turns a stored payload into a plain value so MCP output schemas
+// describe it as an object rather than a byte array.
+func decodeJSON(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	return v
+}
+
+type encounterInput struct {
+	Query   string   `json:"query" jsonschema:"monster name or text to match"`
+	CR      string   `json:"cr,omitempty" jsonschema:"optional challenge rating such as 1/4 or 5"`
+	Type    string   `json:"type,omitempty" jsonschema:"optional creature type such as humanoid or fey"`
+	Size    string   `json:"size,omitempty" jsonschema:"optional creature size such as small or large"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids"`
+	Limit   int      `json:"limit,omitempty" jsonschema:"maximum hits"`
+}
+
+type encounterOutput struct {
+	Hits []encounter.Hit `json:"hits"`
+}
+
+func (h *handler) encounter(_ context.Context, _ *mcp.CallToolRequest, in encounterInput) (*mcp.CallToolResult, encounterOutput, error) {
+	hits, err := encounter.Search(h.st, encounter.Query{
+		Text:    in.Query,
+		CR:      in.CR,
+		Type:    in.Type,
+		Size:    in.Size,
+		Sources: in.Sources,
+		Edition: h.ed,
+		SRD:     h.srd,
+		Limit:   in.Limit,
+	})
+	if err != nil {
+		return nil, encounterOutput{}, err
+	}
+	if hits == nil {
+		hits = []encounter.Hit{}
+	}
+	return nil, encounterOutput{Hits: hits}, nil
+}
+
+type rollInput struct {
+	Name   string `json:"name" jsonschema:"table name such as Wild Magic Surge"`
+	Source string `json:"source,omitempty" jsonschema:"optional 5etools source id"`
+	Count  int    `json:"count,omitempty" jsonschema:"number of rows to roll, default 1"`
+	Seed   *int64 `json:"seed,omitempty" jsonschema:"optional seed for a reproducible roll"`
+}
+
+func (h *handler) roll(_ context.Context, _ *mcp.CallToolRequest, in rollInput) (*mcp.CallToolResult, randomtable.Report, error) {
+	ents, err := h.st.Lookup("table", in.Name, in.Source)
+	if err != nil {
+		return nil, randomtable.Report{}, err
+	}
+	if in.Source == "" {
+		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
+	}
+	if h.srd {
+		ents = store.SRDOnly(ents)
+	}
+	if len(ents) == 0 {
+		return nil, randomtable.Report{}, fmt.Errorf("no table named %q", in.Name)
+	}
+	if len(ents) > 1 {
+		return nil, randomtable.Report{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
+	}
+	report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: in.Count, Seed: in.Seed})
+	if err != nil {
+		return nil, randomtable.Report{}, err
 	}
 	return nil, report, nil
 }
