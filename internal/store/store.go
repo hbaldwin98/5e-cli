@@ -99,6 +99,23 @@ type Entity struct {
 	Edges  []parse.Edge
 }
 
+// Reference is a directed link between two indexed entities. The target may
+// be unresolved when the source data contains a broken or external tag.
+type Reference struct {
+	Direction string    `json:"direction"`
+	Tag       string    `json:"tag"`
+	From      EntityRef `json:"from"`
+	To        EntityRef `json:"to"`
+	Display   string    `json:"display,omitempty"`
+}
+
+// EntityRef identifies an entity without loading its JSON payload.
+type EntityRef struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Source string `json:"source,omitempty"`
+}
+
 // Document is a stored book/adventure section.
 type Document struct {
 	ID       int64
@@ -376,6 +393,98 @@ func (s *Store) edges(id int64) ([]parse.Edge, error) {
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// References returns links to or from the named entity. Direction may be
+// "outgoing", "incoming", or "both".
+func (s *Store) References(kind, name, source, direction, tag string) ([]Reference, error) {
+	if direction == "" {
+		direction = "both"
+	}
+	if direction != "outgoing" && direction != "incoming" && direction != "both" {
+		return nil, fmt.Errorf("invalid reference direction %q", direction)
+	}
+
+	var out []Reference
+	if direction == "outgoing" || direction == "both" {
+		refs, err := s.outgoingReferences(kind, name, source, tag)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, refs...)
+	}
+	if direction == "incoming" || direction == "both" {
+		refs, err := s.incomingReferences(kind, name, source, tag)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, refs...)
+	}
+	return out, nil
+}
+
+func (s *Store) outgoingReferences(kind, name, source, tag string) ([]Reference, error) {
+	q := `
+		SELECT e.kind, e.name, e.source, x.tag, x.to_kind, x.to_name, x.to_source, x.display
+		FROM edges x JOIN entities e ON e.id = x.from_id
+		WHERE e.kind = ? AND e.name = ? COLLATE NOCASE`
+	args := []any{kind, name}
+	if source != "" {
+		q += ` AND e.source = ? COLLATE NOCASE`
+		args = append(args, source)
+	}
+	if tag != "" {
+		q += ` AND x.tag = ? COLLATE NOCASE`
+		args = append(args, tag)
+	}
+	q += ` ORDER BY e.source, x.tag, x.to_name, x.to_source`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Reference
+	for rows.Next() {
+		var r Reference
+		if err := rows.Scan(&r.From.Kind, &r.From.Name, &r.From.Source, &r.Tag, &r.To.Kind, &r.To.Name, &r.To.Source, &r.Display); err != nil {
+			return nil, err
+		}
+		r.Direction = "outgoing"
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) incomingReferences(kind, name, source, tag string) ([]Reference, error) {
+	q := `
+		SELECT e.kind, e.name, e.source, x.tag, x.to_kind, x.to_name, x.to_source, x.display
+		FROM edges x JOIN entities e ON e.id = x.from_id
+		WHERE x.to_kind = ? AND x.to_name = ? COLLATE NOCASE`
+	args := []any{kind, name}
+	if source != "" {
+		q += ` AND (x.to_source = ? COLLATE NOCASE OR x.to_source = '')`
+		args = append(args, source)
+	}
+	if tag != "" {
+		q += ` AND x.tag = ? COLLATE NOCASE`
+		args = append(args, tag)
+	}
+	q += ` ORDER BY e.source, x.tag, e.name, x.to_source`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Reference
+	for rows.Next() {
+		var r Reference
+		if err := rows.Scan(&r.From.Kind, &r.From.Name, &r.From.Source, &r.Tag, &r.To.Kind, &r.To.Name, &r.To.Source, &r.Display); err != nil {
+			return nil, err
+		}
+		r.Direction = "incoming"
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

@@ -107,6 +107,8 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e get <kind> <name> [--source PHB] [--json]
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
 
+5e refs <kind> <name> [--source PHB] [--direction outgoing|incoming|both] [--tag spell] [--json]
+
 5e ask <query> [--retrieve-only] [--limit 8] [--json]
 5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
 5e adventure <id-or-name> get <role> <name> [--json]
@@ -364,6 +366,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 3. **`ask`.** Done. OpenAI-compatible embeddings over existing `text` columns, then optional chat completions. Same IDs.
 4. **`mcp`.** Done. Stdio server wrapping `get` / `search` / `semantic_search` / `adventure_search`.
 5. **Edition default, `--srd`, adventure-scoped lookup.** Done.
+6. **Reference navigation.** Done. `refs` and MCP `references` expose incoming and outgoing tag edges.
 
 ## Board
 
@@ -383,17 +386,24 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 - Ingest adventure catalog as kind `adventure`
 - `5e adventure` command with scoped search
 - Location chunks and npc/item appearance index
+- `refs` command and MCP `references` tool for incoming/outgoing tag edges
 
 ### Open
 
+- **Richer adventure tools:** list/filter module NPCs, locations, items, and references by chapter or location.
+- **Distribution:** easier binary installation and data/index setup.
+- **Utilities:** source/edition comparison, encounter lookup, and random-table helpers.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Follow-ups
 
-Work after adventure-scoped lookup. Do these in order unless a later item is unblocked.
+Work after reference navigation. Do these in order unless a later item is unblocked.
 
 ### Later
 
+- **Richer adventure tools:** module reports and chapter/location filters.
+- **Distribution:** install and data acquisition workflow.
+- **Utilities:** source/edition diffing, encounter lookup, and random-table rolling.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Distribution
@@ -412,4 +422,3 @@ Work after adventure-scoped lookup. Do these in order unless a later item is unb
 - Default edition is `2024`. `--edition 2014` or `all` opts out; `FIVE_E_EDITION` is the env equivalent.
 - `--srd` filters `get` / `search` / `ask` / MCP using ingested `srd`, `srd52`, and `basicRules`. Documents are excluded.
 - Adventures are a separate query context (`5e adventure`). Default search/ask stay entities + `bookSection`. `npc` is an appearance role, not a 5etools kind.
-

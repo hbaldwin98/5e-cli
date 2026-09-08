@@ -262,6 +262,38 @@ func TestAdventure_searchAndGet(t *testing.T) {
 	}
 }
 
+func TestRefs_JSONSupportsBothDirections(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "item", Name: "Test Wand", Source: "DMG", JSON: json.RawMessage(`{}`), Text: "wand", Edges: []parse.Edge{{Tag: "spell", ToKind: "spell", ToName: "Testbolt", ToSource: "PHB"}}},
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "bolt"},
+		{Kind: "spell", Name: "Otherbolt", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "bolt", Edges: []parse.Edge{{Tag: "spell", ToKind: "spell", ToName: "Testbolt", ToSource: "PHB"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+	out, err := runCLI("--index", index, "--data", data, "--json", "refs", "spell", "Testbolt", "--source", "PHB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refs []map[string]any
+	if err := json.Unmarshal([]byte(out), &refs); err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs[0]["direction"] != "incoming" {
+		t.Fatalf("refs: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "refs", "item", "Test Wand", "--direction", "outgoing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"to":{"kind":"spell","name":"Testbolt","source":"PHB"}`) {
+		t.Fatalf("outgoing ref: %s", out)
+	}
+}
+
 func TestMCP_requiresIndex(t *testing.T) {
 	_, err := runCLI("--index", filepath.Join(t.TempDir(), "missing.sqlite"), "--data", filepath.Join(t.TempDir(), "missing-data"), "mcp")
 	if err == nil || !strings.Contains(err.Error(), "no index") {

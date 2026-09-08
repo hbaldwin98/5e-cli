@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -192,6 +193,59 @@ func searchCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringVar(&kind, "kind", "", "restrict to one entity kind")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
+	return cmd
+}
+
+func refsCmd(opt *options) *cobra.Command {
+	var source, direction, tag string
+	cmd := &cobra.Command{
+		Use:   "refs <kind> <name>",
+		Short: "Show references to or from an entity",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			kind, name := args[0], strings.Join(args[1:], " ")
+			ents, err := st.Lookup(kind, name, source)
+			if err != nil {
+				return err
+			}
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
+			}
+			if opt.SRD {
+				ents = store.SRDOnly(ents)
+			}
+			if len(ents) == 0 {
+				return fmt.Errorf("no %s named %q", kind, name)
+			}
+			if len(ents) > 1 {
+				return writeAmbiguous(cmd, opt.JSON, ents)
+			}
+			refs, err := st.References(ents[0].Kind, ents[0].Name, ents[0].Source, direction, tag)
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), refs)
+			}
+			return writeReferences(cmd.OutOrStdout(), refs)
+		},
+	}
+	cmd.Flags().StringVar(&source, "source", "", "disambiguate by 5etools source id")
+	cmd.Flags().StringVar(&direction, "direction", "both", "outgoing, incoming, or both")
+	cmd.Flags().StringVar(&tag, "tag", "", "restrict to a tag such as spell or creature")
 	return cmd
 }
 
@@ -395,6 +449,22 @@ func writeAskHits(w io.Writer, hits []ask.Hit) error {
 		fmt.Fprintf(w, "- %s  %s  (%s)\n", h.Kind, h.Name, h.Source)
 	}
 	return nil
+}
+
+func writeReferences(w io.Writer, refs []store.Reference) error {
+	if len(refs) == 0 {
+		fmt.Fprintln(w, "no references")
+		return nil
+	}
+	var markdown bytes.Buffer
+	fmt.Fprintln(&markdown, "| Direction | Tag | From | To |")
+	fmt.Fprintln(&markdown, "| --- | --- | --- | --- |")
+	for _, ref := range refs {
+		from := fmt.Sprintf("%s %s (%s)", ref.From.Kind, ref.From.Name, ref.From.Source)
+		to := fmt.Sprintf("%s %s (%s)", ref.To.Kind, ref.To.Name, ref.To.Source)
+		fmt.Fprintf(&markdown, "| %s | %s | %s | %s |\n", markdownCell(ref.Direction), markdownCell(ref.Tag), markdownCell(from), markdownCell(to))
+	}
+	return renderMarkdown(w, markdown.String())
 }
 
 func splitSources(in []string) []string {

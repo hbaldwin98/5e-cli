@@ -58,6 +58,10 @@ func New(st *store.Store, opt Options) *mcp.Server {
 		Description: "Fuzzy name and full-text search of the rules corpus (entities and book sections). Use adventure_search for module text and NPCs.",
 	}, h.search)
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "references",
+		Description: "Show tagged references to or from one entity. Use get to follow a returned reference.",
+	}, h.references)
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
 		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Skips adventure module text.",
 	}, h.semanticSearch)
@@ -125,6 +129,45 @@ type searchInput struct {
 
 type searchOutput struct {
 	Hits []search.Hit `json:"hits"`
+}
+
+type referencesInput struct {
+	Kind      string `json:"kind" jsonschema:"entity kind such as spell, monster, or item"`
+	Name      string `json:"name" jsonschema:"entity name"`
+	Source    string `json:"source,omitempty" jsonschema:"optional 5etools source id"`
+	Direction string `json:"direction,omitempty" jsonschema:"outgoing, incoming, or both"`
+	Tag       string `json:"tag,omitempty" jsonschema:"optional tag filter such as spell or creature"`
+}
+
+type referencesOutput struct {
+	References []store.Reference `json:"references"`
+}
+
+func (h *handler) references(_ context.Context, _ *mcp.CallToolRequest, in referencesInput) (*mcp.CallToolResult, referencesOutput, error) {
+	ents, err := h.st.Lookup(in.Kind, in.Name, in.Source)
+	if err != nil {
+		return nil, referencesOutput{}, err
+	}
+	if in.Source == "" {
+		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
+	}
+	if h.srd {
+		ents = store.SRDOnly(ents)
+	}
+	if len(ents) == 0 {
+		return nil, referencesOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
+	}
+	if len(ents) > 1 {
+		return nil, referencesOutput{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
+	}
+	refs, err := h.st.References(ents[0].Kind, ents[0].Name, ents[0].Source, in.Direction, in.Tag)
+	if err != nil {
+		return nil, referencesOutput{}, err
+	}
+	if refs == nil {
+		refs = []store.Reference{}
+	}
+	return nil, referencesOutput{References: refs}, nil
 }
 
 func (h *handler) search(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {

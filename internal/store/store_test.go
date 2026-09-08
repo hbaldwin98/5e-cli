@@ -145,3 +145,29 @@ func TestAppearanceSet(t *testing.T) {
 		t.Fatalf("%v", seen)
 	}
 }
+
+func TestReferences_incomingAndOutgoing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "item", Name: "Test Wand", Source: "DMG", JSON: json.RawMessage(`{}`), Text: "wand", Edges: []parse.Edge{{Tag: "spell", ToKind: "spell", ToName: "Testbolt", ToSource: "PHB"}}},
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "bolt"},
+		{Kind: "spell", Name: "Otherbolt", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "bolt", Edges: []parse.Edge{{Tag: "spell", ToKind: "spell", ToName: "Testbolt", ToSource: "PHB"}}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	out, err := st.References("item", "Test Wand", "DMG", "outgoing", "")
+	if err != nil || len(out) != 1 || out[0].To.Name != "Testbolt" || out[0].Direction != "outgoing" {
+		t.Fatalf("outgoing: %v %+v", err, out)
+	}
+	in, err := st.References("spell", "Testbolt", "PHB", "incoming", "spell")
+	if err != nil || len(in) != 2 || in[0].Direction != "incoming" {
+		t.Fatalf("incoming: %v %+v", err, in)
+	}
+}
