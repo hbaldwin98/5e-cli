@@ -41,7 +41,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), getCmd(opt), searchCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -101,6 +101,32 @@ func ingestCmd(opt *options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "rebuild even if the data fingerprint matches")
 	return cmd
+}
+
+func doctorCmd(opt *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check local data and index setup",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			report := paths.Inspect(data, index)
+			if opt.JSON {
+				if err := writeJSON(cmd.OutOrStdout(), report); err != nil {
+					return err
+				}
+			} else if err := writeDoctorReport(cmd.OutOrStdout(), report); err != nil {
+				return err
+			}
+			if !report.Ready {
+				return errExit{code: 1, msg: report.Issue}
+			}
+			return nil
+		},
+	}
 }
 
 func getCmd(opt *options) *cobra.Command {
@@ -484,6 +510,43 @@ func writeReferences(w io.Writer, refs []store.Reference) error {
 		fmt.Fprintf(&markdown, "| %s | %s | %s | %s |\n", markdownCell(ref.Direction), markdownCell(ref.Tag), markdownCell(from), markdownCell(to))
 	}
 	return renderMarkdown(w, markdown.String())
+}
+
+func writeDoctorReport(w io.Writer, report paths.Inspection) error {
+	dataStatus := "missing"
+	if report.DataExists {
+		dataStatus = "ready"
+	}
+	indexStatus := "missing"
+	if report.IndexExists {
+		indexStatus = "found"
+	}
+	status := "not ready"
+	if report.Ready {
+		status = "ready"
+	} else if report.DataExists && report.IndexExists {
+		status = "stale or invalid"
+	}
+	fmt.Fprintf(w, "Data:  %s [%s]\n", report.DataPath, dataStatus)
+	fmt.Fprintf(w, "Index: %s [%s]\n", report.IndexPath, indexStatus)
+	if report.DataFingerprint != "" {
+		fmt.Fprintf(w, "Data fingerprint:  %s\n", shortFingerprint(report.DataFingerprint))
+	}
+	if report.IndexFingerprint != "" {
+		fmt.Fprintf(w, "Index fingerprint: %s\n", shortFingerprint(report.IndexFingerprint))
+	}
+	fmt.Fprintf(w, "Status: %s\n", status)
+	if report.Issue != "" {
+		fmt.Fprintf(w, "Issue:  %s\n", report.Issue)
+	}
+	return nil
+}
+
+func shortFingerprint(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 func writeAdventureReport(w io.Writer, report adventure.Report) error {

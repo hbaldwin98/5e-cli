@@ -11,6 +11,19 @@ import (
 
 const submoduleData = "third_party/5etools-src/data"
 
+// Inspection describes whether the local data and derived index are ready.
+type Inspection struct {
+	DataPath         string `json:"dataPath"`
+	DataExists       bool   `json:"dataExists"`
+	DataFingerprint  string `json:"dataFingerprint,omitempty"`
+	IndexPath        string `json:"indexPath"`
+	IndexExists      bool   `json:"indexExists"`
+	IndexFingerprint string `json:"indexFingerprint,omitempty"`
+	Current          bool   `json:"current"`
+	Ready            bool   `json:"ready"`
+	Issue            string `json:"issue,omitempty"`
+}
+
 // DefaultDataDir finds 5etools data/ from FIVE_E_DATA, cwd, or the executable.
 func DefaultDataDir() string {
 	if v := os.Getenv("FIVE_E_DATA"); v != "" {
@@ -59,6 +72,55 @@ func EmbeddingsForIndex(index string) string {
 		return v
 	}
 	return filepath.Join(filepath.Dir(index), "embeddings.sqlite")
+}
+
+// Inspect reports setup problems without requiring the caller to parse an
+// OpenIndex error. Missing data or an index is a normal diagnostic result.
+func Inspect(dataDir, index string) Inspection {
+	r := Inspection{DataPath: dataDir, IndexPath: index}
+
+	dataInfo, dataErr := os.Stat(dataDir)
+	if dataErr == nil && dataInfo.IsDir() {
+		r.DataExists = true
+		if fp, err := ingest.Fingerprint(dataDir); err == nil {
+			r.DataFingerprint = fp
+		} else {
+			r.Issue = fmt.Sprintf("could not fingerprint data: %v", err)
+		}
+	}
+
+	indexInfo, indexErr := os.Stat(index)
+	if indexErr == nil {
+		r.IndexExists = true
+		if indexInfo.Size() == 0 {
+			r.Issue = fmt.Sprintf("empty index at %s; run `5e ingest`", index)
+		} else if st, err := store.Open(index); err != nil {
+			r.Issue = fmt.Sprintf("could not open index: %v", err)
+		} else {
+			meta, err := st.Meta()
+			_ = st.Close()
+			if err != nil {
+				r.Issue = fmt.Sprintf("could not read index metadata: %v", err)
+			} else {
+				r.IndexFingerprint = meta.SHA
+				r.Current = r.DataExists && r.DataFingerprint != "" && r.DataFingerprint == meta.SHA
+			}
+		}
+	}
+
+	if !r.DataExists {
+		if dataDir == "" {
+			r.Issue = "data directory not set; use --data or FIVE_E_DATA, or run `make data`"
+		} else {
+			r.Issue = fmt.Sprintf("data directory %s not found; use --data or FIVE_E_DATA, or run `make data`", dataDir)
+		}
+	} else if !r.IndexExists {
+		r.Issue = fmt.Sprintf("no index at %s; run `5e ingest`", index)
+	} else if r.Issue == "" && !r.Current {
+		r.Issue = fmt.Sprintf("index is stale; run `5e ingest` (data %s, index %s)", short(r.DataFingerprint), short(r.IndexFingerprint))
+	}
+	r.Ready = r.DataExists && r.IndexExists && r.Current && r.Issue == ""
+	return r
 }
 
 // OpenIndex opens the sqlite index and optionally refuses a stale fingerprint.

@@ -103,6 +103,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e ingest
 5e ingest --force
 5e ingest --data /path/to/5etools-src/data
+5e doctor [--json]
 
 5e get <kind> <name> [--source PHB] [--json]
 5e search <query> [--kind spell] [--source PHB,XPHB] [--json] [--limit 10]
@@ -369,6 +370,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 5. **Edition default, `--srd`, adventure-scoped lookup.** Done.
 6. **Reference navigation.** Done. `refs` and MCP `references` expose incoming and outgoing tag edges.
 7. **Richer adventure tools.** Done. List module chapters, locations, and NPC/item appearances with filters.
+8. **Distribution workflow.** Done. `doctor` diagnoses local setup; Make targets cover build, install, data, ingest, and tests.
 
 ## Board
 
@@ -393,23 +395,23 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 
 ### Open
 
-- **Distribution:** easier binary installation and data/index setup.
 - **Utilities:** source/edition comparison, encounter lookup, and random-table helpers.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Follow-ups
 
-Work after richer adventure tools. Do these in order unless a later item is unblocked.
+Work after distribution workflow. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **Distribution:** install and data acquisition workflow.
 - **Utilities:** source/edition diffing, encounter lookup, and random-table rolling.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Distribution
 
-- Source checkout: submodule (or `--data`) + `go build`.
+- Source checkout: `make setup` initializes the shallow submodule with sparse `data/`, builds the binary, and ingests into the user cache. `make data`, `make build`, `make install`, `make ingest`, `make doctor`, and `make test` are also available independently.
+- `5e doctor` reports resolved data/index paths, fingerprints, and readiness. It emits JSON with `--json` and exits non-zero when setup is incomplete or stale.
+- Data can be supplied with `--data` or `FIVE_E_DATA`; the derived index can be supplied with `--index`. The default index is under `$XDG_CACHE_HOME/5e-cli/` or `~/.cache/5e-cli/`.
 - Releases: ship the binary only. Document that the user must clone 5etools-src (or this repo with submodules) and run `5e ingest --data …`.
 - Do not attach `data/` or `index.sqlite` to GitHub releases.
 
