@@ -891,7 +891,9 @@ func writeAmbiguous(cmd *cobra.Command, asJSON bool, ents []store.Entity) error 
 		hits = append(hits, hit{Kind: e.Kind, Name: e.Name, Source: e.Source})
 	}
 	if asJSON {
-		_ = writeJSON(cmd.OutOrStdout(), map[string]any{"error": "ambiguous", "matches": hits})
+		if err := writeJSON(cmd.OutOrStdout(), map[string]any{"error": "ambiguous", "matches": hits}); err != nil {
+			return err
+		}
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(), "multiple matches; pass --source:\n")
 		for _, e := range ents {

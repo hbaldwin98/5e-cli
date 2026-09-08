@@ -5,12 +5,17 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
 	DefaultBaseURL    = "https://api.openai.com/v1"
 	DefaultEmbedModel = "text-embedding-3-small"
 	DefaultAskModel   = "gpt-4o-mini"
+
+	// DefaultTimeout bounds one embedding or chat request. http.DefaultClient
+	// has no timeout, so a stalled connection would hang the CLI forever.
+	DefaultTimeout = 120 * time.Second
 )
 
 // Config is an OpenAI-compatible embedding and chat backend.
@@ -46,7 +51,7 @@ func (c Config) withDefaults() Config {
 		c.AskModel = DefaultAskModel
 	}
 	if c.HTTPClient == nil {
-		c.HTTPClient = http.DefaultClient
+		c.HTTPClient = &http.Client{Timeout: DefaultTimeout}
 	}
 	return c
 }

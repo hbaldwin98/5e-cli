@@ -107,3 +107,28 @@ func encounterStore(t *testing.T) *store.Store {
 	}
 	return st
 }
+
+func TestSizeMatches_normalizesBothSides(t *testing.T) {
+	for _, tc := range []struct {
+		value, wanted string
+		want          bool
+	}{
+		{"S", "small", true},
+		{"S", "s", true},
+		{"Small", "s", true},
+		{"Small", "small", true},
+		{"small", "S", true},
+		{"S", "large", false},
+		{"Small", "l", false},
+	} {
+		if got := sizeMatches(tc.value, tc.wanted); got != tc.want {
+			t.Fatalf("sizeMatches(%q, %q) = %v, want %v", tc.value, tc.wanted, got, tc.want)
+		}
+	}
+}
+
+func TestSizes_rendersDisplayNames(t *testing.T) {
+	if got := sizes(map[string]any{"size": []any{"S", "Medium"}}); got != "Small, Medium" {
+		t.Fatalf("got %q", got)
+	}
+}

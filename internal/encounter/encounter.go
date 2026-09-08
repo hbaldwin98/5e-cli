@@ -195,27 +195,29 @@ func hasSize(obj map[string]any, wanted string) bool {
 	return false
 }
 
+// sizeMatches normalizes both sides, so data written as "S" or "Small" both
+// answer to a --size of "s" or "small".
 func sizeMatches(value, wanted string) bool {
+	return sizeName(value) == sizeName(wanted)
+}
+
+var sizeNames = map[string]string{
+	"t": "tiny", "s": "small", "m": "medium", "l": "large", "h": "huge", "g": "gargantuan",
+}
+
+func sizeName(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	names := map[string]string{
-		"t": "tiny", "s": "small", "m": "medium", "l": "large", "h": "huge", "g": "gargantuan",
+	if name := sizeNames[value]; name != "" {
+		return name
 	}
-	if names[value] != "" {
-		return value == wanted || names[value] == wanted
-	}
-	return value == wanted
+	return value
 }
 
 func sizes(obj map[string]any) string {
 	var values []string
 	appendSize := func(value string) {
-		value = strings.ToLower(strings.TrimSpace(value))
-		names := map[string]string{"t": "Tiny", "s": "Small", "m": "Medium", "l": "Large", "h": "Huge", "g": "Gargantuan"}
-		if name := names[value]; name != "" {
-			value = name
-		}
-		if value != "" {
-			values = append(values, value)
+		if name := sizeName(value); name != "" {
+			values = append(values, strings.ToUpper(name[:1])+name[1:])
 		}
 	}
 	switch value := obj["size"].(type) {
