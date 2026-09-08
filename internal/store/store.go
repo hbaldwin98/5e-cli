@@ -270,6 +270,15 @@ func insertAppearances(tx *sql.Tx, appearances []parse.Appearance) error {
 // AdventureAppearances returns module NPC/item appearances filtered by role,
 // chapter, and location. Empty filters match all values.
 func (s *Store) AdventureAppearances(adventure, role, chapter, location string) ([]parse.Appearance, error) {
+	q, args := adventureAppearanceQuery(adventure, role, chapter, location)
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanAppearances(rows)
+}
+
+func adventureAppearanceQuery(adventure, role, chapter, location string) (string, []any) {
 	q := `SELECT adventure, role, kind, name, source, chapter, location FROM appearances WHERE adventure = ? COLLATE NOCASE`
 	args := []any{adventure}
 	if role != "" {
@@ -285,10 +294,10 @@ func (s *Store) AdventureAppearances(adventure, role, chapter, location string) 
 		args = append(args, location)
 	}
 	q += ` ORDER BY role, name, source, chapter, location`
-	rows, err := s.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
+	return q, args
+}
+
+func scanAppearances(rows *sql.Rows) ([]parse.Appearance, error) {
 	defer rows.Close()
 	var out []parse.Appearance
 	for rows.Next() {
@@ -390,6 +399,15 @@ func (s *Store) Lookup(kind, name, source string) ([]Entity, error) {
 
 // GetDocument returns book/adventure sections matching kind+section, optionally parent/source.
 func (s *Store) GetDocument(kind, section, parent string) ([]Document, error) {
+	q, args := documentQuery(kind, section, parent)
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanDocuments(rows)
+}
+
+func documentQuery(kind, section, parent string) (string, []any) {
 	q := `SELECT id, kind, parent_id, section, json, text FROM documents WHERE kind = ?`
 	args := []any{kind}
 	if section != "" {
@@ -401,10 +419,10 @@ func (s *Store) GetDocument(kind, section, parent string) ([]Document, error) {
 		args = append(args, parent)
 	}
 	q += ` ORDER BY parent_id`
-	rows, err := s.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
+	return q, args
+}
+
+func scanDocuments(rows *sql.Rows) ([]Document, error) {
 	defer rows.Close()
 	var out []Document
 	for rows.Next() {

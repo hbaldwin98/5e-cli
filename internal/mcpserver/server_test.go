@@ -158,6 +158,27 @@ func TestAdventureList_returnsFilteredReport(t *testing.T) {
 	if len(apps) != 1 {
 		t.Fatalf("report: %#v", out)
 	}
+
+	res, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "adventure_list",
+		Arguments: map[string]any{
+			"adventure": "LMoP",
+			"kind":      "all",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	out = toolJSON(t, res)
+	if chapters, _ := out["chapters"].([]any); len(chapters) != 1 {
+		t.Fatalf("chapters: %#v", out)
+	}
+	if appearances, _ := out["appearances"].([]any); len(appearances) != 1 {
+		t.Fatalf("appearances: %#v", out)
+	}
 }
 
 func TestSemanticSearch_doesNotCallChat(t *testing.T) {

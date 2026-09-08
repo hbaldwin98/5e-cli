@@ -24,38 +24,82 @@ type Report struct {
 
 // List returns adventure contents filtered by role, chapter, and location.
 func List(st *store.Store, adventureID, role, chapter, location string) (Report, error) {
+	role, err := normalizeRole(role)
+	if err != nil {
+		return Report{}, err
+	}
+	switch role {
+	case "location":
+		return listLocationReport(st, adventureID, chapter, location)
+	case "npc", "item":
+		return listAppearanceReport(st, adventureID, role, chapter, location)
+	default:
+		return listAllReport(st, adventureID, chapter, location)
+	}
+}
+
+func normalizeRole(role string) (string, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
-	if role == "all" {
-		role = ""
+	switch role {
+	case "all":
+		return "", nil
+	case "", "npc", "item", "location":
+		return role, nil
+	default:
+		return "", fmt.Errorf("unknown adventure role %q", role)
 	}
-	if role != "" && role != "npc" && role != "item" && role != "location" {
-		return Report{}, fmt.Errorf("unknown adventure role %q", role)
+}
+
+func listLocationReport(st *store.Store, adventureID, chapter, location string) (Report, error) {
+	chapters, locations, err := listSections(st, adventureID, chapter, location)
+	if err != nil {
+		return Report{}, err
 	}
-	report := Report{}
-	if role == "" || role == "location" {
-		chapters, err := st.GetDocument("adventureSection", chapter, adventureID)
-		if err != nil {
-			return Report{}, err
-		}
-		locations, err := st.GetDocument("adventureLocation", location, adventureID)
-		if err != nil {
-			return Report{}, err
-		}
-		for _, section := range chapters {
-			report.Chapters = append(report.Chapters, Section{Kind: section.Kind, Name: section.Section, Source: section.ParentID})
-		}
-		for _, section := range locations {
-			report.Locations = append(report.Locations, Section{Kind: section.Kind, Name: section.Section, Source: section.ParentID})
-		}
+	return Report{Chapters: chapters, Locations: locations}, nil
+}
+
+func listAppearanceReport(st *store.Store, adventureID, role, chapter, location string) (Report, error) {
+	appearances, err := st.AdventureAppearances(adventureID, role, chapter, location)
+	if err != nil {
+		return Report{}, err
 	}
-	if role == "" || role == "npc" || role == "item" {
-		appearances, err := st.AdventureAppearances(adventureID, role, chapter, location)
-		if err != nil {
-			return Report{}, err
-		}
-		report.Appearances = appearances
+	return Report{Appearances: appearances}, nil
+}
+
+func listAllReport(st *store.Store, adventureID, chapter, location string) (Report, error) {
+	report, err := listLocationReport(st, adventureID, chapter, location)
+	if err != nil {
+		return Report{}, err
+	}
+	report.Appearances, err = st.AdventureAppearances(adventureID, "", chapter, location)
+	if err != nil {
+		return Report{}, err
 	}
 	return report, nil
+}
+
+func listSections(st *store.Store, adventureID, chapter, location string) ([]Section, []Section, error) {
+	chapters, err := st.GetDocument("adventureSection", chapter, adventureID)
+	if err != nil {
+		return nil, nil, err
+	}
+	locations, err := st.GetDocument("adventureLocation", location, adventureID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sectionIdentities(chapters), sectionIdentities(locations), nil
+}
+
+func sectionIdentities(documents []store.Document) []Section {
+	var sections []Section
+	for _, document := range documents {
+		sections = append(sections, Section{
+			Kind:   document.Kind,
+			Name:   document.Section,
+			Source: document.ParentID,
+		})
+	}
+	return sections
 }
 
 // Resolve finds a catalog adventure by title or 5etools id.

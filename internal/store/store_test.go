@@ -60,6 +60,45 @@ func TestLookup_entityAndBookSection(t *testing.T) {
 	}
 }
 
+func TestGetDocument_optionalSectionAndParentFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, nil, []parse.Document{
+		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{"name":"Holding Breath"}`), Text: "hold"},
+		{Kind: "bookSection", ParentID: "PHB", Section: "Running", JSON: json.RawMessage(`{"name":"Running"}`), Text: "run"},
+		{Kind: "bookSection", ParentID: "XPHB", Section: "Holding Breath", JSON: json.RawMessage(`{"name":"Holding Breath"}`), Text: "hold"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	tests := []struct {
+		name            string
+		section, parent string
+		want            int
+	}{
+		{name: "all", want: 3},
+		{name: "parent", parent: "phb", want: 2},
+		{name: "section", section: "running", want: 1},
+		{name: "both", section: "holding breath", parent: "PHB", want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docs, err := st.GetDocument("bookSection", tt.section, tt.parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(docs) != tt.want {
+				t.Fatalf("got %d documents: %+v", len(docs), docs)
+			}
+		})
+	}
+}
+
 func TestNames_includesSRD(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.sqlite")
 	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
@@ -150,6 +189,7 @@ func TestAdventureAppearances_filtersChapterAndLocation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.sqlite")
 	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, nil, nil, []parse.Appearance{
 		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Chapter One", Location: "Cave Mouth"},
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Orc", Source: "MM", Chapter: "Chapter One", Location: "Armory"},
 		{Adventure: "LMoP", Role: "item", Kind: "item", Name: "Potion", Source: "DMG", Chapter: "Chapter Two", Location: "Armory"},
 	})
 	if err != nil {
@@ -160,9 +200,33 @@ func TestAdventureAppearances_filtersChapterAndLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	apps, err := st.AdventureAppearances("LMoP", "npc", "Chapter One", "Cave Mouth")
-	if err != nil || len(apps) != 1 || apps[0].Name != "Goblin" {
-		t.Fatalf("filtered appearances: %v %+v", err, apps)
+	tests := []struct {
+		name              string
+		adventure, role   string
+		chapter, location string
+		want              []string
+	}{
+		{name: "all", adventure: "lmop", want: []string{"Potion", "Goblin", "Orc"}},
+		{name: "role", adventure: "LMoP", role: "npc", want: []string{"Goblin", "Orc"}},
+		{name: "chapter", adventure: "LMoP", chapter: "chapter one", want: []string{"Goblin", "Orc"}},
+		{name: "location", adventure: "LMoP", location: "ARMORY", want: []string{"Potion", "Orc"}},
+		{name: "all filters", adventure: "LMoP", role: "npc", chapter: "Chapter One", location: "Cave Mouth", want: []string{"Goblin"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apps, err := st.AdventureAppearances(tt.adventure, tt.role, tt.chapter, tt.location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(apps) != len(tt.want) {
+				t.Fatalf("got %d appearances: %+v", len(apps), apps)
+			}
+			for i, want := range tt.want {
+				if apps[i].Name != want {
+					t.Fatalf("appearance %d = %q, want %q", i, apps[i].Name, want)
+				}
+			}
+		})
 	}
 }
 

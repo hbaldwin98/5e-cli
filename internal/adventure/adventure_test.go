@@ -103,6 +103,37 @@ func TestList_filtersAdventureContents(t *testing.T) {
 	}
 }
 
+func TestList_allAndItemRoles(t *testing.T) {
+	st := testAdvStore(t)
+	defer st.Close()
+
+	report, err := List(st, "lmop", " ALL ", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Chapters) != 1 || len(report.Locations) != 1 || len(report.Appearances) != 2 {
+		t.Fatalf("all report: %+v", report)
+	}
+	if report.Appearances[0].Role != "item" || report.Appearances[1].Role != "npc" {
+		t.Fatalf("appearance order: %+v", report.Appearances)
+	}
+
+	report, err = List(st, "LMoP", "item", "cragmaw hideout", "cave mouth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Chapters) != 0 || len(report.Locations) != 0 || len(report.Appearances) != 1 {
+		t.Fatalf("item report: %+v", report)
+	}
+	if report.Appearances[0].Name != "Potion of Healing" {
+		t.Fatalf("item appearance: %+v", report.Appearances[0])
+	}
+
+	if _, err := List(st, "LMoP", "monster", "", ""); err == nil {
+		t.Fatal("expected unknown role")
+	}
+}
+
 func testAdvStore(t *testing.T) *store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "index.sqlite")
@@ -114,6 +145,7 @@ func testAdvStore(t *testing.T) *store.Store {
 		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Cave Mouth", JSON: json.RawMessage(`{}`), Text: "mouth"},
 	}, []parse.Appearance{
 		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Cragmaw Hideout", Location: "Cave Mouth"},
+		{Adventure: "LMoP", Role: "item", Kind: "item", Name: "Potion of Healing", Source: "DMG", Chapter: "Cragmaw Hideout", Location: "Cave Mouth"},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -355,6 +355,10 @@ func runAdventure(cmd *cobra.Command, opt *options, args []string, kind, chapter
 	if err != nil {
 		return err
 	}
+	return dispatchAdventure(cmd, opt, st, adv, args, kind, chapter, location, limit)
+}
+
+func dispatchAdventure(cmd *cobra.Command, opt *options, st *store.Store, adv store.Entity, args []string, kind, chapter, location string, limit int) error {
 	switch args[1] {
 	case "list":
 		return runAdventureList(cmd, opt, st, adv, kind, chapter, location)

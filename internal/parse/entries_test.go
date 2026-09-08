@@ -2,6 +2,7 @@ package parse
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -142,5 +143,60 @@ func TestAppearances_statblock(t *testing.T) {
 	}
 	if apps[1].Role != "item" || apps[1].Kind != "item" {
 		t.Fatalf("item %+v", apps[1])
+	}
+}
+
+func TestAppearances_tracksChapterAndLocationContext(t *testing.T) {
+	root := map[string]any{
+		"data": []any{
+			map[string]any{
+				"type": "section",
+				"name": "Chapter One",
+				"entries": []any{
+					"A {@item Compass|DMG} is mounted here.",
+					map[string]any{
+						"type": "entries",
+						"name": "Room A",
+						"entries": []any{
+							"A {@creature Goblin|MM} watches.",
+							map[string]any{
+								"type":   "statblock",
+								"tag":    "creature",
+								"name":   "Orc",
+								"source": "MM",
+							},
+							map[string]any{
+								"type":   "statblock",
+								"tag":    "spell",
+								"name":   "Ignored",
+								"source": "PHB",
+							},
+						},
+					},
+					map[string]any{
+						"type": "entries",
+						"name": "Room B",
+						"data": []any{"A {@item Potion|DMG} is stored here."},
+					},
+					map[string]any{
+						"type":    "section",
+						"name":    "Chapter Two",
+						"entries": []any{"A {@creature Kobold|MM} appears."},
+					},
+				},
+			},
+		},
+	}
+
+	got := Appearances("LMoP", root)
+	want := []Appearance{
+		{Adventure: "LMoP", Role: "item", Kind: "item", Name: "Compass", Source: "DMG", Chapter: "Chapter One"},
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Chapter One", Location: "Room A"},
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Orc", Source: "MM", Chapter: "Chapter One", Location: "Room A"},
+		{Adventure: "LMoP", Role: "item", Kind: "item", Name: "Potion", Source: "DMG", Chapter: "Chapter One", Location: "Room B"},
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Kobold", Source: "MM", Chapter: "Chapter Two"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("appearances:\n got %#v\nwant %#v", got, want)
 	}
 }

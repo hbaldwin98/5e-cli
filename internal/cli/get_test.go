@@ -260,6 +260,11 @@ func TestAdventure_searchAndGet(t *testing.T) {
 	if !strings.Contains(out, `"name":"Cave Mouth"`) {
 		t.Fatalf("get location: %s", out)
 	}
+
+	_, err = runCLI("--index", index, "--data", data, "adventure", "LMoP", "unknown")
+	if err == nil || !strings.Contains(err.Error(), "adventure expected search or get") {
+		t.Fatalf("unknown adventure action: %v", err)
+	}
 }
 
 func TestAdventure_listJSONFilters(t *testing.T) {
@@ -290,6 +295,16 @@ func TestAdventure_listJSONFilters(t *testing.T) {
 	apps, _ := report["appearances"].([]any)
 	if len(apps) != 1 {
 		t.Fatalf("report: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "adventure", "LMoP", "list", "--kind", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Chapters", "## Locations", "## Appearances", "Cragmaw Hideout", "Cave Mouth", "Goblin"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("human report missing %q: %s", want, out)
+		}
 	}
 }
 

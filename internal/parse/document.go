@@ -81,37 +81,54 @@ func Appearances(adventure string, root any) []Appearance {
 func collectAppearances(adv, chapter, loc string, v any, out *[]Appearance) {
 	switch t := v.(type) {
 	case string:
-		_, edges := RenderString(t)
-		for _, e := range edges {
-			if a, ok := appearanceFromEdge(adv, chapter, loc, e); ok {
-				*out = append(*out, a)
-			}
-		}
+		collectEdgeAppearances(adv, chapter, loc, t, out)
 	case []any:
 		for _, item := range t {
 			collectAppearances(adv, chapter, loc, item, out)
 		}
 	case map[string]any:
-		typ, _ := t["type"].(string)
-		name, _ := t["name"].(string)
-		nextChapter, nextLoc := chapter, loc
-		if typ == "section" && name != "" {
-			nextChapter, nextLoc = name, ""
-		} else if typ == "entries" && name != "" {
-			nextLoc = name
-		}
-		if typ == "statblock" {
-			if a, ok := appearanceFromStatblock(adv, nextChapter, nextLoc, t); ok {
-				*out = append(*out, a)
-			}
-		}
-		if entries, ok := t["entries"]; ok {
-			collectAppearances(adv, nextChapter, nextLoc, entries, out)
-		}
-		if data, ok := t["data"]; ok {
-			collectAppearances(adv, nextChapter, nextLoc, data, out)
+		collectAppearanceMap(adv, chapter, loc, t, out)
+	}
+}
+
+func collectEdgeAppearances(adv, chapter, loc, text string, out *[]Appearance) {
+	_, edges := RenderString(text)
+	for _, edge := range edges {
+		if appearance, ok := appearanceFromEdge(adv, chapter, loc, edge); ok {
+			*out = append(*out, appearance)
 		}
 	}
+}
+
+func collectAppearanceMap(adv, chapter, loc string, t map[string]any, out *[]Appearance) {
+	typ, _ := t["type"].(string)
+	name, _ := t["name"].(string)
+	nextChapter, nextLoc := appearanceContext(chapter, loc, typ, name)
+	if typ == "statblock" {
+		if appearance, ok := appearanceFromStatblock(adv, nextChapter, nextLoc, t); ok {
+			*out = append(*out, appearance)
+		}
+	}
+	if entries, ok := t["entries"]; ok {
+		collectAppearances(adv, nextChapter, nextLoc, entries, out)
+	}
+	if data, ok := t["data"]; ok {
+		collectAppearances(adv, nextChapter, nextLoc, data, out)
+	}
+}
+
+func appearanceContext(chapter, loc, typ, name string) (string, string) {
+	switch typ {
+	case "section":
+		if name != "" {
+			return name, ""
+		}
+	case "entries":
+		if name != "" {
+			return chapter, name
+		}
+	}
+	return chapter, loc
 }
 
 func appearanceFromEdge(adv, chapter, loc string, e Edge) (Appearance, bool) {
