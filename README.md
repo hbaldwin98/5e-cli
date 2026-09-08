@@ -13,6 +13,7 @@ bin/5e doctor
 bin/5e search fireball
 bin/5e get spell fireball
 bin/5e compare spell fireball --json
+bin/5e encounter goblin --type humanoid --size small
 ```
 
 `make setup` initializes the shallow 5etools submodule with only its `data/`
@@ -78,6 +79,20 @@ Compare all available source records for one entity:
 Comparison defaults to all editions so reprints can be compared directly.
 `--edition` or `FIVE_E_EDITION` restricts the records before comparison.
 `--srd` applies the same SRD filter as the other lookup commands.
+
+## Encounter Lookup
+
+Find indexed monsters by name or rules text, then narrow the results by
+challenge rating, creature type, size, source, edition, or SRD status:
+
+```sh
+5e encounter goblin --type humanoid --size small --cr 1/4
+5e encounter "fire resistance" --limit 20 --json
+5e encounter dragon --edition 2024 --srd
+```
+
+Encounter lookup filters the full monster set before applying `--limit`, so
+metadata filters do not hide later matches.
 
 ## Development
 

@@ -13,6 +13,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/compare"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
+	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
 	"github.com/hbaldwin98/5e-cli/internal/mcpserver"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
@@ -42,7 +43,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
-	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), refsCmd(opt), askCmd(opt), adventureCmd(opt), mcpCmd(opt))
 	return cmd
 }
 
@@ -271,6 +272,55 @@ func compareCmd(opt *options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids (repeatable or comma-separated)")
+	return cmd
+}
+
+func encounterCmd(opt *options) *cobra.Command {
+	var cr, creatureType, size string
+	var sources []string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "encounter <query>",
+		Short: "Find monsters for an encounter",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
+			hits, err := encounter.Search(st, encounter.Query{
+				Text:    strings.Join(args, " "),
+				CR:      cr,
+				Type:    creatureType,
+				Size:    size,
+				Sources: splitSources(sources),
+				Edition: ed,
+				SRD:     opt.SRD,
+				Limit:   limit,
+			})
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), hits)
+			}
+			return writeEncounterResults(cmd.OutOrStdout(), hits)
+		},
+	}
+	cmd.Flags().StringVar(&cr, "cr", "", "restrict to challenge rating")
+	cmd.Flags().StringVar(&creatureType, "type", "", "restrict to creature type")
+	cmd.Flags().StringVar(&size, "size", "", "restrict to creature size")
+	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
+	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
 	return cmd
 }
 
@@ -692,6 +742,21 @@ func writeComparison(w io.Writer, result compare.Result) error {
 			fmt.Fprintf(&markdown, " %s |", markdownCell(comparisonValue(value)))
 		}
 		fmt.Fprintln(&markdown)
+	}
+	return renderMarkdown(w, markdown.String())
+}
+
+func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
+	if len(hits) == 0 {
+		fmt.Fprintln(w, "no encounter matches")
+		return nil
+	}
+	var markdown bytes.Buffer
+	fmt.Fprintln(&markdown, "| Name | CR | Type | Size | Source | Match |")
+	fmt.Fprintln(&markdown, "| --- | --- | --- | --- | --- | ---: |")
+	for _, hit := range hits {
+		fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s | %.2f |\n",
+			markdownCell(hit.Name), markdownCell(hit.CR), markdownCell(hit.Type), markdownCell(hit.Size), markdownCell(hit.Source), hit.Score)
 	}
 	return renderMarkdown(w, markdown.String())
 }
