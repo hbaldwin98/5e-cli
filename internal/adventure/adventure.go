@@ -4,8 +4,59 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
+
+// Section is the lightweight identity of an adventure chapter or location.
+type Section struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// Report is the structured contents of one adventure.
+type Report struct {
+	Chapters    []Section          `json:"chapters,omitempty"`
+	Locations   []Section          `json:"locations,omitempty"`
+	Appearances []parse.Appearance `json:"appearances,omitempty"`
+}
+
+// List returns adventure contents filtered by role, chapter, and location.
+func List(st *store.Store, adventureID, role, chapter, location string) (Report, error) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "all" {
+		role = ""
+	}
+	if role != "" && role != "npc" && role != "item" && role != "location" {
+		return Report{}, fmt.Errorf("unknown adventure role %q", role)
+	}
+	report := Report{}
+	if role == "" || role == "location" {
+		chapters, err := st.GetDocument("adventureSection", chapter, adventureID)
+		if err != nil {
+			return Report{}, err
+		}
+		locations, err := st.GetDocument("adventureLocation", location, adventureID)
+		if err != nil {
+			return Report{}, err
+		}
+		for _, section := range chapters {
+			report.Chapters = append(report.Chapters, Section{Kind: section.Kind, Name: section.Section, Source: section.ParentID})
+		}
+		for _, section := range locations {
+			report.Locations = append(report.Locations, Section{Kind: section.Kind, Name: section.Section, Source: section.ParentID})
+		}
+	}
+	if role == "" || role == "npc" || role == "item" {
+		appearances, err := st.AdventureAppearances(adventureID, role, chapter, location)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Appearances = appearances
+	}
+	return report, nil
+}
 
 // Resolve finds a catalog adventure by title or 5etools id.
 func Resolve(st *store.Store, nameOrID string) (store.Entity, error) {

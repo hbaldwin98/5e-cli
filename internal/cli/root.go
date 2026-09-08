@@ -324,22 +324,24 @@ func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Co
 }
 
 func adventureCmd(opt *options) *cobra.Command {
-	var kind string
+	var kind, chapter, location string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "adventure <id-or-name> <search|get> ...",
 		Short: "Search and look up inside one adventure",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdventure(cmd, opt, args, kind, limit)
+			return runAdventure(cmd, opt, args, kind, chapter, location, limit)
 		},
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "npc, location, item, or a store kind")
+	cmd.Flags().StringVar(&chapter, "chapter", "", "restrict a list to one chapter")
+	cmd.Flags().StringVar(&location, "location", "", "restrict a list to one location")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum search hits")
 	return cmd
 }
 
-func runAdventure(cmd *cobra.Command, opt *options, args []string, kind string, limit int) error {
+func runAdventure(cmd *cobra.Command, opt *options, args []string, kind, chapter, location string, limit int) error {
 	data, index, err := resolve(opt)
 	if err != nil {
 		return err
@@ -354,6 +356,8 @@ func runAdventure(cmd *cobra.Command, opt *options, args []string, kind string, 
 		return err
 	}
 	switch args[1] {
+	case "list":
+		return runAdventureList(cmd, opt, st, adv, kind, chapter, location)
 	case "search":
 		return runAdventureSearch(cmd, opt, st, adv, strings.Join(args[2:], " "), kind, limit)
 	case "get":
@@ -361,6 +365,17 @@ func runAdventure(cmd *cobra.Command, opt *options, args []string, kind string, 
 	default:
 		return fmt.Errorf("adventure expected search or get, got %q", args[1])
 	}
+}
+
+func runAdventureList(cmd *cobra.Command, opt *options, st *store.Store, adv store.Entity, kind, chapter, location string) error {
+	report, err := adventure.List(st, adv.Source, kind, chapter, location)
+	if err != nil {
+		return err
+	}
+	if opt.JSON {
+		return writeJSON(cmd.OutOrStdout(), report)
+	}
+	return writeAdventureReport(cmd.OutOrStdout(), report)
 }
 
 func runAdventureSearch(cmd *cobra.Command, opt *options, st *store.Store, adv store.Entity, query, kind string, limit int) error {
@@ -463,6 +478,40 @@ func writeReferences(w io.Writer, refs []store.Reference) error {
 		from := fmt.Sprintf("%s %s (%s)", ref.From.Kind, ref.From.Name, ref.From.Source)
 		to := fmt.Sprintf("%s %s (%s)", ref.To.Kind, ref.To.Name, ref.To.Source)
 		fmt.Fprintf(&markdown, "| %s | %s | %s | %s |\n", markdownCell(ref.Direction), markdownCell(ref.Tag), markdownCell(from), markdownCell(to))
+	}
+	return renderMarkdown(w, markdown.String())
+}
+
+func writeAdventureReport(w io.Writer, report adventure.Report) error {
+	var markdown bytes.Buffer
+	writeSections := func(heading string, sections []adventure.Section) {
+		if len(sections) == 0 {
+			return
+		}
+		fmt.Fprintf(&markdown, "## %s\n\n", heading)
+		fmt.Fprintln(&markdown, "| Name | Source |")
+		fmt.Fprintln(&markdown, "| --- | --- |")
+		for _, section := range sections {
+			fmt.Fprintf(&markdown, "| %s | %s |\n", markdownCell(section.Name), markdownCell(section.Source))
+		}
+		fmt.Fprintln(&markdown)
+	}
+	writeSections("Chapters", report.Chapters)
+	writeSections("Locations", report.Locations)
+	if len(report.Appearances) > 0 {
+		fmt.Fprintln(&markdown, "## Appearances")
+		fmt.Fprintln(&markdown)
+		fmt.Fprintln(&markdown, "| Role | Name | Source | Chapter | Location |")
+		fmt.Fprintln(&markdown, "| --- | --- | --- | --- | --- |")
+		for _, appearance := range report.Appearances {
+			fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s |\n",
+				markdownCell(appearance.Role), markdownCell(appearance.Name), markdownCell(appearance.Source),
+				markdownCell(appearance.Chapter), markdownCell(appearance.Location))
+		}
+	}
+	if markdown.Len() == 0 {
+		fmt.Fprintln(w, "no matches")
+		return nil
 	}
 	return renderMarkdown(w, markdown.String())
 }

@@ -262,6 +262,37 @@ func TestAdventure_searchAndGet(t *testing.T) {
 	}
 }
 
+func TestAdventure_listJSONFilters(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+	}, []parse.Document{
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "hideout"},
+		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Cave Mouth", JSON: json.RawMessage(`{}`), Text: "mouth"},
+	}, []parse.Appearance{
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Cragmaw Hideout", Location: "Cave Mouth"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+	out, err := runCLI("--index", index, "--data", data, "--json", "adventure", "LMoP", "list", "--kind", "npc", "--chapter", "Cragmaw Hideout", "--location", "Cave Mouth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := report["chapters"]; ok {
+		t.Fatalf("npc report included chapters: %s", out)
+	}
+	apps, _ := report["appearances"].([]any)
+	if len(apps) != 1 {
+		t.Fatalf("report: %s", out)
+	}
+}
+
 func TestRefs_JSONSupportsBothDirections(t *testing.T) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "cli", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{

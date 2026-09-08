@@ -129,6 +129,37 @@ func TestAdventureSearch_npcAppearance(t *testing.T) {
 	}
 }
 
+func TestAdventureList_returnsFilteredReport(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{}))
+	defer session.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "adventure_list",
+		Arguments: map[string]any{
+			"adventure": "LMoP",
+			"kind":      "npc",
+			"chapter":   "Cragmaw Hideout",
+			"location":  "Cragmaw Hideout",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	out := toolJSON(t, res)
+	if _, ok := out["chapters"]; ok {
+		t.Fatalf("npc report included chapters: %#v", out)
+	}
+	apps, _ := out["appearances"].([]any)
+	if len(apps) != 1 {
+		t.Fatalf("report: %#v", out)
+	}
+}
+
 func TestSemanticSearch_doesNotCallChat(t *testing.T) {
 	st := testStore(t)
 	defer st.Close()
@@ -296,7 +327,7 @@ func testStore(t *testing.T) *store.Store {
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "hold breath"},
 		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "goblins nest in the hideout"},
 	}, []parse.Appearance{
-		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Location: "Cragmaw Hideout"},
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Cragmaw Hideout", Location: "Cragmaw Hideout"},
 	})
 	if err != nil {
 		t.Fatal(err)

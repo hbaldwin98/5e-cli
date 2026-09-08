@@ -146,6 +146,26 @@ func TestAppearanceSet(t *testing.T) {
 	}
 }
 
+func TestAdventureAppearances_filtersChapterAndLocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, nil, nil, []parse.Appearance{
+		{Adventure: "LMoP", Role: "npc", Kind: "monster", Name: "Goblin", Source: "MM", Chapter: "Chapter One", Location: "Cave Mouth"},
+		{Adventure: "LMoP", Role: "item", Kind: "item", Name: "Potion", Source: "DMG", Chapter: "Chapter Two", Location: "Armory"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	apps, err := st.AdventureAppearances("LMoP", "npc", "Chapter One", "Cave Mouth")
+	if err != nil || len(apps) != 1 || apps[0].Name != "Goblin" {
+		t.Fatalf("filtered appearances: %v %+v", err, apps)
+	}
+}
+
 func TestReferences_incomingAndOutgoing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.sqlite")
 	err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{

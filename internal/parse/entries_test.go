@@ -111,8 +111,8 @@ func TestSections_adventureLocations(t *testing.T) {
 	if len(apps) != 1 || apps[0].Name != "Goblin" || apps[0].Source != "MM" || apps[0].Role != "npc" {
 		t.Fatalf("appearances %+v", apps)
 	}
-	if apps[0].Location != "Cave Mouth" {
-		t.Fatalf("location %q", apps[0].Location)
+	if apps[0].Chapter != "Cragmaw Hideout" || apps[0].Location != "Cave Mouth" {
+		t.Fatalf("chapter/location %q/%q", apps[0].Chapter, apps[0].Location)
 	}
 }
 

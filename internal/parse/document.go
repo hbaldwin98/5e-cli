@@ -62,56 +62,59 @@ func collectSections(kind, parentID string, v any, out *[]Document) {
 
 // Appearance is a creature or item mentioned in an adventure.
 type Appearance struct {
-	Adventure string
-	Role      string
-	Kind      string
-	Name      string
-	Source    string
-	Location  string
+	Adventure string `json:"adventure"`
+	Role      string `json:"role"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Source    string `json:"source,omitempty"`
+	Chapter   string `json:"chapter,omitempty"`
+	Location  string `json:"location,omitempty"`
 }
 
 // Appearances extracts npc/item mentions from an adventure file.
 func Appearances(adventure string, root any) []Appearance {
 	var out []Appearance
-	collectAppearances(adventure, "", root, &out)
+	collectAppearances(adventure, "", "", root, &out)
 	return out
 }
 
-func collectAppearances(adv, loc string, v any, out *[]Appearance) {
+func collectAppearances(adv, chapter, loc string, v any, out *[]Appearance) {
 	switch t := v.(type) {
 	case string:
 		_, edges := RenderString(t)
 		for _, e := range edges {
-			if a, ok := appearanceFromEdge(adv, loc, e); ok {
+			if a, ok := appearanceFromEdge(adv, chapter, loc, e); ok {
 				*out = append(*out, a)
 			}
 		}
 	case []any:
 		for _, item := range t {
-			collectAppearances(adv, loc, item, out)
+			collectAppearances(adv, chapter, loc, item, out)
 		}
 	case map[string]any:
 		typ, _ := t["type"].(string)
 		name, _ := t["name"].(string)
-		nextLoc := loc
-		if (typ == "section" || typ == "entries") && name != "" {
+		nextChapter, nextLoc := chapter, loc
+		if typ == "section" && name != "" {
+			nextChapter, nextLoc = name, ""
+		} else if typ == "entries" && name != "" {
 			nextLoc = name
 		}
 		if typ == "statblock" {
-			if a, ok := appearanceFromStatblock(adv, nextLoc, t); ok {
+			if a, ok := appearanceFromStatblock(adv, nextChapter, nextLoc, t); ok {
 				*out = append(*out, a)
 			}
 		}
 		if entries, ok := t["entries"]; ok {
-			collectAppearances(adv, nextLoc, entries, out)
+			collectAppearances(adv, nextChapter, nextLoc, entries, out)
 		}
 		if data, ok := t["data"]; ok {
-			collectAppearances(adv, nextLoc, data, out)
+			collectAppearances(adv, nextChapter, nextLoc, data, out)
 		}
 	}
 }
 
-func appearanceFromEdge(adv, loc string, e Edge) (Appearance, bool) {
+func appearanceFromEdge(adv, chapter, loc string, e Edge) (Appearance, bool) {
 	role := appearanceRole(e.Tag)
 	if role == "" || e.ToName == "" {
 		return Appearance{}, false
@@ -122,11 +125,12 @@ func appearanceFromEdge(adv, loc string, e Edge) (Appearance, bool) {
 		Kind:      e.ToKind,
 		Name:      e.ToName,
 		Source:    e.ToSource,
+		Chapter:   chapter,
 		Location:  loc,
 	}, true
 }
 
-func appearanceFromStatblock(adv, loc string, t map[string]any) (Appearance, bool) {
+func appearanceFromStatblock(adv, chapter, loc string, t map[string]any) (Appearance, bool) {
 	tag, _ := t["tag"].(string)
 	name, _ := t["name"].(string)
 	source, _ := t["source"].(string)
@@ -144,6 +148,7 @@ func appearanceFromStatblock(adv, loc string, t map[string]any) (Appearance, boo
 		Kind:      kind,
 		Name:      name,
 		Source:    source,
+		Chapter:   chapter,
 		Location:  loc,
 	}, true
 }

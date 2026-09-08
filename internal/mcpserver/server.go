@@ -69,6 +69,10 @@ func New(st *store.Store, opt Options) *mcp.Server {
 		Name:        "adventure_search",
 		Description: "Search inside one adventure. Kind may be npc, location, or item. npc is every creature mentioned in the module, including MM reprints.",
 	}, h.adventureSearch)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "adventure_list",
+		Description: "List an adventure's chapters, locations, and NPC/item appearances, optionally filtered by role, chapter, or location.",
+	}, h.adventureList)
 	return srv
 }
 
@@ -239,4 +243,23 @@ func (h *handler) adventureSearch(_ context.Context, _ *mcp.CallToolRequest, in 
 		hits = []search.Hit{}
 	}
 	return nil, searchOutput{Hits: hits}, nil
+}
+
+type adventureListInput struct {
+	Adventure string `json:"adventure" jsonschema:"adventure id or catalog title such as LMoP"`
+	Kind      string `json:"kind,omitempty" jsonschema:"optional role: npc, location, item, or all"`
+	Chapter   string `json:"chapter,omitempty" jsonschema:"optional chapter name"`
+	Location  string `json:"location,omitempty" jsonschema:"optional location name"`
+}
+
+func (h *handler) adventureList(_ context.Context, _ *mcp.CallToolRequest, in adventureListInput) (*mcp.CallToolResult, adventure.Report, error) {
+	adv, err := adventure.Resolve(h.st, in.Adventure)
+	if err != nil {
+		return nil, adventure.Report{}, err
+	}
+	report, err := adventure.List(h.st, adv.Source, in.Kind, in.Chapter, in.Location)
+	if err != nil {
+		return nil, adventure.Report{}, err
+	}
+	return nil, report, nil
 }

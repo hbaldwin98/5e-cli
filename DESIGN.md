@@ -112,6 +112,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e ask <query> [--retrieve-only] [--limit 8] [--json]
 5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
 5e adventure <id-or-name> get <role> <name> [--json]
+5e adventure <id-or-name> list [--kind npc|location|item] [--chapter NAME] [--location NAME] [--json]
 5e mcp
 ```
 
@@ -367,6 +368,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 4. **`mcp`.** Done. Stdio server wrapping `get` / `search` / `semantic_search` / `adventure_search`.
 5. **Edition default, `--srd`, adventure-scoped lookup.** Done.
 6. **Reference navigation.** Done. `refs` and MCP `references` expose incoming and outgoing tag edges.
+7. **Richer adventure tools.** Done. List module chapters, locations, and NPC/item appearances with filters.
 
 ## Board
 
@@ -387,21 +389,20 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 - `5e adventure` command with scoped search
 - Location chunks and npc/item appearance index
 - `refs` command and MCP `references` tool for incoming/outgoing tag edges
+- `adventure list` command and MCP `adventure_list` report with chapter/location filters
 
 ### Open
 
-- **Richer adventure tools:** list/filter module NPCs, locations, items, and references by chapter or location.
 - **Distribution:** easier binary installation and data/index setup.
 - **Utilities:** source/edition comparison, encounter lookup, and random-table helpers.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.
 
 ## Follow-ups
 
-Work after reference navigation. Do these in order unless a later item is unblocked.
+Work after richer adventure tools. Do these in order unless a later item is unblocked.
 
 ### Later
 
-- **Richer adventure tools:** module reports and chapter/location filters.
 - **Distribution:** install and data acquisition workflow.
 - **Utilities:** source/edition diffing, encounter lookup, and random-table rolling.
 - **Homebrew (deferred):** extra JSON files in a user dir, same parser.

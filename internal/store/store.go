@@ -74,8 +74,9 @@ CREATE TABLE appearances (
   kind      TEXT NOT NULL,
   name      TEXT NOT NULL,
   source    TEXT NOT NULL DEFAULT '',
+  chapter   TEXT NOT NULL DEFAULT '',
   location  TEXT NOT NULL DEFAULT '',
-  UNIQUE (adventure, role, kind, name, source, location)
+  UNIQUE (adventure, role, kind, name, source, chapter, location)
 );
 `
 
@@ -253,17 +254,51 @@ func insertDocuments(tx *sql.Tx, docs []parse.Document) error {
 }
 
 func insertAppearances(tx *sql.Tx, appearances []parse.Appearance) error {
-	insApp, err := tx.Prepare(`INSERT OR IGNORE INTO appearances (adventure, role, kind, name, source, location) VALUES (?, ?, ?, ?, ?, ?)`)
+	insApp, err := tx.Prepare(`INSERT OR IGNORE INTO appearances (adventure, role, kind, name, source, chapter, location) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer insApp.Close()
 	for _, a := range appearances {
-		if _, err := insApp.Exec(a.Adventure, a.Role, a.Kind, a.Name, a.Source, a.Location); err != nil {
+		if _, err := insApp.Exec(a.Adventure, a.Role, a.Kind, a.Name, a.Source, a.Chapter, a.Location); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// AdventureAppearances returns module NPC/item appearances filtered by role,
+// chapter, and location. Empty filters match all values.
+func (s *Store) AdventureAppearances(adventure, role, chapter, location string) ([]parse.Appearance, error) {
+	q := `SELECT adventure, role, kind, name, source, chapter, location FROM appearances WHERE adventure = ? COLLATE NOCASE`
+	args := []any{adventure}
+	if role != "" {
+		q += ` AND role = ?`
+		args = append(args, role)
+	}
+	if chapter != "" {
+		q += ` AND chapter = ? COLLATE NOCASE`
+		args = append(args, chapter)
+	}
+	if location != "" {
+		q += ` AND location = ? COLLATE NOCASE`
+		args = append(args, location)
+	}
+	q += ` ORDER BY role, name, source, chapter, location`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []parse.Appearance
+	for rows.Next() {
+		var a parse.Appearance
+		if err := rows.Scan(&a.Adventure, &a.Role, &a.Kind, &a.Name, &a.Source, &a.Chapter, &a.Location); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 func dsn(path string) string {
@@ -355,8 +390,12 @@ func (s *Store) Lookup(kind, name, source string) ([]Entity, error) {
 
 // GetDocument returns book/adventure sections matching kind+section, optionally parent/source.
 func (s *Store) GetDocument(kind, section, parent string) ([]Document, error) {
-	q := `SELECT id, kind, parent_id, section, json, text FROM documents WHERE kind = ? AND section = ? COLLATE NOCASE`
-	args := []any{kind, section}
+	q := `SELECT id, kind, parent_id, section, json, text FROM documents WHERE kind = ?`
+	args := []any{kind}
+	if section != "" {
+		q += ` AND section = ? COLLATE NOCASE`
+		args = append(args, section)
+	}
 	if parent != "" {
 		q += ` AND parent_id = ? COLLATE NOCASE`
 		args = append(args, parent)
