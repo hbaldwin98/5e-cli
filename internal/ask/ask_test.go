@@ -1139,3 +1139,60 @@ func TestRetrieve_adventureOnlyExcludesTheRulebooks(t *testing.T) {
 		}
 	}
 }
+
+func TestClient_extractsTheAPIErrorMessageInsteadOfDumpingRawJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		// The API's own error text, as OpenAI/OpenRouter actually send it:
+		// a JSON body whose message field is itself quoted, so the raw body
+		// contains literal backslash-escaped quotes around the model name.
+		fmt.Fprint(w, `{"error":{"message":"The model \"bogus-model\" does not exist or you do not have access to it.","type":"invalid_request_error"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := newClient(Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	_, err := cli.Chat(context.Background(), "sys", "hi")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), `\"`) {
+		t.Fatalf("want the raw JSON's escaped quotes unwrapped, got literal backslashes: %v", err)
+	}
+	if !strings.Contains(err.Error(), `The model "bogus-model" does not exist`) {
+		t.Fatalf("want the API's actual message surfaced, got: %v", err)
+	}
+}
+
+func TestClient_streamingExtractsTheAPIErrorMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"The model \"bogus-model\" does not exist or you do not have access to it."}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := newClient(Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	_, err := cli.ChatMessagesStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), `\"`) {
+		t.Fatalf("want the raw JSON's escaped quotes unwrapped, got literal backslashes: %v", err)
+	}
+	if !strings.Contains(err.Error(), `The model "bogus-model" does not exist`) {
+		t.Fatalf("want the API's actual message surfaced, got: %v", err)
+	}
+}
+
+func TestClient_fallsBackToRawBodyWhenNotAnAPIErrorShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, "upstream is down")
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := newClient(Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	_, err := cli.Chat(context.Background(), "sys", "hi")
+	if err == nil || !strings.Contains(err.Error(), "upstream is down") {
+		t.Fatalf("want the raw body surfaced when it isn't a JSON error, got: %v", err)
+	}
+}

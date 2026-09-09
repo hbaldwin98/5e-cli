@@ -192,10 +192,22 @@ func (m *chatModel) refreshViewport() {
 		}
 	}
 	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(content)
+	m.viewport.SetContent(wrapToWidth(content, m.viewport.Width()))
 	if atBottom {
 		m.viewport.GotoBottom()
 	}
+}
+
+// wrapToWidth word-wraps content to width, leaving it untouched when width
+// isn't known yet (before the first tea.WindowSizeMsg). The viewport itself
+// never wraps long lines on its own — it only scrolls — so without this an
+// answer wider than the terminal runs off the right edge instead of
+// flowing to the next line.
+func wrapToWidth(content string, width int) string {
+	if width <= 0 {
+		return content
+	}
+	return lipgloss.NewStyle().Width(width).Render(content)
 }
 
 func (m *chatModel) Init() tea.Cmd {

@@ -54,7 +54,7 @@ func FetchModels(ctx context.Context, client *http.Client, name string, cred Cre
 		return nil, fmt.Errorf("list models: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list models: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("list models: %s: %s", resp.Status, errorBodyMessage(body, resp.Status))
 	}
 
 	var parsed struct {
@@ -74,4 +74,29 @@ func FetchModels(ctx context.Context, client *http.Client, name string, cred Cre
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// errorBodyMessage extracts the human-readable message from an
+// OpenAI-compatible error response body ({"error":{"message":"..."}}),
+// falling back to the raw body (truncated) or the status line if it isn't
+// that shape. Dumping the raw JSON body directly shows literal escape
+// sequences (backslash-escaped quotes and the like) instead of the message
+// the API actually meant to convey.
+func errorBodyMessage(payload []byte, status string) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err == nil && parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	msg := strings.TrimSpace(string(payload))
+	if len(msg) > 512 {
+		msg = msg[:512] + "…"
+	}
+	if msg == "" {
+		msg = status
+	}
+	return msg
 }

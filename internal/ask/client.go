@@ -138,14 +138,7 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 
 	if resp.StatusCode >= 300 {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-		msg := strings.TrimSpace(string(payload))
-		if len(msg) > 512 {
-			msg = msg[:512] + "…"
-		}
-		if msg == "" {
-			msg = resp.Status
-		}
-		return "", fmt.Errorf("chat/completions: %s", msg)
+		return "", fmt.Errorf("chat/completions: %s", errorBodyMessage(payload, resp.Status))
 	}
 
 	var full strings.Builder
@@ -199,6 +192,29 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
+// errorBodyMessage extracts the human-readable message from an
+// OpenAI-compatible error response body ({"error":{"message":"..."}}),
+// falling back to the raw body (truncated) or the HTTP status line if it
+// isn't that shape. Dumping the raw JSON body directly, as this used to do,
+// shows the reader its literal escape sequences (backslash-escaped quotes
+// and the like) instead of the message the API actually meant to convey.
+func errorBodyMessage(payload []byte, status string) string {
+	var parsed struct {
+		Error *apiError `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err == nil && parsed.Error != nil && parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	msg := strings.TrimSpace(string(payload))
+	if len(msg) > 512 {
+		msg = msg[:512] + "…"
+	}
+	if msg == "" {
+		msg = status
+	}
+	return msg
+}
+
 func (c *client) post(ctx context.Context, path string, body any, dest any) error {
 	if c.cfg.APIKey == "" {
 		return fmt.Errorf("OPENAI_API_KEY is not set")
@@ -224,14 +240,7 @@ func (c *client) post(ctx context.Context, path string, body any, dest any) erro
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(payload))
-		if len(msg) > 512 {
-			msg = msg[:512] + "…"
-		}
-		if msg == "" {
-			msg = resp.Status
-		}
-		return fmt.Errorf("%s: %s", path, msg)
+		return fmt.Errorf("%s: %s", path, errorBodyMessage(payload, resp.Status))
 	}
 	if err := json.Unmarshal(payload, dest); err != nil {
 		return fmt.Errorf("%s: decode: %w", path, err)

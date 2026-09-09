@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
@@ -110,6 +111,25 @@ func TestChatModel_submitsQuestionAndStreamsAnswer(t *testing.T) {
 	}
 	if len(again.Turns) != 1 || again.Turns[0].Answer == "" {
 		t.Fatalf("the turn should have been saved to disk: %+v", again.Turns)
+	}
+}
+
+func TestChatModel_wrapsLongLinesToTheViewportWidth(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
+
+	long := strings.Repeat("word ", 20)
+	m.writeLine(long)
+	m.refreshViewport()
+
+	view := m.viewport.View()
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 20 {
+			t.Fatalf("want no rendered line wider than the viewport (20), got %d: %q", lipgloss.Width(line), line)
+		}
+	}
+	if !strings.Contains(view, "word") {
+		t.Fatalf("want the content still present after wrapping, got:\n%s", view)
 	}
 }
 
