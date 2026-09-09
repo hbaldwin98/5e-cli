@@ -35,16 +35,25 @@ const (
 	// passage is well above that. FIVE_E_MIN_SCORE overrides it for a
 	// differently calibrated embedding model.
 	DefaultMinScore = 0.15
+
+	// DefaultAnswerMaxTokens caps how many tokens the chat model may generate
+	// for one answer. A rules answer with a couple of citations comfortably
+	// fits well inside this; the cap exists so a model that would otherwise
+	// ramble (or a backend that defaults to "as long as the context allows")
+	// has a predictable cost and latency ceiling. FIVE_E_ANSWER_MAX_TOKENS
+	// raises it for a use case that wants longer answers.
+	DefaultAnswerMaxTokens = 1024
 )
 
 // Config is an OpenAI-compatible embedding and chat backend.
 type Config struct {
-	APIKey         string
-	BaseURL        string
-	EmbedModel     string
-	AskModel       string
-	EmbedMaxTokens int
-	AskMaxTokens   int
+	APIKey          string
+	BaseURL         string
+	EmbedModel      string
+	AskModel        string
+	EmbedMaxTokens  int
+	AskMaxTokens    int
+	AnswerMaxTokens int
 	// MinScore is the relevance gate: chunks scoring below it are rejected as
 	// irrelevant rather than returned. Zero means "use DefaultMinScore"; a
 	// negative value disables the gate, since cosine similarity never falls
@@ -58,13 +67,14 @@ type Config struct {
 // ConfigFromEnv reads OPENAI_* and FIVE_E_* variables. Paths are filled by the CLI.
 func ConfigFromEnv() Config {
 	return Config{
-		APIKey:         os.Getenv("OPENAI_API_KEY"),
-		BaseURL:        os.Getenv("OPENAI_BASE_URL"),
-		EmbedModel:     os.Getenv("FIVE_E_EMBED_MODEL"),
-		AskModel:       os.Getenv("FIVE_E_ASK_MODEL"),
-		EmbedMaxTokens: envInt("FIVE_E_EMBED_MAX_TOKENS"),
-		AskMaxTokens:   envInt("FIVE_E_ASK_MAX_TOKENS"),
-		MinScore:       envFloat("FIVE_E_MIN_SCORE"),
+		APIKey:          os.Getenv("OPENAI_API_KEY"),
+		BaseURL:         os.Getenv("OPENAI_BASE_URL"),
+		EmbedModel:      os.Getenv("FIVE_E_EMBED_MODEL"),
+		AskModel:        os.Getenv("FIVE_E_ASK_MODEL"),
+		EmbedMaxTokens:  envInt("FIVE_E_EMBED_MAX_TOKENS"),
+		AskMaxTokens:    envInt("FIVE_E_ASK_MAX_TOKENS"),
+		AnswerMaxTokens: envInt("FIVE_E_ANSWER_MAX_TOKENS"),
+		MinScore:        envFloat("FIVE_E_MIN_SCORE"),
 	}.withDefaults()
 }
 
@@ -110,6 +120,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.AskMaxTokens <= 0 {
 		c.AskMaxTokens = DefaultAskMaxTokens
+	}
+	if c.AnswerMaxTokens <= 0 {
+		c.AnswerMaxTokens = DefaultAnswerMaxTokens
 	}
 	if c.MinScore == 0 {
 		c.MinScore = DefaultMinScore

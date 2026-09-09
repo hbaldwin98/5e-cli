@@ -201,6 +201,7 @@ Provider is any OpenAI-compatible host:
 | `FIVE_E_EMBED_MAX_TOKENS` | `8192` |
 | `FIVE_E_ASK_MAX_TOKENS` | `12000` |
 | `FIVE_E_MIN_SCORE` | `0.15` |
+| `FIVE_E_ANSWER_MAX_TOKENS` | `1024` |
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
 
@@ -213,6 +214,8 @@ Naming a module does not restrict the answer to it: a question asked while runni
 **Vector scope.** The kind, source, and adventure filters run in sqlite before rows are read, and chunk text is fetched only for the chunks that rank. A default ask reads 22k vectors rather than the full 52k, since module prose is excluded anyway.
 
 **Grounding.** `ask` sends the chat model the retrieved chunks' source text, budgeted by `FIVE_E_ASK_MAX_TOKENS` and shared so short sources are never clipped and their unused share goes to long ones. `Hit.Snippet` is a display preview only and must not be what an answer is built from.
+
+**Budgeting the complete prompt.** `FIVE_E_ASK_MAX_TOKENS` bounds the whole prompt, not only the source text: both `ask` and `chat` first deduct the system prompt's own length and the question's own length from the budget before handing what's left to the source (and, for `chat`, notes/history) share. Skipping that deduction let a long question or a large system prompt push the assembled prompt past the model's real context window even though the source text alone looked like it fit. Generation is bounded too: every chat completion request sets `max_tokens` to `FIVE_E_ANSWER_MAX_TOKENS`, so a model (or backend default) that would otherwise generate without a ceiling has a predictable cost and latency bound.
 
 **Citations.** `Result.Citations` is not the retrieval list; it is the `(kind, name, source)` triples the model actually wrote in its answer, each checked against the chunks that were really retrieved. A triple that does not match a retrieved chunk (a plausible-looking name the model invented, a typo, a source it wasn't given) is dropped rather than surfaced as if it were grounded. A question with no citable answer legitimately returns no citations, even when retrieval found chunks.
 

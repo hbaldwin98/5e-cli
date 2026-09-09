@@ -74,6 +74,7 @@ func (c *client) ChatMessages(ctx context.Context, msgs []Message) (string, erro
 		"model":       c.cfg.AskModel,
 		"messages":    messages,
 		"temperature": 0,
+		"max_tokens":  c.cfg.AnswerMaxTokens,
 	}
 	var resp struct {
 		Choices []struct {

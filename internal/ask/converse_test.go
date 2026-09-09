@@ -2,9 +2,16 @@ package ask
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/hbaldwin98/5e-cli/internal/parse"
+	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
 func TestConverse_carriesHistoryNotesAndSources(t *testing.T) {
@@ -40,6 +47,52 @@ func TestConverse_carriesHistoryNotesAndSources(t *testing.T) {
 	}
 	if len(res.Citations) == 0 || res.Citations[0].Name != "Fireball" {
 		t.Fatalf("citations %+v", res.Citations)
+	}
+}
+
+func TestConverse_budgetsTheCompletePromptNotJustNotesAndHistory(t *testing.T) {
+	api := &fakeAPI{}
+	srv := httptest.NewServer(api.handler())
+	t.Cleanup(srv.Close)
+
+	long := strings.Repeat("long rules text about fire and explosions. ", 5000) // ~220,000 runes
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", JSON: json.RawMessage(`{}`), Text: long},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	longQuestion := "fire explosion, " + strings.Repeat("please explain very thoroughly ", 400)
+
+	cfg := Config{
+		APIKey:       "test-key",
+		BaseURL:      srv.URL,
+		EmbedModel:   "fake-embed",
+		AskModel:     "fake-ask",
+		AskMaxTokens: 18000,
+		MinScore:     -1,
+		CachePath:    filepath.Join(t.TempDir(), "embeddings.sqlite"),
+		HTTPClient:   srv.Client(),
+		Progress:     io.Discard,
+	}
+
+	if _, err := Converse(context.Background(), st, cfg, Turn{Query: Query{Text: longQuestion, Limit: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := api.lastUser.Load().(string)
+	sourceRunes := utf8.RuneCountInString(prompt) - utf8.RuneCountInString(longQuestion)
+	// The source text is far longer than any plausible budget, so a source
+	// share anywhere near the full naive (question-only) budget would mean
+	// conversePrompt and the question's own overhead were never deducted.
+	if naive := promptRunes(cfg.AskMaxTokens); sourceRunes > naive-utf8.RuneCountInString(longQuestion) {
+		t.Fatalf("source share was not reduced for the system prompt and question overhead: got %d source runes against a naive budget of %d", sourceRunes, naive)
 	}
 }
 

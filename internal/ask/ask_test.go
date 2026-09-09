@@ -552,6 +552,33 @@ func TestRetrieve_surfacesMultiplePartsOfOneLongRecord(t *testing.T) {
 	}
 }
 
+func TestChatMessages_sendsTheAnswerTokenBudget(t *testing.T) {
+	var gotMaxTokens json.Number
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			MaxTokens json.Number `json:"max_tokens"`
+		}
+		dec := json.NewDecoder(r.Body)
+		dec.UseNumber()
+		if err := dec.Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		gotMaxTokens = req.MaxTokens
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := newClient(Config{APIKey: "k", BaseURL: srv.URL, AnswerMaxTokens: 321, HTTPClient: srv.Client()})
+	if _, err := cli.Chat(context.Background(), "sys", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if gotMaxTokens.String() != "321" {
+		t.Fatalf("want max_tokens=321 in the request, got %q", gotMaxTokens.String())
+	}
+}
+
 func TestAsk_promptCarriesFullSourceText(t *testing.T) {
 	st, cfg, api := harness(t)
 	defer st.Close()
@@ -565,6 +592,63 @@ func TestAsk_promptCarriesFullSourceText(t *testing.T) {
 	const full = "A bright streak flashes and explodes in a bloom of fire and flame."
 	if !strings.Contains(prompt, full) {
 		t.Fatalf("prompt is missing the full source text:\n%s", prompt)
+	}
+}
+
+func TestAsk_budgetsTheCompletePromptNotJustTheSources(t *testing.T) {
+	api := &fakeAPI{}
+	srv := httptest.NewServer(api.handler())
+	t.Cleanup(srv.Close)
+
+	long := strings.Repeat("long rules text about fire and explosions. ", 500) // ~19,500 runes
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", JSON: json.RawMessage(`{}`), Text: long},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// A long question, deliberately not embedded in the fake's fire/sword/etc
+	// topic buckets, so retrieval still ranks Fireball regardless of budget.
+	longQuestion := "fire explosion, " + strings.Repeat("please explain very thoroughly ", 200)
+	overhead := utf8.RuneCountInString(systemPrompt) + utf8.RuneCountInString(longQuestion)
+
+	cfg := Config{
+		APIKey:     "test-key",
+		BaseURL:    srv.URL,
+		EmbedModel: "fake-embed",
+		AskModel:   "fake-ask",
+		// Small enough, in rune terms after the *1.9 token-to-rune ratio,
+		// that the question's own overhead is a large fraction of the
+		// budget: 500 runes of overhead needs roughly 264 tokens on its own.
+		AskMaxTokens: overhead/2 + 200,
+		MinScore:     -1,
+		CachePath:    filepath.Join(t.TempDir(), "embeddings.sqlite"),
+		HTTPClient:   srv.Client(),
+		Progress:     io.Discard,
+	}
+
+	if _, err := Ask(context.Background(), st, cfg, Query{Text: longQuestion, Limit: 3}); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := api.lastUser.Load().(string)
+	sourceRunes := utf8.RuneCountInString(prompt) - overhead
+	wantMax := max(promptRunes(cfg.AskMaxTokens)-overhead, 0)
+	if sourceRunes > wantMax+50 {
+		t.Fatalf("source share should shrink by the question's own overhead (want <= ~%d runes), got %d:\n%s",
+			wantMax, sourceRunes, prompt)
+	}
+	// The naive (pre-fix) budget handed the source text the whole
+	// promptRunes(AskMaxTokens) with no overhead deducted at all; confirm
+	// this run actually used less than that, not just less than infinity.
+	if naive := promptRunes(cfg.AskMaxTokens); sourceRunes >= naive {
+		t.Fatalf("source share was not reduced for the question's overhead: got %d runes, naive budget was %d", sourceRunes, naive)
 	}
 }
 

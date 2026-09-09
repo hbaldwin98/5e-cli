@@ -57,7 +57,13 @@ func Converse(ctx context.Context, st *store.Store, cfg Config, t Turn) (Result,
 		return Result{}, err
 	}
 
+	// AskMaxTokens budgets the complete prompt: the system prompt and the
+	// question itself take a share of it too, alongside notes, history, and
+	// sources, or a long question could push the assembled prompt past the
+	// model's real context window even though every other part stayed
+	// within its own share.
 	total := promptRunes(cfg.AskMaxTokens)
+	total = max(total-utf8.RuneCountInString(conversePrompt)-utf8.RuneCountInString(t.Query.Text), 0)
 	notes := notesBlock(t.Notes, total/5)
 	history := trimHistory(t.History, total/3)
 	spent := utf8.RuneCountInString(notes)

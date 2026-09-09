@@ -35,7 +35,13 @@ func Ask(ctx context.Context, st *store.Store, cfg Config, q Query) (Result, err
 		return Result{Answer: "No matching sources in the local index."}, nil
 	}
 	cli := newClient(cfg)
-	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, ranked, promptRunes(cfg.AskMaxTokens)))
+	// AskMaxTokens budgets the complete prompt, not just the source text: the
+	// system prompt and the question itself take a share of it too, or a long
+	// question could push the assembled prompt past the model's real context
+	// window even though the source text alone stayed under budget.
+	total := promptRunes(cfg.AskMaxTokens)
+	overhead := utf8.RuneCountInString(systemPrompt) + utf8.RuneCountInString(q.Text)
+	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, ranked, max(total-overhead, 0)))
 	if err != nil {
 		return Result{}, err
 	}
