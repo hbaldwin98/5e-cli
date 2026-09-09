@@ -3,6 +3,7 @@ package search
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -235,10 +236,13 @@ func sourceSet(sources []string) func(string) bool {
 	return func(src string) bool { return s[strings.ToLower(src)] }
 }
 
+// snippet bounds text to n runes for display. Clipping by byte index would
+// risk cutting a multi-byte rune in half and producing invalid UTF-8 in the
+// middle of the preview.
 func snippet(text string, n int) string {
 	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
-	if len(text) <= n {
+	if utf8.RuneCountInString(text) <= n {
 		return text
 	}
-	return strings.TrimSpace(text[:n]) + "…"
+	return strings.TrimSpace(string([]rune(text)[:n])) + "…"
 }

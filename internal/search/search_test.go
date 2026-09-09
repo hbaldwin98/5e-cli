@@ -3,7 +3,9 @@ package search
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -168,5 +170,16 @@ func TestSearch_adventureNPCFromAppearance(t *testing.T) {
 	}
 	if len(hits) == 0 || hits[0].Name != "Cave Mouth" {
 		t.Fatalf("location %+v", hits)
+	}
+}
+
+func TestSnippet_clipsOnARuneBoundary(t *testing.T) {
+	text := strings.Repeat("鬼", 20) // each rune is 3 bytes; clipping by byte index would corrupt it
+	got := snippet(text, 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("snippet produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("鬼", 10) + "…"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

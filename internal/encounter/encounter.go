@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/search"
@@ -241,10 +242,13 @@ func containsAll(text, query string) bool {
 	return true
 }
 
+// snippet bounds text to 160 runes for display. Clipping by byte index would
+// risk cutting a multi-byte rune in half and producing invalid UTF-8 in the
+// middle of the preview.
 func snippet(text string) string {
 	text = strings.Join(strings.Fields(text), " ")
-	if len(text) > 160 {
-		return text[:160] + "..."
+	if utf8.RuneCountInString(text) > 160 {
+		return string([]rune(text)[:160]) + "..."
 	}
 	return text
 }

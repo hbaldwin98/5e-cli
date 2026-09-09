@@ -3,12 +3,25 @@ package encounter
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
+
+func TestSnippet_clipsOnARuneBoundary(t *testing.T) {
+	text := strings.Repeat("鬼", 200) // each rune is 3 bytes; clipping by byte index would corrupt it
+	got := snippet(text)
+	if !utf8.ValidString(got) {
+		t.Fatalf("snippet produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("鬼", 160) + "..."; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
 
 func TestSearch_filtersBeforeLimitAndReturnsMetadata(t *testing.T) {
 	st := encounterStore(t)

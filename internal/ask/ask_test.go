@@ -414,6 +414,17 @@ func TestBatchEnd_respectsCountAndTokenBudget(t *testing.T) {
 	}
 }
 
+func TestSnippet_clipsOnARuneBoundary(t *testing.T) {
+	text := strings.Repeat("鬼", 20) // each rune is 3 bytes; clipping by byte index would corrupt it
+	got := snippet(text, 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("snippet produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("鬼", 10) + "…"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestValidateVector_rejectsEmptyAndZero(t *testing.T) {
 	if err := validateVector(nil, "x"); err == nil {
 		t.Fatal("want an error for an empty vector")
