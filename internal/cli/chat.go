@@ -542,11 +542,13 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		}
 		// "LMoP only" drops the rulebooks; plain "LMoP" adds the module to
 		// them, which is what a question asked at the table usually needs.
+		// The trailing "only" is checked against the last word, not the text
+		// after the first space, so a multiword title like "Lost Mine of
+		// Phandelver only" is not split into "Lost" plus a bogus tail.
 		name, only := rest, false
-		if head, tail, found := strings.Cut(rest, " "); found {
-			if strings.EqualFold(strings.TrimSpace(tail), "only") {
-				name, only = strings.TrimSpace(head), true
-			}
+		if fields := strings.Fields(rest); len(fields) > 1 && strings.EqualFold(fields[len(fields)-1], "only") {
+			name = strings.TrimSpace(strings.Join(fields[:len(fields)-1], " "))
+			only = true
 		}
 		if err := scopeAdventure(st, sess, name, only); err != nil {
 			return false, event, err

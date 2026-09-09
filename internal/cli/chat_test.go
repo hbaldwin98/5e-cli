@@ -525,6 +525,24 @@ func TestChat_adventureOnlyExcludesTheRulebooks(t *testing.T) {
 	}
 }
 
+func TestChat_slashAdventureOnlyWithAMultiwordTitle(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	// The fixture's adventure title is itself multiword ("Lost Mine of
+	// Testing"); the trailing "only" must be recognized by its position at
+	// the end of the input, not by splitting on the first space.
+	out, err := runCLIStdin("/adventure Lost Mine of Testing only\n/adventure\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "scoped to LMoP only\n") {
+		t.Fatalf("multiword title with only was not parsed correctly:\n%s", out)
+	}
+}
+
 func TestChat_slashAdventureWidensAndNarrows(t *testing.T) {
 	index, _ := chatFixture(t)
 	dir := filepath.Join(t.TempDir(), "chats")
