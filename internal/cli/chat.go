@@ -126,7 +126,7 @@ func chatShowCmd(opt *options, copt *chatOptions) *cobra.Command {
 }
 
 func chatNoteCmd(opt *options, copt *chatOptions) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "note <text>",
 		Short: "Record a fact the session keeps in context",
 		Args:  cobra.MinimumNArgs(1),
@@ -152,6 +152,82 @@ func chatNoteCmd(opt *options, copt *chatOptions) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(chatNoteRmCmd(opt, copt), chatNoteEditCmd(opt, copt))
+	return cmd
+}
+
+func chatNoteRmCmd(opt *options, copt *chatOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm <n>",
+		Short: "Remove one recorded note by its number in `chat note` or /notes",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n, err := parseNoteIndex(args[0])
+			if err != nil {
+				return err
+			}
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			sess, err := cs.LoadExisting(sessionName(copt, nil))
+			if err != nil {
+				return err
+			}
+			if !sess.RemoveNote(n) {
+				return fmt.Errorf("no note numbered %d in %s (has %d)", n, sess.Name, len(sess.Notes))
+			}
+			if err := cs.Save(sess); err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), sess)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed note %d (%d left in %s)\n", n, len(sess.Notes), sess.Name)
+			return nil
+		},
+	}
+}
+
+func chatNoteEditCmd(opt *options, copt *chatOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit <n> <text>",
+		Short: "Replace the text of one recorded note",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n, err := parseNoteIndex(args[0])
+			if err != nil {
+				return err
+			}
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			sess, err := cs.LoadExisting(sessionName(copt, nil))
+			if err != nil {
+				return err
+			}
+			if !sess.EditNote(n, strings.Join(args[1:], " ")) {
+				return fmt.Errorf("no note numbered %d in %s (has %d)", n, sess.Name, len(sess.Notes))
+			}
+			if err := cs.Save(sess); err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), sess)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "edited note %d in %s\n", n, sess.Name)
+			return nil
+		},
+	}
+}
+
+func parseNoteIndex(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("note number must be a positive integer, got %q", s)
+	}
+	return n, nil
 }
 
 // chatClearCmd empties a session rather than deleting it. Dropping the
@@ -539,6 +615,8 @@ type chatErrorResult struct {
 
 const chatHelp = `Commands:
   /note <text>        record a fact this session keeps in context
+  /note rm <n>        remove the note numbered <n> in /notes
+  /note edit <n> <text>   replace the text of note <n>
   /notes              list the recorded notes
   /sources            citations for the last answer
   /adventure <id-or-title>   add an adventure's prose (append " only" to
@@ -659,6 +737,44 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			fmt.Fprintln(out, chatHelp)
 		}
 	case "/note":
+		// "/note rm <n>" and "/note edit <n> <text>" manage an existing note;
+		// anything else is the text of a new one, so a note that happens to
+		// start with the word "rm" or "edit" is the one case this shadows.
+		if sub, arg, found := strings.Cut(rest, " "); found && strings.EqualFold(sub, "rm") {
+			n, err := parseNoteIndex(strings.TrimSpace(arg))
+			if err != nil {
+				return false, event, err
+			}
+			if !sess.RemoveNote(n) {
+				return false, event, fmt.Errorf("no note numbered %d (has %d)", n, len(sess.Notes))
+			}
+			if err := cs.Save(sess); err != nil {
+				return false, event, err
+			}
+			event.Data = map[string]any{"removed": n, "notes": len(sess.Notes)}
+			if !asJSON {
+				fmt.Fprintf(out, "removed note %d (%d left)\n", n, len(sess.Notes))
+			}
+			break
+		}
+		if sub, arg, found := strings.Cut(rest, " "); found && strings.EqualFold(sub, "edit") {
+			nStr, text, _ := strings.Cut(strings.TrimSpace(arg), " ")
+			n, err := parseNoteIndex(nStr)
+			if err != nil {
+				return false, event, err
+			}
+			if !sess.EditNote(n, text) {
+				return false, event, fmt.Errorf("no note numbered %d (has %d), or the replacement text was empty", n, len(sess.Notes))
+			}
+			if err := cs.Save(sess); err != nil {
+				return false, event, err
+			}
+			event.Data = map[string]any{"edited": n}
+			if !asJSON {
+				fmt.Fprintf(out, "edited note %d\n", n)
+			}
+			break
+		}
 		if !sess.AddNote(rest) {
 			return false, event, fmt.Errorf("usage: /note <text>")
 		}

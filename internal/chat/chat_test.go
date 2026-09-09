@@ -253,6 +253,45 @@ func TestSession_addNoteRefusesBlankText(t *testing.T) {
 	}
 }
 
+func TestSession_removeNoteByPosition(t *testing.T) {
+	sess := &Session{Name: "s"}
+	sess.AddNote("first")
+	sess.AddNote("second")
+	sess.AddNote("third")
+
+	if sess.RemoveNote(0) || sess.RemoveNote(4) {
+		t.Fatal("an out-of-range position should be refused")
+	}
+	if !sess.RemoveNote(2) {
+		t.Fatal("want position 2 removed")
+	}
+	if len(sess.Notes) != 2 || sess.Notes[0].Text != "first" || sess.Notes[1].Text != "third" {
+		t.Fatalf("got %+v", sess.Notes)
+	}
+}
+
+func TestSession_editNoteReplacesTextKeepsTimestamp(t *testing.T) {
+	sess := &Session{Name: "s"}
+	sess.AddNote("origonal typo")
+	at := sess.Notes[0].At
+
+	if sess.EditNote(0, "x") || sess.EditNote(2, "x") {
+		t.Fatal("an out-of-range position should be refused")
+	}
+	if sess.EditNote(1, "   ") {
+		t.Fatal("blank replacement text should be refused")
+	}
+	if !sess.EditNote(1, "  original  ") {
+		t.Fatal("want the edit to succeed")
+	}
+	if sess.Notes[0].Text != "original" {
+		t.Fatalf("got %q", sess.Notes[0].Text)
+	}
+	if sess.Notes[0].At != at {
+		t.Fatalf("editing should not re-date the note: got %q, want %q", sess.Notes[0].At, at)
+	}
+}
+
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	cs, err := OpenStore(filepath.Join(t.TempDir(), "chats"))

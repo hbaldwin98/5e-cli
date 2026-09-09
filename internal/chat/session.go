@@ -107,6 +107,34 @@ func (s *Session) AddNote(text string) bool {
 	return true
 }
 
+// RemoveNote deletes the note at the given 1-based position (the same
+// numbering /notes lists them under). It reports whether a note was
+// actually removed, so a caller can tell an out-of-range index from a
+// successful removal without a separate bounds check of its own.
+func (s *Session) RemoveNote(n int) bool {
+	if n < 1 || n > len(s.Notes) {
+		return false
+	}
+	i := n - 1
+	s.Notes = append(s.Notes[:i], s.Notes[i+1:]...)
+	s.Updated = now()
+	return true
+}
+
+// EditNote replaces the text of the note at the given 1-based position,
+// keeping its original timestamp: an edit corrects what was written, it
+// doesn't re-date when the fact was recorded. Blank text is refused rather
+// than silently emptying a note; RemoveNote is how a note is dropped.
+func (s *Session) EditNote(n int, text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || n < 1 || n > len(s.Notes) {
+		return false
+	}
+	s.Notes[n-1].Text = text
+	s.Updated = now()
+	return true
+}
+
 // AddTurn appends an answered question to the transcript.
 func (s *Session) AddTurn(question string, res ask.Result) {
 	s.Turns = append(s.Turns, Record{

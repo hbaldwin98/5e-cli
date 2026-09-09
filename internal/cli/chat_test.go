@@ -551,6 +551,82 @@ func TestChat_renameExportImport(t *testing.T) {
 	}
 }
 
+func TestChat_noteRmAndEditSubcommands(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	for _, note := range []string{"first note", "second note", "third note"} {
+		if _, err := runCLI(append(base, "note", note)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := runCLI(append(base, "note", "edit", "2", "corrected", "second", "note")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "edited note 2") {
+		t.Fatalf("edit confirmation: %s", out)
+	}
+
+	out, err = runCLI(append(base, "note", "rm", "1")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed note 1 (2 left") {
+		t.Fatalf("rm confirmation: %s", out)
+	}
+
+	out, err = runCLI(append(base, "show")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "first note") {
+		t.Fatalf("removed note should be gone:\n%s", out)
+	}
+	if !strings.Contains(out, "corrected second note") {
+		t.Fatalf("edited note should show its new text:\n%s", out)
+	}
+	if !strings.Contains(out, "third note") {
+		t.Fatalf("untouched note should survive:\n%s", out)
+	}
+
+	if _, err := runCLI(append(base, "note", "rm", "99")...); err == nil {
+		t.Fatal("removing an out-of-range note should be refused")
+	}
+}
+
+func TestChat_slashNoteRmAndEdit(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	script := strings.Join([]string{
+		"/note first note",
+		"/note second note",
+		"/note edit 2 corrected second note",
+		"/note rm 1",
+		"/notes",
+		"/exit",
+	}, "\n") + "\n"
+	out, err := runCLIStdin(script, base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "edited note 2") || !strings.Contains(out, "removed note 1 (1 left)") {
+		t.Fatalf("confirmations: %s", out)
+	}
+	if strings.Contains(out, "1. first note") {
+		t.Fatalf("removed note should not be listed:\n%s", out)
+	}
+	if !strings.Contains(out, "1. corrected second note") {
+		t.Fatalf("edited note should be listed under its new position and text:\n%s", out)
+	}
+}
+
 func TestChat_clearNotesFlagAndSlashCommand(t *testing.T) {
 	index, _ := chatFixture(t)
 	dir := filepath.Join(t.TempDir(), "chats")

@@ -123,6 +123,8 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e chat list [--json]
 5e chat show [session] [--json]
 5e chat note <text>
+5e chat note rm <n>
+5e chat note edit <n> <text>
 5e chat clear [session] [--notes]
 5e chat rm <session>
 5e chat rename <session> <new-name>
@@ -245,7 +247,7 @@ A session holds three things: the transcript, the notes the user recorded, and a
 
 **Follow-ups.** A follow-up is often unintelligible alone ("how much damage does it do?"), so the retrieval text is the question plus the last two *user* turns. Earlier answers are deliberately excluded: embedding the model's own words steers retrieval toward whatever it already said. The same widened text feeds adventure detection, so a module named once stays in scope for the follow-ups that only say "he" or "there".
 
-**Notes.** `/note` in the REPL, or `5e chat note`, records a fact ("the party sold the Sunsword in Vallaki"). Notes are re-sent with every question, marked as the user's own record: true, preferred over the rules when they conflict, and never cited as a source.
+**Notes.** `/note` in the REPL, or `5e chat note`, records a fact ("the party sold the Sunsword in Vallaki"). Notes are re-sent with every question, marked as the user's own record: true, preferred over the rules when they conflict, and never cited as a source. `/note rm <n>` / `5e chat note rm <n>` and `/note edit <n> <text>` / `5e chat note edit <n> <text>` manage an existing note by the position `/notes` lists it under; editing keeps the note's original timestamp, since correcting a typo doesn't change when the fact was recorded. Both refuse an out-of-range position, and edit refuses blank replacement text — removal is how a note is dropped, not an empty edit.
 
 **Clearing.** `5e chat clear` (or `/clear`) empties the transcript and keeps the session, its notes, and its adventure scope: dropping the history is how you change subject without losing what you wrote down. `--notes` (or `/clear all`) drops the notes too. Deleting the session is `5e chat rm`.
 
