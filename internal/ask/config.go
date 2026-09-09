@@ -74,6 +74,30 @@ type Config struct {
 	// own view (a determinate progress bar, a phase label) rather than
 	// consume preformatted text uses this.
 	OnProgress func(EmbedProgress)
+	// Tools and ToolExecutor let Converse/ConverseStream call live lookups
+	// (exact CR, a dice roll, a table roll) mid-conversation instead of
+	// answering only from retrieved text. Both must be set for tool-calling
+	// to activate; see BuildTools for the built-in set. Ask/AskStream never
+	// use these — tool-calling is a chat feature.
+	Tools        []Tool
+	ToolExecutor ToolExecutor
+}
+
+// hasTools reports whether tool-calling is wired up for this Config. Both
+// Tools and ToolExecutor are required: a tool definition with nothing to run
+// it is as useless as an executor the model was never told about.
+func (c Config) hasTools() bool {
+	return len(c.Tools) > 0 && c.ToolExecutor != nil
+}
+
+// HasTools is hasTools, exported for a caller outside this package (the CLI)
+// that needs to pick a rendering strategy: an answer produced through the
+// tool loop is delivered as one finished flush rather than true
+// token-by-token streaming (see runToolLoop), so it should be treated —
+// and Markdown-rendered — like a non-streaming answer, not like a stream of
+// raw deltas.
+func (c Config) HasTools() bool {
+	return c.hasTools()
 }
 
 // EmbedProgress is one update on building the embedding cache: how many of

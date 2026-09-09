@@ -505,3 +505,32 @@ func TestRoll_isReproducibleWithSeed(t *testing.T) {
 		t.Fatalf("seeded rolls differ:\n%#v\n%#v", first, second)
 	}
 }
+
+func TestDice_isReproducibleWithSeed(t *testing.T) {
+	st := testStore(t)
+	defer st.Close()
+	session := connect(t, New(st, Options{}))
+	defer session.Close()
+
+	roll := func() map[string]any {
+		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "dice",
+			Arguments: map[string]any{"expression": "4d6kh3", "seed": 42, "count": 2},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError {
+			t.Fatalf("tool error: %+v", res.Content)
+		}
+		return toolJSON(t, res)
+	}
+	first, second := roll(), roll()
+	rolls, _ := first["rolls"].([]any)
+	if len(rolls) != 2 {
+		t.Fatalf("want 2 rolls, got %#v", first["rolls"])
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("seeded rolls differ:\n%#v\n%#v", first, second)
+	}
+}

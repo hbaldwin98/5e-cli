@@ -41,7 +41,7 @@ func newTestChatModel(t *testing.T) (*chatModel, *chatAPI) {
 	// chatFixture's canned streamed answer cites (spell, Fireball, PHB);
 	// the classic edition keeps PHB instead of preferring XPHB, so that
 	// citation actually matches what was retrieved.
-	m := newChatModel(&cobra.Command{}, st, cs, sess, cfg, chat.Options{Limit: 3, Edition: edition.Classic}, "")
+	m := newChatModel(&cobra.Command{}, st, cs, sess, cfg, chat.Options{Limit: 3, Edition: edition.Classic}, "", nil)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return m, api
 }

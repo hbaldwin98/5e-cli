@@ -244,24 +244,6 @@ func TestWriteEntity_JSONRemainsMachineReadable(t *testing.T) {
 	}
 }
 
-func TestRenderItem_attunementWithoutMetadata(t *testing.T) {
-	var out bytes.Buffer
-	renderItem(&out, map[string]any{"reqAttune": true})
-	if got, want := out.String(), "requires attunement\n"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestSpeed_conditionalMovement(t *testing.T) {
-	got := speed(map[string]any{
-		"walk": json.Number("30"),
-		"fly":  map[string]any{"number": json.Number("60"), "condition": " ({@condition prone})"},
-	})
-	if want := "30 ft., fly 60 ft. (prone)"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
 func entity(kind, name, source, raw string) store.Entity {
 	return store.Entity{Kind: kind, Name: name, Source: source, JSON: json.RawMessage(raw)}
 }

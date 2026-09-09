@@ -3,6 +3,7 @@ package table
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -39,6 +40,58 @@ func TestRollTable_numericRangesAreSeededAndPreserveMetadata(t *testing.T) {
 		if first.Rolls[i].Roll < 1 || first.Rolls[i].Roll > 6 {
 			t.Fatalf("roll out of range: %+v", first.Rolls[i])
 		}
+	}
+}
+
+func TestRollTable_encounterShapeSingleTable(t *testing.T) {
+	e := store.Entity{
+		Kind:   "encounter",
+		Name:   "Airborne Encounters",
+		Source: "EFA",
+		JSON: json.RawMessage(`{"name":"Airborne Encounters","source":"EFA","tables":[
+			{"diceExpression":"1d2","table":[
+				{"min":1,"max":1,"result":"A pirate airship"},
+				{"min":2,"max":2,"result":"A griffon patrol"}
+			]}
+		]}`),
+	}
+	seed := int64(3)
+	report, err := RollTable(e, Query{Count: 2, Seed: &seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rolls) != 2 {
+		t.Fatalf("rolls: %+v", report.Rolls)
+	}
+	for _, roll := range report.Rolls {
+		if roll.Roll < 1 || roll.Roll > 2 || len(roll.Values) != 1 || roll.Values[0] == "" {
+			t.Fatalf("roll: %+v", roll)
+		}
+	}
+}
+
+func TestRollTable_encounterShapePicksLevelBand(t *testing.T) {
+	e := store.Entity{
+		Kind:   "encounter",
+		Name:   "Arctic",
+		Source: "XGE",
+		JSON: json.RawMessage(`{"name":"Arctic","source":"XGE","tables":[
+			{"minlvl":1,"maxlvl":4,"diceExpression":"d2","table":[
+				{"min":1,"max":1,"result":"low tier A"},
+				{"min":2,"max":2,"result":"low tier B"}
+			]},
+			{"minlvl":5,"maxlvl":10,"diceExpression":"d2","table":[
+				{"min":1,"max":1,"result":"high tier A"},
+				{"min":2,"max":2,"result":"high tier B"}
+			]}
+		]}`),
+	}
+	report, err := RollTable(e, Query{Count: 1, Level: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rolls) != 1 || !strings.Contains(report.Rolls[0].Values[0], "high tier") {
+		t.Fatalf("expected the level-7 band, got: %+v", report.Rolls)
 	}
 }
 

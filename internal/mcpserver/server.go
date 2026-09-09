@@ -9,6 +9,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/compare"
+	"github.com/hbaldwin98/5e-cli/internal/dice"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -82,12 +83,16 @@ func New(st *store.Store, opt Options) *mcp.Server {
 	}, h.encounter)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "roll",
-		Description: "Roll an indexed random table by name. Pass seed for a reproducible result and source when several books share a table name.",
+		Description: "Roll an indexed random table by name, or a random encounter table (kind \"encounter\") split into character-level bands. Pass seed for a reproducible result and source when several books share a table name.",
 	}, h.roll)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "adventure_list",
 		Description: "List an adventure's chapters, locations, and NPC/item appearances, optionally filtered by role, chapter, or location.",
 	}, h.adventureList)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dice",
+		Description: "Roll a dice expression such as 2d6+3, 4d6kh3 (ability scores), or adv/dis (2d20 keep highest/lowest). Independent of roll, which rolls indexed named tables.",
+	}, h.dice)
 	return srv
 }
 
@@ -409,14 +414,20 @@ func (h *handler) encounter(_ context.Context, _ *mcp.CallToolRequest, in encoun
 }
 
 type rollInput struct {
-	Name   string `json:"name" jsonschema:"table name such as Wild Magic Surge"`
+	Kind   string `json:"kind,omitempty" jsonschema:"table or encounter, default table"`
+	Name   string `json:"name" jsonschema:"table name such as Wild Magic Surge, or an encounter table name such as Arctic"`
 	Source string `json:"source,omitempty" jsonschema:"optional 5etools source id"`
 	Count  int    `json:"count,omitempty" jsonschema:"number of rows to roll, default 1"`
+	Level  int    `json:"level,omitempty" jsonschema:"character level, for an encounter table with level-banded sub-tables"`
 	Seed   *int64 `json:"seed,omitempty" jsonschema:"optional seed for a reproducible roll"`
 }
 
 func (h *handler) roll(_ context.Context, _ *mcp.CallToolRequest, in rollInput) (*mcp.CallToolResult, randomtable.Report, error) {
-	ents, err := h.st.Lookup("table", in.Name, in.Source)
+	kind := in.Kind
+	if kind == "" {
+		kind = "table"
+	}
+	ents, err := h.st.Lookup(kind, in.Name, in.Source)
 	if err != nil {
 		return nil, randomtable.Report{}, err
 	}
@@ -427,14 +438,45 @@ func (h *handler) roll(_ context.Context, _ *mcp.CallToolRequest, in rollInput) 
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, randomtable.Report{}, fmt.Errorf("no table named %q", in.Name)
+		return nil, randomtable.Report{}, fmt.Errorf("no %s named %q", kind, in.Name)
 	}
 	if len(ents) > 1 {
 		return nil, randomtable.Report{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
 	}
-	report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: in.Count, Seed: in.Seed})
+	report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: in.Count, Seed: in.Seed, Level: in.Level})
 	if err != nil {
 		return nil, randomtable.Report{}, err
 	}
 	return nil, report, nil
+}
+
+type diceInput struct {
+	Expression string `json:"expression" jsonschema:"dice notation such as 2d6+3, 4d6kh3, or adv"`
+	Count      int    `json:"count,omitempty" jsonschema:"number of times to roll the expression, default 1"`
+	Seed       *int64 `json:"seed,omitempty" jsonschema:"optional seed for a reproducible roll"`
+}
+
+type diceOutput struct {
+	Rolls []dice.Report `json:"rolls"`
+}
+
+func (h *handler) dice(_ context.Context, _ *mcp.CallToolRequest, in diceInput) (*mcp.CallToolResult, diceOutput, error) {
+	count := in.Count
+	if count <= 0 {
+		count = 1
+	}
+	rolls := make([]dice.Report, 0, count)
+	for i := range count {
+		q := dice.Query{}
+		if in.Seed != nil {
+			s := *in.Seed + int64(i)
+			q.Seed = &s
+		}
+		report, err := dice.Roll(in.Expression, q)
+		if err != nil {
+			return nil, diceOutput{}, err
+		}
+		rolls = append(rolls, report)
+	}
+	return nil, diceOutput{Rolls: rolls}, nil
 }

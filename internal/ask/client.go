@@ -67,34 +67,138 @@ func (c *client) Chat(ctx context.Context, system, user string) (string, error) 
 }
 
 func (c *client) ChatMessages(ctx context.Context, msgs []Message) (string, error) {
-	messages := make([]map[string]string, len(msgs))
-	for i, m := range msgs {
-		messages[i] = map[string]string{"role": m.Role, "content": m.Content}
+	result, err := c.ChatCompletion(ctx, msgs, nil)
+	if err != nil {
+		return "", err
 	}
+	return result.Content, nil
+}
+
+// completionResult is one chat/completions response: either a final answer
+// (Content set, ToolCalls empty) or a request to run tools before the model
+// continues (ToolCalls set; Content is typically empty in that case).
+type completionResult struct {
+	Content   string
+	ToolCalls []ToolCall
+}
+
+// wireMessage is one internal Message translated to the OpenAI-compatible
+// wire shape. Only an assistant message that is itself requesting tool calls
+// carries ToolCalls; only a role:"tool" message carries ToolCallID.
+type wireMessage struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+type wireToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function wireToolCallFunc `json:"function"`
+}
+
+type wireToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+func toWireMessages(msgs []Message) []wireMessage {
+	out := make([]wireMessage, len(msgs))
+	for i, m := range msgs {
+		w := wireMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			w.ToolCalls = append(w.ToolCalls, wireToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: wireToolCallFunc{
+					Name:      tc.Name,
+					Arguments: string(tc.Arguments),
+				},
+			})
+		}
+		out[i] = w
+	}
+	return out
+}
+
+func toWireTools(tools []Tool) []map[string]any {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, len(tools))
+	for i, t := range tools {
+		params := t.Parameters
+		if len(params) == 0 {
+			params = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		out[i] = map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"parameters":  json.RawMessage(params),
+			},
+		}
+	}
+	return out
+}
+
+// ChatCompletion is ChatMessages with tool support: when tools is non-empty,
+// the model may respond with tool calls instead of (or in addition to
+// planning) a final answer, and the caller is expected to execute them and
+// append role:"tool" messages before calling again. Non-streaming: a tool
+// round has to be inspected for tool_calls before anything can be shown to
+// the user, so there is nothing meaningful to stream until the loop that
+// owns this call has a final answer in hand.
+func (c *client) ChatCompletion(ctx context.Context, msgs []Message, tools []Tool) (completionResult, error) {
 	body := map[string]any{
 		"model":       c.cfg.AskModel,
-		"messages":    messages,
+		"messages":    toWireMessages(msgs),
 		"temperature": 0,
 		"max_tokens":  c.cfg.AnswerMaxTokens,
+	}
+	if wireTools := toWireTools(tools); wireTools != nil {
+		body["tools"] = wireTools
+		body["tool_choice"] = "auto"
 	}
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Content json.RawMessage `json:"content"`
+				Content   json.RawMessage `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Error *apiError `json:"error"`
 	}
 	if err := c.post(ctx, "chat/completions", body, &resp); err != nil {
-		return "", err
+		return completionResult{}, err
 	}
 	if resp.Error != nil && resp.Error.Message != "" {
-		return "", fmt.Errorf("chat: %s", resp.Error.Message)
+		return completionResult{}, fmt.Errorf("chat: %s", resp.Error.Message)
 	}
 	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("chat: empty choices")
+		return completionResult{}, fmt.Errorf("chat: empty choices")
 	}
-	return messageText(resp.Choices[0].Message.Content)
+	msg := resp.Choices[0].Message
+	if len(msg.ToolCalls) > 0 {
+		calls := make([]ToolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			calls[i] = ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: json.RawMessage(tc.Function.Arguments)}
+		}
+		return completionResult{ToolCalls: calls}, nil
+	}
+	content, err := messageText(msg.Content)
+	if err != nil {
+		return completionResult{}, err
+	}
+	return completionResult{Content: content}, nil
 }
 
 // ChatMessagesStream is ChatMessages, but calls onDelta with each token as
@@ -107,13 +211,9 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 	if c.cfg.APIKey == "" {
 		return "", fmt.Errorf("OPENAI_API_KEY is not set")
 	}
-	messages := make([]map[string]string, len(msgs))
-	for i, m := range msgs {
-		messages[i] = map[string]string{"role": m.Role, "content": m.Content}
-	}
 	body := map[string]any{
 		"model":       c.cfg.AskModel,
-		"messages":    messages,
+		"messages":    toWireMessages(msgs),
 		"temperature": 0,
 		"max_tokens":  c.cfg.AnswerMaxTokens,
 		"stream":      true,

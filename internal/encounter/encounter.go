@@ -11,6 +11,7 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/search"
+	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -26,7 +27,11 @@ type Query struct {
 	Limit   int
 }
 
-// Hit is a compact encounter result suitable for humans and agents.
+// Hit is a compact encounter result suitable for humans and agents. AC, HP,
+// XP, and Speed are the numbers a DM actually needs to place a monster in an
+// encounter without a second `get` round trip for the full stat block; they
+// are omitted (zero/empty) rather than guessed when the source JSON does not
+// carry them in a shape this package understands.
 type Hit struct {
 	Kind    string  `json:"kind"`
 	Name    string  `json:"name"`
@@ -36,6 +41,10 @@ type Hit struct {
 	CR      string  `json:"cr,omitempty"`
 	Type    string  `json:"type,omitempty"`
 	Size    string  `json:"size,omitempty"`
+	AC      int     `json:"ac,omitempty"`
+	HP      int     `json:"hp,omitempty"`
+	XP      int     `json:"xp,omitempty"`
+	Speed   string  `json:"speed,omitempty"`
 	SRD     bool    `json:"srd"`
 	Snippet string  `json:"snippet,omitempty"`
 }
@@ -133,15 +142,21 @@ func makeHit(c candidate, query string) (Hit, bool) {
 		}
 		score = 0.25
 	}
+	cr := challenge(obj)
+	xp, _ := statblock.XPForCR(cr)
 	return Hit{
 		Kind:    entity.Kind,
 		Name:    entity.Name,
 		Source:  entity.Source,
 		Page:    entity.Page,
 		Score:   score,
-		CR:      challenge(obj),
+		CR:      cr,
 		Type:    creatureType(obj),
 		Size:    sizes(obj),
+		AC:      armorClassValue(obj),
+		HP:      hitPointsValue(obj),
+		XP:      xp,
+		Speed:   speedSummary(obj),
 		SRD:     entity.SRD,
 		Snippet: snippet(entity.Text),
 	}, true
@@ -268,6 +283,70 @@ func sourceSet(sources []string) map[string]bool {
 func stringValue(value any) string {
 	if text, ok := value.(string); ok {
 		return text
+	}
+	return ""
+}
+
+// armorClassValue reads a monster's AC as an int for Hit: either a bare
+// number, or the first entry of the array 5etools uses when armor sources
+// (natural armor, a shield) are listed alongside the number.
+func armorClassValue(obj map[string]any) int {
+	switch value := obj["ac"].(type) {
+	case json.Number:
+		n, _ := strconv.Atoi(value.String())
+		return n
+	case []any:
+		if len(value) == 0 {
+			return 0
+		}
+		switch first := value[0].(type) {
+		case json.Number:
+			n, _ := strconv.Atoi(first.String())
+			return n
+		case map[string]any:
+			if ac, ok := first["ac"].(json.Number); ok {
+				n, _ := strconv.Atoi(ac.String())
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func hitPointsValue(obj map[string]any) int {
+	hp, _ := obj["hp"].(map[string]any)
+	if average, ok := hp["average"].(json.Number); ok {
+		n, _ := strconv.Atoi(average.String())
+		return n
+	}
+	return 0
+}
+
+// speedSummary reads a monster's speed the same way `5e get` does, since a
+// DM placing a monster needs to know it flies or burrows, not only that it
+// walks.
+func speedSummary(obj map[string]any) string {
+	switch value := obj["speed"].(type) {
+	case json.Number:
+		return value.String() + " ft."
+	case map[string]any:
+		order := []string{"walk", "burrow", "climb", "fly", "swim"}
+		var out []string
+		for _, kind := range order {
+			label := ""
+			if kind != "walk" {
+				label = kind + " "
+			}
+			switch speedValue := value[kind].(type) {
+			case json.Number:
+				out = append(out, label+speedValue.String()+" ft.")
+			case map[string]any:
+				if number, ok := speedValue["number"].(json.Number); ok {
+					out = append(out, label+number.String()+" ft.")
+				}
+			}
+		}
+		return strings.Join(out, ", ")
 	}
 	return ""
 }

@@ -33,6 +33,12 @@ type Roll struct {
 type Query struct {
 	Count int
 	Seed  *int64
+	// Level selects which level-banded sub-table to roll on for an
+	// `encounter` kind entity (data/encounters.json), whose tables are
+	// split by character level range (e.g. 1-4, 5-10) rather than being one
+	// flat table the way data/tables.json entries are. Zero picks the
+	// first sub-table. Ignored for every other table shape.
+	Level int
 }
 
 // RollTable selects rows from an indexed table entity.
@@ -43,7 +49,7 @@ func RollTable(entity store.Entity, q Query) (Report, error) {
 	if err := dec.Decode(&obj); err != nil {
 		return Report{}, fmt.Errorf("decode table %q: %w", entity.Name, err)
 	}
-	headers, rows := tableRows(obj)
+	headers, rows := tableRows(obj, q.Level)
 	if len(rows) == 0 {
 		return Report{}, fmt.Errorf("table %q has no rows", entity.Name)
 	}
@@ -89,7 +95,7 @@ type row struct {
 	valid  bool
 }
 
-func tableRows(obj map[string]any) ([]string, []row) {
+func tableRows(obj map[string]any, level int) ([]string, []row) {
 	headers := values(obj["colLabels"])
 	rowsValue := obj["rows"]
 	if rowsValue == nil {
@@ -100,6 +106,11 @@ func tableRows(obj map[string]any) ([]string, []row) {
 				}
 				rowsValue = nestedObj["rows"]
 			}
+		}
+	}
+	if rowsValue == nil {
+		if h, r, ok := encounterRows(obj, level); ok {
+			return h, r
 		}
 	}
 	var rows []row
@@ -118,6 +129,70 @@ func tableRows(obj map[string]any) ([]string, []row) {
 		}
 	}
 	return headers, rows
+}
+
+// encounterRows reads the `encounter` kind's shape (data/encounters.json):
+// {"tables":[{"minlvl":1,"maxlvl":4,"diceExpression":"d100","table":[{"min":1,"max":5,"result":"..."}]}]}
+// rather than the row/colLabels shape data/tables.json and embedded prose
+// tables use. Several sub-tables banded by character level are common
+// (low-level vs. high-level encounters for the same region); level selects
+// the band that contains it, defaulting to the first sub-table when level
+// is 0 or matches none of the bands (most encounter tables have only one).
+func encounterRows(obj map[string]any, level int) ([]string, []row, bool) {
+	tables, ok := obj["tables"].([]any)
+	if !ok || len(tables) == 0 {
+		return nil, nil, false
+	}
+	sub := tables[0]
+	if level > 0 {
+		for _, t := range tables {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			min, max := numberValue(tm["minlvl"]), numberValue(tm["maxlvl"])
+			if min == 0 && max == 0 {
+				continue
+			}
+			if level >= min && level <= max {
+				sub = t
+				break
+			}
+		}
+	}
+	tm, ok := sub.(map[string]any)
+	if !ok {
+		return nil, nil, false
+	}
+	rowsAny, ok := tm["table"].([]any)
+	if !ok {
+		return nil, nil, false
+	}
+	var rows []row
+	for _, r := range rowsAny {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		min := numberValue(rm["min"])
+		max := numberValue(rm["max"])
+		if max == 0 {
+			max = min
+		}
+		rows = append(rows, row{values: []string{cellText(rm["result"])}, min: min, max: max, valid: min > 0})
+	}
+	return []string{"Result"}, rows, len(rows) > 0
+}
+
+func numberValue(v any) int {
+	switch n := v.(type) {
+	case json.Number:
+		i, _ := strconv.Atoi(n.String())
+		return i
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 func indexRows(rows []row) []row {

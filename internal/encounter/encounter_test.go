@@ -47,6 +47,9 @@ func TestSearch_filtersBeforeLimitAndReturnsMetadata(t *testing.T) {
 	if hits[0].Page != 42 || !hits[0].SRD || hits[0].Snippet == "" {
 		t.Fatalf("record metadata: %+v", hits[0])
 	}
+	if hits[0].AC != 15 || hits[0].HP != 7 || hits[0].Speed != "30 ft." || hits[0].XP != 50 {
+		t.Fatalf("structured stat fields: %+v", hits[0])
+	}
 }
 
 func TestSearch_filtersSourceEditionAndSRD(t *testing.T) {
@@ -97,7 +100,7 @@ func encounterStore(t *testing.T) *store.Store {
 	entities := []parse.Entity{
 		{
 			Kind: "monster", Name: "Goblin", Source: "PHB", Page: 42, SRD: true,
-			JSON: json.RawMessage(`{"name":"Goblin","source":"PHB","cr":"1/4","type":"humanoid","size":["S"]}`),
+			JSON: json.RawMessage(`{"name":"Goblin","source":"PHB","cr":"1/4","type":"humanoid","size":["S"],"ac":[{"ac":15,"from":["leather armor","shield"]}],"hp":{"average":7,"formula":"2d6"},"speed":{"walk":30}}`),
 			Text: "small humanoid goblin",
 		},
 		{

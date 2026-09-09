@@ -21,6 +21,18 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
+// cardWidth picks a card width from the viewport's own width, so a card
+// fits the pane instead of using the CLI's fixed statblockCardWidth (there
+// is no fixed terminal width in the workspace — it already tracks resizes).
+// It falls back to statblockCardWidth before the first WindowSizeMsg, when
+// the viewport hasn't been sized yet.
+func cardWidth(viewportWidth int) int {
+	if viewportWidth <= 0 {
+		return statblockCardWidth
+	}
+	return viewportWidth
+}
+
 // chatWorkspaceAvailable reports whether the interactive Bubble Tea chat
 // workspace (#44) can run: both stdin and stdout must be a real interactive
 // terminal — piped or redirected input would hang waiting for terminal
@@ -37,8 +49,8 @@ func chatWorkspaceAvailable(cmd *cobra.Command, asJSON bool) bool {
 // question — the same domain logic chatREPL uses — so behavior (including
 // which turns get persisted) stays identical between the two REPL paths;
 // only presentation differs.
-func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string) error {
-	m := newChatModel(cmd, st, cs, sess, cfg, opts, providerName)
+func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string, drainShown func() turnDisplays) error {
+	m := newChatModel(cmd, st, cs, sess, cfg, opts, providerName, drainShown)
 	p := tea.NewProgram(m,
 		tea.WithContext(cmd.Context()),
 		tea.WithInput(cmd.InOrStdin()),
@@ -111,6 +123,9 @@ type chatModel struct {
 	cfg          ask.Config
 	opts         chat.Options
 	providerName string
+	// drainShown returns and clears the entities a turn's get tool calls
+	// fetched, so finishTurn can render their stat blocks as cards.
+	drainShown func() turnDisplays
 
 	keys chatKeyMap
 	help help.Model
@@ -151,7 +166,7 @@ type chatModel struct {
 	mouseEnabled bool
 }
 
-func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string) *chatModel {
+func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string, drainShown func() turnDisplays) *chatModel {
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question, or /help for commands"
 	ta.ShowLineNumbers = false
@@ -165,6 +180,7 @@ func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *cha
 		cfg:          cfg,
 		opts:         opts,
 		providerName: providerName,
+		drainShown:   drainShown,
 		keys:         defaultChatKeyMap(),
 		help:         help.New(),
 		spin:         spinner.New(spinner.WithSpinner(spinner.MiniDot)),
@@ -586,6 +602,17 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 	m.cancel = nil
 	defer m.refreshViewport()
 
+	// Displays are driven only by actual tool calls, not by matching
+	// citations against the retrieved sources, so one appears exactly when
+	// the model chose to look something up or roll something — never as a
+	// second, possibly redundant rendering of something it already
+	// answered from source text on its own.
+	var displays turnDisplays
+	if m.drainShown != nil {
+		displays = m.drainShown()
+		displays.Entities = dedupShown(displays.Entities)
+	}
+
 	if msg.err != nil {
 		// Whatever text already streamed to the screen stays visible either
 		// way — a cancelled or interrupted turn still leaves it, so the
@@ -603,7 +630,17 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 		return
 	}
 
+	// Displays come before the model's own prose: a DM asking "show me a
+	// goblin" wants the actual stat block the get tool fetched, not only
+	// the model's paraphrase of it, and a roll result should be the tool's
+	// own number, not the model's retelling of it.
+	if !displays.empty() {
+		var buf bytes.Buffer
+		writeTurnDisplays(&buf, displays, cardWidth(m.viewport.Width()))
+		m.writeRendered(strings.TrimRight(buf.String(), "\n"))
+	}
 	m.writeRendered(m.renderAnswer(msg.res.Answer))
+	msg.res.Citations = mergeCitations(msg.res.Citations, displays.Entities)
 	if len(msg.res.Citations) > 0 {
 		var buf bytes.Buffer
 		buf.WriteString("Sources:\n")

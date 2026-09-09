@@ -13,6 +13,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/compare"
+	"github.com/hbaldwin98/5e-cli/internal/dice"
 	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/ingest"
@@ -49,7 +50,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
 	cmd.PersistentFlags().StringVar(&opt.Provider, "provider", "", "use this configured provider (see `5e auth list`) instead of the active one")
 	cmd.PersistentFlags().StringVar(&opt.Model, "model", "", "override the chat model for this run")
-	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), refsCmd(opt), askCmd(opt), chatCmd(opt), adventureCmd(opt), mcpCmd(opt), authCmd())
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), diceCmd(opt), refsCmd(opt), askCmd(opt), chatCmd(opt), adventureCmd(opt), mcpCmd(opt), authCmd())
 	return cmd
 }
 
@@ -339,13 +340,20 @@ func encounterCmd(opt *options) *cobra.Command {
 }
 
 func rollCmd(opt *options) *cobra.Command {
-	var source string
-	var count int
+	var kind, source string
+	var count, level int
 	var seed int64
 	cmd := &cobra.Command{
 		Use:   "roll <table name>",
-		Short: "Roll an indexed random table",
-		Args:  cobra.MinimumNArgs(1),
+		Short: "Roll an indexed random table or random encounter table",
+		Long: `Roll an indexed table by name: a plain random table (--kind table, the
+default) or a random encounter table (--kind encounter), whose sub-tables are
+banded by character level (--level picks the band; the first band is used
+when omitted).`,
+		Example: `  5e roll Wild Magic Surge
+  5e roll "Arctic" --kind encounter --level 7
+  5e roll Weather --count 3 --seed 11`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, index, err := resolve(opt)
 			if err != nil {
@@ -356,8 +364,11 @@ func rollCmd(opt *options) *cobra.Command {
 				return err
 			}
 			defer st.Close()
+			if kind == "" {
+				kind = "table"
+			}
 			name := strings.Join(args, " ")
-			ents, err := st.Lookup("table", name, source)
+			ents, err := st.Lookup(kind, name, source)
 			if err != nil {
 				return err
 			}
@@ -372,7 +383,7 @@ func rollCmd(opt *options) *cobra.Command {
 				ents = store.SRDOnly(ents)
 			}
 			if len(ents) == 0 {
-				return fmt.Errorf("no table named %q", name)
+				return fmt.Errorf("no %s named %q", kind, name)
 			}
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)
@@ -381,7 +392,7 @@ func rollCmd(opt *options) *cobra.Command {
 			if cmd.Flags().Changed("seed") {
 				seedPtr = &seed
 			}
-			report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: count, Seed: seedPtr})
+			report, err := randomtable.RollTable(ents[0], randomtable.Query{Count: count, Seed: seedPtr, Level: level})
 			if err != nil {
 				return err
 			}
@@ -391,10 +402,84 @@ func rollCmd(opt *options) *cobra.Command {
 			return writeRandomTable(cmd.OutOrStdout(), report)
 		},
 	}
+	cmd.Flags().StringVar(&kind, "kind", "table", "table or encounter")
 	cmd.Flags().StringVar(&source, "source", "", "disambiguate by 5etools source id")
 	cmd.Flags().IntVar(&count, "count", 1, "number of rows to roll")
+	cmd.Flags().IntVar(&level, "level", 0, "character level, for an encounter table with level-banded sub-tables")
 	cmd.Flags().Int64Var(&seed, "seed", 0, "random seed for reproducible rolls")
 	return cmd
+}
+
+func diceCmd(opt *options) *cobra.Command {
+	var count int
+	var seed int64
+	cmd := &cobra.Command{
+		Use:   "dice <expression>",
+		Short: "Roll a dice expression such as 2d6+3, 4d6kh3, or adv",
+		Long: `Roll standard dice notation: NdM (` + "`2d6`" + `), an added or subtracted
+modifier (` + "`2d6+3`" + `), and keep-highest/keep-lowest (` + "`4d6kh3`" + ` for ability
+scores). ` + "`adv`" + ` and ` + "`dis`" + ` are shorthand for 2d20kh1 and 2d20kl1.`,
+		Example: `  5e dice 2d6+3
+  5e dice 4d6kh3 --count 6
+  5e dice adv
+  5e dice 1d20+5 --seed 11`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			expr := strings.Join(args, " ")
+			if count <= 0 {
+				count = 1
+			}
+			var seedPtr *int64
+			if cmd.Flags().Changed("seed") {
+				seedPtr = &seed
+			}
+			reports := make([]dice.Report, 0, count)
+			for i := range count {
+				q := dice.Query{}
+				if seedPtr != nil {
+					s := *seedPtr + int64(i)
+					q.Seed = &s
+				}
+				report, err := dice.Roll(expr, q)
+				if err != nil {
+					return err
+				}
+				reports = append(reports, report)
+			}
+			if opt.JSON {
+				if count == 1 {
+					return writeJSON(cmd.OutOrStdout(), reports[0])
+				}
+				return writeJSON(cmd.OutOrStdout(), reports)
+			}
+			return writeDiceReports(cmd.OutOrStdout(), reports)
+		},
+	}
+	cmd.Flags().IntVar(&count, "count", 1, "number of times to roll the expression")
+	cmd.Flags().Int64Var(&seed, "seed", 0, "random seed for a reproducible roll")
+	return cmd
+}
+
+func writeDiceReports(w io.Writer, reports []dice.Report) error {
+	for _, r := range reports {
+		fmt.Fprintf(w, "%s = %d", r.Expression, r.Total)
+		parts := make([]string, 0, len(r.Terms))
+		for _, t := range r.Terms {
+			if t.IsFlat {
+				continue
+			}
+			piece := fmt.Sprint(t.Rolls)
+			if t.Keep != "" {
+				piece += fmt.Sprintf(" keep %v", t.Kept)
+			}
+			parts = append(parts, piece)
+		}
+		if len(parts) > 0 {
+			fmt.Fprintf(w, "  (%s)", strings.Join(parts, ", "))
+		}
+		fmt.Fprintln(w)
+	}
+	return nil
 }
 
 func comparisonEdition(opt *options) (edition.Pref, error) {

@@ -2,20 +2,190 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/chat"
+	"github.com/hbaldwin98/5e-cli/internal/dice"
+	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
+	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
+	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 	"github.com/spf13/cobra"
 )
+
+// shownEntity is one record the get tool actually fetched during a turn,
+// kept so its stat block can be rendered as a card in the transcript
+// alongside the model's own prose — the model's answer paraphrases what it
+// read, but a DM asking "show me a goblin" wants the real stat block, not a
+// paraphrase of one.
+type shownEntity struct {
+	Kind, Name, Source string
+	Obj                map[string]any
+}
+
+// turnDisplays is everything a turn's tool calls produced that gets
+// rendered verbatim in the transcript rather than left to the model to
+// paraphrase: entities fetched by get, table/encounter rolls, dice rolls,
+// and encounter (monster-search) results. A roll or a dice total is exactly
+// the kind of thing a model can misreport when asked to restate it, so
+// these render from the tool's own result, not from the model's answer
+// text, the same reasoning that already applies to a get card.
+type turnDisplays struct {
+	Entities   []shownEntity
+	Rolls      []randomtable.Report
+	DiceRolls  []dice.Report
+	Encounters [][]encounter.Hit
+}
+
+func (d turnDisplays) empty() bool {
+	return len(d.Entities) == 0 && len(d.Rolls) == 0 && len(d.DiceRolls) == 0 && len(d.Encounters) == 0
+}
+
+// wrapToolExecutorWithDisplays wraps a tool executor so every get, roll,
+// dice, or encounter call's result is also recorded for direct rendering,
+// in addition to being returned to the model as text. drain returns and
+// clears everything recorded since the last call, so each turn only shows
+// what that turn actually did.
+func wrapToolExecutorWithDisplays(base ask.ToolExecutor) (wrapped ask.ToolExecutor, drain func() turnDisplays) {
+	var mu sync.Mutex
+	var d turnDisplays
+	wrapped = func(ctx context.Context, call ask.ToolCall) (string, error) {
+		result, err := base(ctx, call)
+		if err != nil {
+			return result, err
+		}
+		switch call.Name {
+		case "get":
+			var parsed struct {
+				Kind   string `json:"kind"`
+				Name   string `json:"name"`
+				Source string `json:"source"`
+				JSON   any    `json:"json"`
+			}
+			if jsonErr := json.Unmarshal([]byte(result), &parsed); jsonErr == nil {
+				if obj, ok := parsed.JSON.(map[string]any); ok {
+					mu.Lock()
+					d.Entities = append(d.Entities, shownEntity{Kind: parsed.Kind, Name: parsed.Name, Source: parsed.Source, Obj: obj})
+					mu.Unlock()
+				}
+			}
+		case "roll":
+			var report randomtable.Report
+			if jsonErr := json.Unmarshal([]byte(result), &report); jsonErr == nil {
+				mu.Lock()
+				d.Rolls = append(d.Rolls, report)
+				mu.Unlock()
+			}
+		case "dice":
+			var parsed struct {
+				Rolls []dice.Report `json:"rolls"`
+			}
+			if jsonErr := json.Unmarshal([]byte(result), &parsed); jsonErr == nil {
+				mu.Lock()
+				d.DiceRolls = append(d.DiceRolls, parsed.Rolls...)
+				mu.Unlock()
+			}
+		case "encounter":
+			var parsed struct {
+				Hits []encounter.Hit `json:"hits"`
+			}
+			if jsonErr := json.Unmarshal([]byte(result), &parsed); jsonErr == nil && len(parsed.Hits) > 0 {
+				mu.Lock()
+				d.Encounters = append(d.Encounters, parsed.Hits)
+				mu.Unlock()
+			}
+		}
+		return result, nil
+	}
+	drain = func() turnDisplays {
+		mu.Lock()
+		defer mu.Unlock()
+		out := d
+		d = turnDisplays{}
+		return out
+	}
+	return wrapped, drain
+}
+
+// writeTurnDisplays renders everything a turn's tool calls produced:
+// entity cards (ANSI, RenderCard), then table/encounter rolls, dice rolls,
+// and monster-search results using the same Markdown renderers `5e roll`,
+// `5e dice`, and `5e encounter` already use. Only for a color-capable
+// terminal — a script or --json consumer already gets the same data as
+// each tool's own JSON result.
+func writeTurnDisplays(w io.Writer, d turnDisplays, cardWidth int) {
+	for _, e := range d.Entities {
+		fmt.Fprintln(w, statblock.RenderCard(e.Kind, e.Name, e.Source, e.Obj, cardWidth))
+		fmt.Fprintln(w)
+	}
+	for _, r := range d.Rolls {
+		_ = writeRandomTable(w, r)
+		fmt.Fprintln(w)
+	}
+	if len(d.DiceRolls) > 0 {
+		_ = writeDiceReports(w, d.DiceRolls)
+		fmt.Fprintln(w)
+	}
+	for _, hits := range d.Encounters {
+		_ = writeEncounterResults(w, hits)
+		fmt.Fprintln(w)
+	}
+}
+
+// dedupShown drops repeats by (kind, name, source), keeping the first
+// occurrence — a turn can call get on the same entity more than once (a
+// retry, or two different tools both resolving to it), and it should only
+// get one card.
+func dedupShown(entities []shownEntity) []shownEntity {
+	seen := make(map[string]bool, len(entities))
+	out := make([]shownEntity, 0, len(entities))
+	for _, e := range entities {
+		key := e.Kind + "|" + e.Name + "|" + e.Source
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+// mergeCitations adds one citation per shown entity that isn't already
+// among citations, so the "Sources:" list still names what a get call
+// fetched even when the model's reply is a short acknowledgment with no
+// "(kind, name, source)" triple of its own — citations are otherwise parsed
+// only from the model's own answer text (see ask.parseCitations), and the
+// prompt now deliberately asks for a minimal reply after a card is shown,
+// which would otherwise leave the source line empty for exactly the turns
+// most worth citing. Score 1.0 marks these as a direct lookup, not a
+// ranked retrieval match.
+func mergeCitations(citations []ask.Hit, shown []shownEntity) []ask.Hit {
+	seen := make(map[string]bool, len(citations))
+	for _, c := range citations {
+		seen[c.Kind+"|"+c.Name+"|"+c.Source] = true
+	}
+	out := citations
+	for _, e := range shown {
+		key := e.Kind + "|" + e.Name + "|" + e.Source
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ask.Hit{Kind: e.Kind, Name: e.Name, Source: e.Source, Score: 1})
+	}
+	return out
+}
 
 // chatOptions are the chat command's own flags. --chat-dir is shared by the
 // subcommands so every one of them reads the same session directory.
@@ -443,6 +613,15 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 		return err
 	}
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
+	// Tools let the model pull an exact number (challenge rating, AC, a dice
+	// or table roll) mid-conversation instead of only paraphrasing retrieved
+	// text — the point of a DM companion chat over plain ask. Wiring them in
+	// disables true token-by-token streaming for this session (a tool round
+	// has to be inspected for tool_calls before there is anything to show),
+	// which is judged worth it for live rolls and lookups.
+	tools, exec := ask.BuildTools(st, ask.ToolsOptions{Edition: ed, SRD: opt.SRD})
+	wrappedExec, drainShown := wrapToolExecutorWithDisplays(exec)
+	cfg.Tools, cfg.ToolExecutor = tools, wrappedExec
 	inWorkspace := len(args) == 0 && chatWorkspaceAvailable(cmd, opt.JSON)
 	if opt.JSON || inWorkspace {
 		// The Bubble Tea workspace owns the whole terminal (alt screen,
@@ -460,12 +639,12 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	providerName := effectiveProviderName(opt)
 
 	if len(args) > 0 {
-		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts)
+		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts, drainShown)
 	}
 	if inWorkspace {
-		return runChatWorkspace(cmd, st, cs, sess, cfg, opts, providerName)
+		return runChatWorkspace(cmd, st, cs, sess, cfg, opts, providerName, drainShown)
 	}
-	return chatREPL(cmd, opt, st, cs, cfg, sess, opts, providerName)
+	return chatREPL(cmd, opt, st, cs, cfg, sess, opts, providerName, drainShown)
 }
 
 // scopeSummary is every retrieval filter in effect for a session's next
@@ -550,12 +729,25 @@ func scopeAdventure(st *store.Store, sess *chat.Session, name string, only bool)
 // redirected or piped stdout stay on the whole-answer path, since --json
 // needs one complete object and a script reading stdout should get one
 // deterministic write.
-func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, question string, opts chat.Options) error {
+func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, question string, opts chat.Options, drainShown func() turnDisplays) error {
 	out := cmd.OutOrStdout()
 	var res ask.Result
 	var err error
 	streamed := false
-	if !asJSON && isTTY(out) {
+	switch {
+	case !asJSON && isTTY(out) && cfg.HasTools():
+		// A tool-calling answer is delivered as one finished flush, not real
+		// token-by-token deltas (see ask.runToolLoop) — there is nothing to
+		// inspect for tool calls until the whole round trip is done. Treat
+		// it like any other non-streaming answer so it still gets rendered
+		// as Markdown below: a stat block pulled in from a tool result is
+		// exactly the kind of answer that carries bold labels and tables,
+		// and writing it as raw deltas would print literal "**" and "|"
+		// instead of a rendered block.
+		stop := runSpinner(out, "thinking")
+		res, err = chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
+		stop()
+	case !asJSON && isTTY(out):
 		// A spinner covers retrieval and the wait for the first token; once
 		// a delta arrives, stop() clears it so the spinner and the streamed
 		// answer never compete for the line.
@@ -567,7 +759,7 @@ func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, 
 			return werr
 		})
 		stop() // no-op if a delta already stopped it; guards the no-matches path
-	} else {
+	default:
 		res, err = chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
 	}
 	if err != nil {
@@ -576,6 +768,19 @@ func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, 
 	if err := cs.Save(sess); err != nil {
 		return err
 	}
+	// Displays come before the model's own prose, and are driven only by
+	// actual tool calls — not by matching citations against the retrieved
+	// sources — so they appear exactly when the model chose to look
+	// something up or roll something, never as a second, possibly
+	// redundant rendering of something it already answered from source
+	// text. ANSI, so only on a color-capable terminal; a script gets the
+	// same data from each tool's own JSON result.
+	displays := drainShown()
+	displays.Entities = dedupShown(displays.Entities)
+	if !asJSON && stylingEnabled(out) {
+		writeTurnDisplays(out, displays, statblockCardWidth)
+	}
+	res.Citations = mergeCitations(res.Citations, displays.Entities)
 	return writeChatTurn(cmd, asJSON, sess, question, res, streamed)
 }
 
@@ -681,7 +886,7 @@ func buildChatHelp() string {
 	return b.String()
 }
 
-func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, opts chat.Options, providerName string) error {
+func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, opts chat.Options, providerName string, drainShown func() turnDisplays) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 	// In --json mode the loop is a stream of turn objects, so the banner and
@@ -738,7 +943,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 		}
 		// A failed question must not end the conversation: a rate limit or a
 		// dropped connection should cost one turn, not the session.
-		if err := chatTurn(cmd, opt.JSON, st, cs, cfg, sess, line, opts); err != nil {
+		if err := chatTurn(cmd, opt.JSON, st, cs, cfg, sess, line, opts, drainShown); err != nil {
 			if opt.JSON {
 				if writeErr := writeChatError(out, sess, "", line, err); writeErr != nil {
 					return writeErr
