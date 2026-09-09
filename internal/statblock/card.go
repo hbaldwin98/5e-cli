@@ -40,6 +40,7 @@ var kindAccent = map[string]string{
 	"item":       "11", // yellow
 	"itemBase":   "11",
 	"race":       "10", // green
+	"subrace":    "10",
 	"class":      "14", // cyan
 	"background": "6",  // dark cyan
 	"feat":       "3",  // yellow-green
@@ -143,7 +144,7 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Bonus to Spell Attacks", scalar(obj["bonusSpellAttack"]))
 		add("Bonus to Saving Throws", scalar(obj["bonusSavingThrow"]))
 		add("Prerequisite", itemPrerequisite(obj))
-	case "race":
+	case "race", "subrace":
 		add("Size", raceSizes(obj["size"]))
 		add("Speed", speed(obj["speed"]))
 		add("Ability Scores", raceAbilities(obj["ability"]))

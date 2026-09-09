@@ -32,7 +32,7 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderMonster(w, obj)
 	case "item", "itemBase":
 		renderItem(w, obj)
-	case "race":
+	case "race", "subrace":
 		renderRace(w, obj)
 	case "class":
 		renderClass(w, obj)

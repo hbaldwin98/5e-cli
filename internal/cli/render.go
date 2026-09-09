@@ -46,7 +46,10 @@ func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity) error {
 			return err
 		}
 	}
-	return writeClassFeatureDetail(w, st, e.Kind, obj)
+	if err := writeClassFeatureDetail(w, st, e.Kind, obj); err != nil {
+		return err
+	}
+	return writeRaceSubraces(w, st, e.Kind, obj)
 }
 
 // writeClassFeatureDetail appends a class's or subclass's referenced
@@ -131,6 +134,57 @@ func classSubclasses(st *store.Store, className string) []store.Entity {
 		}
 		cn, _ := obj["className"].(string)
 		if strings.EqualFold(cn, className) {
+			out = append(out, ents[0])
+		}
+	}
+	return out
+}
+
+// writeRaceSubraces appends the subraces that exist for a race, the same
+// way writeClassFeatureDetail lists a class's subclasses — subrace entities
+// carry no dedicated store filter by parent race (only their own raceName
+// field), so listing them for a base race is otherwise impossible without
+// already knowing every subrace name.
+func writeRaceSubraces(w io.Writer, st *store.Store, kind string, obj map[string]any) error {
+	if st == nil || kind != "race" {
+		return nil
+	}
+	raceName, _ := obj["name"].(string)
+	subraces := raceSubraceEntities(st, raceName)
+	if len(subraces) == 0 {
+		return nil
+	}
+	var b bytes.Buffer
+	b.WriteString("\n## Subraces\n\n")
+	for _, sr := range subraces {
+		fmt.Fprintf(&b, "- %s (%s) — `5e get subrace \"%s\" --source %s` for its full traits\n", sr.Name, sr.Source, sr.Name, sr.Source)
+	}
+	return renderMarkdown(w, b.String())
+}
+
+// raceSubraceEntities finds every subrace entity for a race by name,
+// checking each subrace candidate's own raceName field the same way
+// classSubclasses checks className.
+func raceSubraceEntities(st *store.Store, raceName string) []store.Entity {
+	if raceName == "" {
+		return nil
+	}
+	names, err := st.FilteredNames(store.NameFilter{Kind: "subrace"})
+	if err != nil {
+		return nil
+	}
+	var out []store.Entity
+	for _, n := range names {
+		ents, err := st.Lookup("subrace", n.Name, n.Source)
+		if err != nil || len(ents) == 0 {
+			continue
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			continue
+		}
+		rn, _ := obj["raceName"].(string)
+		if strings.EqualFold(rn, raceName) {
 			out = append(out, ents[0])
 		}
 	}

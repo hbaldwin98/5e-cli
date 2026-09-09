@@ -188,6 +188,11 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 				}
 			}
 		}
+		if e.Kind == "race" {
+			if name, _ := obj["name"].(string); name != "" {
+				result["subraces"] = raceSubraceNames(st, name)
+			}
+		}
 	}
 	return toJSON(result)
 }
@@ -242,6 +247,33 @@ func classSubclassNames(st *store.Store, className string) []string {
 		}
 		cn, _ := obj["className"].(string)
 		if strings.EqualFold(cn, className) {
+			out = append(out, fmt.Sprintf("%s (%s)", n.Name, n.Source))
+		}
+	}
+	return out
+}
+
+// raceSubraceNames finds every subrace name for a race the same way
+// classSubclassNames does for a class's subclasses — subrace rows carry no
+// dedicated store filter for their parent race, so each candidate's own
+// raceName field has to be checked.
+func raceSubraceNames(st *store.Store, raceName string) []string {
+	names, err := st.FilteredNames(store.NameFilter{Kind: "subrace"})
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, n := range names {
+		ents, err := st.Lookup("subrace", n.Name, n.Source)
+		if err != nil || len(ents) == 0 {
+			continue
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			continue
+		}
+		rn, _ := obj["raceName"].(string)
+		if strings.EqualFold(rn, raceName) {
 			out = append(out, fmt.Sprintf("%s (%s)", n.Name, n.Source))
 		}
 	}
