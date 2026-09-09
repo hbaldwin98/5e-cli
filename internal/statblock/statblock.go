@@ -1035,16 +1035,24 @@ func abilityFullNameFromAbbrev(v any) string {
 	return ""
 }
 
-// classTableGroupsMarkdown renders classTableGroups (a class's per-level
-// resource tables — spell slots per spell level, cantrips known, a
-// class-specific resource like Fighter's Weapon Mastery count) as Markdown
-// tables, prefixed with a Level column since 5etools' own rows omit it.
-// Column labels routinely carry a {@filter Label|...} tag (5etools' own
-// cross-reference into its spell list UI); renderString strips it to the
-// plain label.
-func classTableGroupsMarkdown(v any) []string {
+// classTable is one classTableGroups entry (spell slots per spell level,
+// cantrips known, a class-specific resource like Fighter's Weapon Mastery
+// count) as structured data, so both the plain-text Render() and the
+// lipgloss card can format it themselves instead of one baking in Markdown
+// pipe syntax the other would have to re-parse.
+type classTable struct {
+	Title   string
+	Headers []string
+	Rows    [][]string
+}
+
+// classTableGroupsData extracts classTableGroups into classTables, adding a
+// Level column since 5etools' own rows omit it. Column labels routinely
+// carry a {@filter Label|...} tag (5etools' own cross-reference into its
+// spell list UI); renderString strips it to the plain label.
+func classTableGroupsData(v any) []classTable {
 	groups, _ := v.([]any)
-	out := make([]string, 0, len(groups))
+	out := make([]classTable, 0, len(groups))
 	for _, g := range groups {
 		group := mapValue(g)
 		if group == nil {
@@ -1057,19 +1065,48 @@ func classTableGroupsMarkdown(v any) []string {
 		if !ok || len(rows) == 0 {
 			continue
 		}
-		labels, _ := group["colLabels"].([]any)
-		table := map[string]any{
-			"caption":   stringValue(group["title"]),
-			"colLabels": append([]any{"Level"}, labels...),
+		labelsRaw, _ := group["colLabels"].([]any)
+		headers := make([]string, 0, len(labelsRaw)+1)
+		headers = append(headers, "Level")
+		for _, l := range labelsRaw {
+			headers = append(headers, renderString(stringValue(l)))
 		}
-		leveled := make([]any, len(rows))
+		tableRows := make([][]string, len(rows))
 		for i, row := range rows {
 			cells, _ := row.([]any)
-			leveled[i] = append([]any{strconv.Itoa(i + 1)}, cells...)
+			r := make([]string, 0, len(cells)+1)
+			r = append(r, strconv.Itoa(i+1))
+			for _, c := range cells {
+				r = append(r, scalar(c))
+			}
+			tableRows[i] = r
 		}
-		table["rows"] = leveled
+		out = append(out, classTable{Title: stringValue(group["title"]), Headers: headers, Rows: tableRows})
+	}
+	return out
+}
+
+// classTableGroupsMarkdown renders classTableGroupsData as Markdown pipe
+// tables, for the plain-text Render() path (a script's captured stdout, or
+// the chat tool-calling layer's text) — RenderCard builds an actual
+// lipgloss table from the same data instead of this text.
+func classTableGroupsMarkdown(v any) []string {
+	tables := classTableGroupsData(v)
+	out := make([]string, 0, len(tables))
+	for _, t := range tables {
 		var b strings.Builder
-		renderTable(&b, table, 0)
+		if t.Title != "" {
+			fmt.Fprintf(&b, "%s\n", t.Title)
+		}
+		fmt.Fprintf(&b, "| %s |\n", strings.Join(t.Headers, " | "))
+		seps := make([]string, len(t.Headers))
+		for i := range seps {
+			seps[i] = "---"
+		}
+		fmt.Fprintf(&b, "| %s |\n", strings.Join(seps, " | "))
+		for _, row := range t.Rows {
+			fmt.Fprintf(&b, "| %s |\n", strings.Join(row, " | "))
+		}
 		out = append(out, b.String())
 	}
 	return out
@@ -1187,12 +1224,13 @@ func profList(v any) string {
 	return strings.Join(out, "; ")
 }
 
-// classLevelTable groups classFeatures or subclassFeatures by level ("Level
-// 3: Fighter Subclass, Ability Score Improvement") so the whole
-// level-1-through-20 progression is visible at once instead of only the raw
-// reference strings 5etools stores. See ClassFeatureRefs for the parse this
-// shares.
-func classLevelTable(v any) string {
+// classFeatureLevelRows groups classFeatures or subclassFeatures by level
+// into (level, comma-joined feature names) rows, in level order — the whole
+// level-1-through-20 progression as data, so both the plain-text table
+// (classLevelTable) and the card's lipgloss table can lay it out themselves
+// instead of one being built from the other's pre-formatted text. See
+// ClassFeatureRefs for the parse this shares.
+func classFeatureLevelRows(v any) [][2]string {
 	refs := ClassFeatureRefs(v)
 	byLevel := map[int][]string{}
 	var levels []int
@@ -1203,9 +1241,25 @@ func classLevelTable(v any) string {
 		byLevel[r.Level] = append(byLevel[r.Level], r.Name)
 	}
 	sort.Ints(levels)
+	rows := make([][2]string, len(levels))
+	for i, level := range levels {
+		rows[i] = [2]string{strconv.Itoa(level), strings.Join(byLevel[level], ", ")}
+	}
+	return rows
+}
+
+// classLevelTable renders classFeatureLevelRows as a Markdown table, for the
+// plain-text Render() path — RenderCard builds an actual lipgloss table from
+// the same rows instead of this text.
+func classLevelTable(v any) string {
+	rows := classFeatureLevelRows(v)
+	if len(rows) == 0 {
+		return ""
+	}
 	var b strings.Builder
-	for _, level := range levels {
-		fmt.Fprintf(&b, "Level %d: %s\n", level, strings.Join(byLevel[level], ", "))
+	b.WriteString("| Level | Features |\n| --- | --- |\n")
+	for _, row := range rows {
+		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

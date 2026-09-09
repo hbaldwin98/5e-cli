@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	lgtable "charm.land/lipgloss/v2/table"
 )
 
 // Field is one label/value line in a card's stat block body, in display
@@ -27,6 +28,12 @@ type Ability struct {
 type Section struct {
 	Heading string
 	Text    string
+	// Preformatted marks Text as already laid out for the card's exact
+	// content width (a lipgloss table, box-drawing borders and all) — a
+	// second Width-driven word-wrap pass over already-fixed-width table
+	// rows would break their alignment, so RenderCard writes it as-is
+	// instead of re-wrapping it the way it does every other section's text.
+	Preformatted bool
 }
 
 // kindAccent is the border/heading color per kind, so a monster, a spell,
@@ -247,21 +254,23 @@ func Abilities(obj map[string]any) []Ability {
 // Sections is Render's entries walk (Traits, Spellcasting, Actions, and so
 // on for a monster; Entries/At Higher Levels for anything else) as plain
 // text instead of pre-assembled Markdown, so a card can indent and wrap each
-// one itself.
-func Sections(kind string, obj map[string]any) []Section {
+// one itself. width and accentColor size and color a class's level
+// progression tables, which — unlike every other section — must be laid out
+// as an actual table now rather than plain wrappable text.
+func Sections(kind string, obj map[string]any, width int, accentColor color.Color) []Section {
 	var out []Section
 	if kind == "class" {
 		if text := classEquipmentText(obj); text != "" {
 			out = append(out, Section{Heading: "Starting Equipment", Text: text})
 		}
-		for _, table := range classTableGroupsMarkdown(obj["classTableGroups"]) {
-			out = append(out, Section{Heading: "Level Progression", Text: strings.TrimRight(table, "\n")})
+		for _, t := range classTableGroupsData(obj["classTableGroups"]) {
+			out = append(out, Section{Heading: "Level Progression", Text: renderClassTable(t, width, accentColor), Preformatted: true})
 		}
-		if table := classLevelTable(obj["classFeatures"]); table != "" {
-			out = append(out, Section{Heading: "Features by Level", Text: table})
+		if rows := classFeatureLevelRows(obj["classFeatures"]); len(rows) > 0 {
+			out = append(out, Section{Heading: "Features by Level", Text: renderLevelFeatureTable(rows, width, accentColor), Preformatted: true})
 		}
-		if table := classLevelTable(obj["subclassFeatures"]); table != "" {
-			out = append(out, Section{Heading: "Subclass Features by Level", Text: table})
+		if rows := classFeatureLevelRows(obj["subclassFeatures"]); len(rows) > 0 {
+			out = append(out, Section{Heading: "Subclass Features by Level", Text: renderLevelFeatureTable(rows, width, accentColor), Preformatted: true})
 		}
 		return out
 	}
@@ -283,6 +292,71 @@ func Sections(kind string, obj map[string]any) []Section {
 		out = append(out, Section{Heading: heading, Text: text})
 	}
 	return out
+}
+
+// renderClassTable lays out one class level-progression table (spell slots,
+// cantrips known, a class resource) as an actual bordered lipgloss table
+// sized to width, rather than as literal Markdown pipe-table text laid over
+// a generic word-wrap — plain text wrapping mangles a table's column
+// alignment the moment a row is longer than the available width.
+func renderClassTable(t classTable, width int, accentColor color.Color) string {
+	tbl := lgtable.New().
+		Headers(t.Headers...).
+		Rows(t.Rows...).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(accentColor)).
+		BorderRow(false).
+		BorderColumn(true).
+		StyleFunc(func(row, _ int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			if row == lgtable.HeaderRow {
+				return style.Bold(true)
+			}
+			return style
+		})
+	out := strings.TrimRight(tbl.Render(), "\n")
+	// Only force the table to width when its natural, content-sized layout
+	// would overflow the card — otherwise a narrow table (a handful of
+	// single-digit columns) gets stretched to the full card width instead
+	// of sizing to its own content.
+	if lipgloss.Width(out) > width {
+		out = strings.TrimRight(tbl.Width(width).Render(), "\n")
+	}
+	if t.Title != "" {
+		out = lipgloss.NewStyle().Bold(true).Render(renderString(t.Title)) + "\n" + out
+	}
+	return out
+}
+
+// renderLevelFeatureTable lays out classFeatureLevelRows (Level, comma-joined
+// feature names) as a bordered lipgloss table sized to width — unlike
+// renderClassTable's narrow numeric columns, the Features column routinely
+// runs long enough that it must always wrap within width rather than only
+// when it would overflow.
+func renderLevelFeatureTable(rows [][2]string, width int, accentColor color.Color) string {
+	tableRows := make([][]string, len(rows))
+	for i, r := range rows {
+		tableRows[i] = []string{r[0], r[1]}
+	}
+	tbl := lgtable.New().
+		Headers("Level", "Features").
+		Rows(tableRows...).
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(accentColor)).
+		BorderRow(false).
+		BorderColumn(true).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			if col == 0 {
+				style = style.Width(7)
+			}
+			if row == lgtable.HeaderRow {
+				return style.Bold(true)
+			}
+			return style
+		})
+	return strings.TrimRight(tbl.Render(), "\n")
 }
 
 // RenderCard renders one entity as a bordered stat-block card: a title line
@@ -325,12 +399,16 @@ func RenderCard(kind, name, source string, obj map[string]any, width int) string
 		body.WriteString(renderAbilityRow(abilities, inner, accentColor))
 	}
 
-	for _, section := range Sections(kind, obj) {
+	for _, section := range Sections(kind, obj, inner, accentColor) {
 		body.WriteString("\n\n")
 		heading := lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(strings.ToUpper(section.Heading))
 		body.WriteString(heading)
 		body.WriteString("\n")
-		body.WriteString(lipgloss.NewStyle().Width(inner).Render(section.Text))
+		if section.Preformatted {
+			body.WriteString(section.Text)
+		} else {
+			body.WriteString(lipgloss.NewStyle().Width(inner).Render(section.Text))
+		}
 	}
 
 	// Style.Width sets the whole block's width, border and padding included

@@ -29,7 +29,7 @@ const statblockCardWidth = 96
 // piped output. Both paths share internal/statblock's field extraction, so
 // neither can drift from what a chat model sees through the get/encounter
 // tools.
-func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity) error {
+func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity, full bool) error {
 	obj, err := statblock.Decode(e.JSON)
 	if err != nil {
 		return fmt.Errorf("decode %s %q: %w", e.Kind, e.Name, err)
@@ -46,7 +46,7 @@ func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity) error {
 			return err
 		}
 	}
-	if err := writeClassFeatureDetail(w, st, e.Kind, obj); err != nil {
+	if err := writeClassFeatureDetail(w, st, e.Kind, obj, full); err != nil {
 		return err
 	}
 	return writeRaceSubraces(w, st, e.Kind, obj)
@@ -59,20 +59,29 @@ func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity) error {
 // (statblock.ClassFeatureRefs); the rules text lives in separate
 // classFeature/subclassFeature entities that only a store lookup can
 // resolve, which is why this isn't part of statblock.Render itself.
-func writeClassFeatureDetail(w io.Writer, st *store.Store, kind string, obj map[string]any) error {
+//
+// Resolving and printing every feature's full rules text is gated on full:
+// a class can reference 20+ features, each several paragraphs, which
+// buries the class's own mechanical summary the base card already shows.
+// Without --full, get class/subclass only lists subclasses/subraces (names,
+// not their full text) and points at the command to fetch a feature's or
+// subclass's own full detail.
+func writeClassFeatureDetail(w io.Writer, st *store.Store, kind string, obj map[string]any, full bool) error {
 	if st == nil || (kind != "class" && kind != "subclass") {
 		return nil
 	}
-	refsKey := "classFeatures"
-	if kind == "subclass" {
-		refsKey = "subclassFeatures"
-	}
-	if refs := statblock.ClassFeatureRefs(obj[refsKey]); len(refs) > 0 {
-		var b bytes.Buffer
-		b.WriteString("\n## Feature Details\n")
-		statblock.RenderFeatureDetails(&b, refs, classFeatureLookup(st))
-		if err := renderMarkdown(w, b.String()); err != nil {
-			return err
+	if full {
+		refsKey := "classFeatures"
+		if kind == "subclass" {
+			refsKey = "subclassFeatures"
+		}
+		if refs := statblock.ClassFeatureRefs(obj[refsKey]); len(refs) > 0 {
+			var b bytes.Buffer
+			b.WriteString("\n## Feature Details\n")
+			statblock.RenderFeatureDetails(&b, refs, classFeatureLookup(st))
+			if err := renderMarkdown(w, b.String()); err != nil {
+				return err
+			}
 		}
 	}
 	if kind != "class" {
@@ -87,6 +96,9 @@ func writeClassFeatureDetail(w io.Writer, st *store.Store, kind string, obj map[
 	b.WriteString("\n## Subclasses\n\n")
 	for _, sc := range subclasses {
 		fmt.Fprintf(&b, "- %s (%s) — `5e get subclass \"%s\" --source %s` for its full features\n", sc.Name, sc.Source, sc.Name, sc.Source)
+	}
+	if !full {
+		b.WriteString("\nPass --full for every feature's rules text inline, or look one up by name (e.g. `5e get classFeature \"Action Surge (Fighter 2)\"`).\n")
 	}
 	return renderMarkdown(w, b.String())
 }

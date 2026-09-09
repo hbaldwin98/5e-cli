@@ -35,8 +35,8 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 	tools := []Tool{
 		{
 			Name:        "get",
-			Description: "Look up one 5e entity or book section by kind and name. Pass source when several reprints match.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id such as PHB"}},"required":["kind","name"]}`),
+			Description: "Look up one 5e entity or book section by kind and name. Pass source when several reprints match. For a class/subclass, pass full=true only when you need every referenced feature's complete rules text — the default response already includes the feature-name-by-level progression.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id such as PHB"},"full":{"type":"boolean","description":"for a class/subclass, also resolve and include every referenced feature's full rules text (verbose; omit unless needed)"}},"required":["kind","name"]}`),
 		},
 		{
 			Name:        "search",
@@ -136,6 +136,7 @@ type toolGetArgs struct {
 	Kind   string `json:"kind"`
 	Name   string `json:"name"`
 	Source string `json:"source"`
+	Full   bool   `json:"full"`
 }
 
 func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, error) {
@@ -181,7 +182,11 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 		// `5e get` does, so the model reads the actual mechanics instead of
 		// a bare feature-name list.
 		if e.Kind == "class" || e.Kind == "subclass" {
-			result["featureDetails"] = classFeatureDetailText(st, e.Kind, obj)
+			if args.Full {
+				result["featureDetails"] = classFeatureDetailText(st, e.Kind, obj)
+			} else {
+				result["featureDetailsNote"] = "Pass full: true to resolve every referenced feature's full rules text; omitted here to keep this response short. Feature names by level are already in statblock."
+			}
 			if e.Kind == "class" {
 				if name, _ := obj["name"].(string); name != "" {
 					result["subclasses"] = classSubclassNames(st, name)
