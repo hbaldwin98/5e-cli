@@ -106,6 +106,21 @@ func (s *Session) AddTurn(question string, res ask.Result) {
 	s.Updated = now()
 }
 
+// Clear empties the transcript, and the notes too when withNotes is set. It
+// reports what it dropped so the caller can say. The adventure scope is not
+// part of clearing: a session scoped to a module is still about that module
+// after its transcript is dropped.
+func (s *Session) Clear(withNotes bool) (turns, notes int) {
+	turns = len(s.Turns)
+	s.Turns = nil
+	if withNotes {
+		notes = len(s.Notes)
+		s.Notes = nil
+	}
+	s.Updated = now()
+	return turns, notes
+}
+
 func (s *Session) summary(slug string) Summary {
 	return Summary{
 		Name:      s.Name,

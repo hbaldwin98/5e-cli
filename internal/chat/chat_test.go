@@ -170,3 +170,60 @@ func testStore(t *testing.T) *Store {
 func writeFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
+
+func TestSession_clearKeepsNotesAndScope(t *testing.T) {
+	sess := &Session{Name: "s", Adventure: "CoS"}
+	sess.AddNote("the party sold the Sunsword")
+	sess.AddTurn("who is Strahd", ask.Result{Answer: "A vampire."})
+
+	turns, notes := sess.Clear(false)
+	if turns != 1 || notes != 0 {
+		t.Fatalf("clear reported %d turns and %d notes", turns, notes)
+	}
+	if len(sess.Turns) != 0 {
+		t.Fatalf("transcript survived: %+v", sess.Turns)
+	}
+	if len(sess.Notes) != 1 {
+		t.Fatal("clearing the transcript must keep the notes")
+	}
+	if sess.Adventure != "CoS" {
+		t.Fatalf("clearing dropped the adventure scope: %q", sess.Adventure)
+	}
+	if len(sess.History()) != 0 {
+		t.Fatal("a cleared session has no history to send")
+	}
+
+	sess.AddTurn("and now", ask.Result{Answer: "Still a vampire."})
+	turns, notes = sess.Clear(true)
+	if turns != 1 || notes != 1 {
+		t.Fatalf("clear --notes reported %d turns and %d notes", turns, notes)
+	}
+	if len(sess.Notes) != 0 || len(sess.NoteTexts()) != 0 {
+		t.Fatalf("notes survived: %+v", sess.Notes)
+	}
+}
+
+func TestStore_clearedSessionStaysListed(t *testing.T) {
+	cs := testStore(t)
+	sess, err := cs.Load("lmop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AddNote("the party is level 2")
+	sess.AddTurn("q", ask.Result{Answer: "a"})
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	sess.Clear(false)
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := cs.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Turns != 0 || list[0].Notes != 1 {
+		t.Fatalf("clearing is not deleting: %+v", list)
+	}
+}

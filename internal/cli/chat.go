@@ -39,6 +39,7 @@ saved, so a later run continues where this one stopped.`,
   5e chat --session curse-of-strahd --adventure CoS
   5e chat "how does grappling work"
   5e chat note "the party sold the Sunsword in Vallaki"
+  5e chat clear --session curse-of-strahd
   5e chat list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runChat(cmd, opt, copt, args)
@@ -50,7 +51,7 @@ saved, so a later run continues where this one stopped.`,
 	cmd.Flags().StringSliceVar(&copt.Sources, "source", nil, "restrict retrieval to source ids")
 	cmd.Flags().StringVar(&copt.Adventure, "adventure", "", "scope the session to one adventure (id or title; \"none\" clears it)")
 	cmd.Flags().IntVar(&copt.Limit, "limit", chat.DefaultLimit, "maximum retrieved chunks per question")
-	cmd.AddCommand(chatListCmd(opt, copt), chatShowCmd(opt, copt), chatNoteCmd(opt, copt), chatRemoveCmd(opt, copt))
+	cmd.AddCommand(chatListCmd(opt, copt), chatShowCmd(opt, copt), chatNoteCmd(opt, copt), chatClearCmd(opt, copt), chatRemoveCmd(opt, copt))
 	return cmd
 }
 
@@ -139,6 +140,50 @@ func chatNoteCmd(opt *options, copt *chatOptions) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// chatClearCmd empties a session rather than deleting it. Dropping the
+// transcript is how you start a new subject without losing the notes, which
+// are the part of a session worth keeping.
+func chatClearCmd(opt *options, copt *chatOptions) *cobra.Command {
+	var withNotes bool
+	cmd := &cobra.Command{
+		Use:   "clear [session]",
+		Short: "Empty a session's transcript, keeping the session and its notes",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			sess, err := cs.Load(sessionName(copt, args))
+			if err != nil {
+				return err
+			}
+			turns, notes := sess.Clear(withNotes)
+			if err := cs.Save(sess); err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), sess)
+			}
+			writeCleared(cmd.OutOrStdout(), sess, turns, notes)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&withNotes, "notes", false, "clear the recorded notes too")
+	return cmd
+}
+
+func writeCleared(w io.Writer, sess *chat.Session, turns, notes int) {
+	msg := fmt.Sprintf("cleared %s from %s", plural(turns, "turn"), sess.Name)
+	switch {
+	case notes > 0:
+		msg += fmt.Sprintf(" and %s", plural(notes, "note"))
+	case len(sess.Notes) > 0:
+		msg += fmt.Sprintf(" (%s kept)", plural(len(sess.Notes), "note"))
+	}
+	fmt.Fprintln(w, msg)
 }
 
 func chatRemoveCmd(opt *options, copt *chatOptions) *cobra.Command {
@@ -287,6 +332,7 @@ const chatHelp = `Commands:
   /adventure <id>     scope the session to one adventure ("none" clears it)
   /limit <n>          retrieved chunks per question
   /history            print the transcript
+  /clear [all]        drop the transcript, or "all" to drop the notes too
   /help               this list
   /exit               leave (Ctrl-D also works)
 Anything else is a question.`
@@ -406,6 +452,20 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		}
 		opts.Limit = n
 		fmt.Fprintf(out, "limit %d\n", n)
+	case "/clear":
+		withNotes := false
+		switch strings.ToLower(rest) {
+		case "", "turns", "history":
+		case "all", "notes":
+			withNotes = true
+		default:
+			return false, fmt.Errorf("usage: /clear [all]")
+		}
+		turns, notes := sess.Clear(withNotes)
+		if err := cs.Save(sess); err != nil {
+			return false, err
+		}
+		writeCleared(out, sess, turns, notes)
 	case "/history":
 		if err := writeChatSession(out, sess); err != nil {
 			return false, err

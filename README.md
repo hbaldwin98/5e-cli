@@ -201,6 +201,8 @@ Either way the transcript is saved and the next run continues it:
 5e chat note "the party sold the Sunsword in Vallaki"
 5e chat list
 5e chat show curse-of-strahd
+5e chat clear --session curse-of-strahd
+5e chat clear --session curse-of-strahd --notes
 5e chat rm curse-of-strahd
 ```
 
@@ -213,6 +215,7 @@ Inside a session:
 /adventure <id>     scope the session to one adventure ("none" clears it)
 /limit <n>          retrieved chunks per question
 /history            print the transcript
+/clear [all]        drop the transcript, or "all" to drop the notes too
 /help               this list
 /exit               leave (Ctrl-D also works)
 ```
@@ -222,6 +225,12 @@ grounded in the sources rather than in what was said earlier in the
 conversation. A follow-up is retrieved with the questions it follows, so
 `how much damage does it do` finds the spell the previous turn was about, and
 an adventure named once stays in scope for the follow-ups that only say "he".
+
+Clearing empties a session without deleting it. `5e chat clear` and `/clear`
+drop the transcript but keep the notes and the adventure scope, which is how
+you change subject without losing what you wrote down; add `--notes` (or use
+`/clear all`) to drop the notes as well. `5e chat rm` deletes the session
+itself.
 
 Notes are your own record of your table. They are sent with every question,
 treated as true, preferred over the rules when they disagree, and never cited

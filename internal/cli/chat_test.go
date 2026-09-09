@@ -262,3 +262,83 @@ func runCLIStdin(stdin string, args ...string) (string, error) {
 	err := cmd.Execute()
 	return out.String(), err
 }
+
+func TestChat_clearDropsHistoryAndKeepsNotes(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "note", "the tavern burned down")...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(append(base, "what does fireball do")...); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(append(base, "clear")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "cleared 1 turn") || !strings.Contains(out, "1 note kept") {
+		t.Fatalf("clear: %s", out)
+	}
+	if _, err := runCLI(append(base, "what does fireball do")...); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := api.messages()
+	if len(msgs) != 2 {
+		t.Fatalf("chat calls %d", len(msgs))
+	}
+	second := msgs[1]
+	if len(second) != 2 {
+		t.Fatalf("a cleared session should send only the system prompt and the question: %+v", second)
+	}
+	if !strings.Contains(second[1].Content, "the tavern burned down") {
+		t.Fatalf("clearing the transcript must not drop the notes:\n%s", second[1].Content)
+	}
+
+	// The session is emptied, not deleted.
+	out, err = runCLI("--index", index, "--data", data, "--json", "chat", "--chat-dir", dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0]["turns"].(float64) != 1 || list[0]["notes"].(float64) != 1 {
+		t.Fatalf("list after clear: %s", out)
+	}
+}
+
+func TestChat_clearNotesFlagAndSlashCommand(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "note", "the tavern burned down")...); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(append(base, "clear", "--notes")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "and 1 note") {
+		t.Fatalf("clear --notes should say what it dropped: %s", out)
+	}
+
+	out, err = runCLIStdin("/note a fresh fact\n/clear all\n/notes\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "and 1 note") || !strings.Contains(out, "no notes") {
+		t.Fatalf("/clear all: %s", out)
+	}
+	if out, err = runCLIStdin("/clear sideways\n/exit\n", base...); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(out, "usage: /clear [all]") {
+		t.Fatalf("/clear should reject an unknown argument: %s", out)
+	}
+}

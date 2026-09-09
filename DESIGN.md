@@ -123,6 +123,7 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e chat list [--json]
 5e chat show [session] [--json]
 5e chat note <text>
+5e chat clear [session] [--notes]
 5e chat rm <session>
 5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
 5e adventure <id-or-name> get <role> <name> [--json]
@@ -222,6 +223,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 **Follow-ups.** A follow-up is often unintelligible alone ("how much damage does it do?"), so the retrieval text is the question plus the last two *user* turns. Earlier answers are deliberately excluded: embedding the model's own words steers retrieval toward whatever it already said. The same widened text feeds adventure detection, so a module named once stays in scope for the follow-ups that only say "he" or "there".
 
 **Notes.** `/note` in the REPL, or `5e chat note`, records a fact ("the party sold the Sunsword in Vallaki"). Notes are re-sent with every question, marked as the user's own record: true, preferred over the rules when they conflict, and never cited as a source.
+
+**Clearing.** `5e chat clear` (or `/clear`) empties the transcript and keeps the session, its notes, and its adventure scope: dropping the history is how you change subject without losing what you wrote down. `--notes` (or `/clear all`) drops the notes too. Deleting the session is `5e chat rm`.
 
 **Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.
 
