@@ -36,6 +36,8 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderRace(w, obj)
 	case "class":
 		renderClass(w, obj)
+	case "background":
+		renderBackground(w, obj)
 	}
 	for _, section := range entrySections(kind) {
 		if entries, ok := obj[section.key].([]any); ok && len(entries) > 0 {
@@ -307,6 +309,226 @@ func itemPrerequisite(obj map[string]any) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// renderBackground writes a background's structured mechanics — ability
+// score bonuses (2024), skill/tool proficiencies, a granted feat (2024), and
+// starting equipment — ahead of its generic entries (Feature, Specialty
+// tables, and so on), which Render's entries walk still handles. Without
+// this, a background rendered as nothing but a raw bullet dump of its
+// entries, with no distinct mechanical summary the way every other
+// player-facing kind gets.
+func renderBackground(w io.Writer, obj map[string]any) {
+	writeField(w, "Ability Scores", backgroundAbilityScores(obj["ability"]))
+	writeField(w, "Skill Proficiencies", backgroundProficiencies(obj["skillProficiencies"]))
+	writeField(w, "Tool Proficiencies", backgroundProficiencies(obj["toolProficiencies"]))
+	writeField(w, "Languages", backgroundProficiencies(obj["languageProficiencies"]))
+	writeField(w, "Feat", backgroundFeats(obj["feats"]))
+	if equipment := backgroundEquipmentText(obj["startingEquipment"]); equipment != "" {
+		fmt.Fprintf(w, "**Starting Equipment:** %s  \n", equipment)
+	}
+}
+
+// backgroundAbilityScores renders a 2024 background's ability field — one or
+// more {"choose":{"weighted":{"from":[...],"weights":[...]}}} options, each
+// describing either "+2 to one, +1 to another" or "+1 to each" among a set
+// of abilities a player picks from. Pre-2024 backgrounds have no ability
+// field at all, so this returns "" for them.
+func backgroundAbilityScores(v any) string {
+	values, _ := v.([]any)
+	var options []string
+	for _, value := range values {
+		entry, _ := value.(map[string]any)
+		choose, _ := entry["choose"].(map[string]any)
+		weighted, _ := choose["weighted"].(map[string]any)
+		from, _ := weighted["from"].([]any)
+		weightsRaw, _ := weighted["weights"].([]any)
+		var names []string
+		for _, f := range from {
+			names = append(names, abilityFullName(stringValue(f)))
+		}
+		var weights []int
+		for _, wt := range weightsRaw {
+			weights = append(weights, integer(wt))
+		}
+		if len(names) == 0 || len(weights) == 0 {
+			continue
+		}
+		allOnes := true
+		for _, wt := range weights {
+			if wt != 1 {
+				allOnes = false
+				break
+			}
+		}
+		namesJoined := strings.Join(names, ", ")
+		if allOnes && len(weights) == len(names) {
+			options = append(options, fmt.Sprintf("+1 to each of %s", namesJoined))
+		} else if len(weights) >= 2 {
+			options = append(options, fmt.Sprintf("+%d to one and +%d to another, chosen from %s", weights[0], weights[1], namesJoined))
+		}
+	}
+	return strings.Join(options, "; or ")
+}
+
+// backgroundProficiencies renders skillProficiencies/toolProficiencies/
+// languageProficiencies — an array of maps whose keys are skill/tool/
+// language names (or a choose-any key like "anyGamingSet") and whose values
+// are either true (granted outright) or a pick count.
+func backgroundProficiencies(v any) string {
+	values, _ := v.([]any)
+	var out []string
+	for _, value := range values {
+		obj, _ := value.(map[string]any)
+		keys := make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			name := backgroundProfName(k)
+			switch val := obj[k].(type) {
+			case bool:
+				if val {
+					out = append(out, name)
+				}
+			default:
+				if n := integer(val); n > 0 {
+					if n == 1 {
+						out = append(out, "one "+name)
+					} else {
+						out = append(out, fmt.Sprintf("%d %s", n, name))
+					}
+				}
+			}
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+func backgroundProfName(key string) string {
+	switch key {
+	case "anyGamingSet":
+		return "any gaming set"
+	case "anyMusicalInstrument":
+		return "any musical instrument"
+	case "anyArtisansTool":
+		return "any artisan's tools"
+	case "any":
+		return "any"
+	}
+	return title(key)
+}
+
+// backgroundFeats renders a 2024 background's granted feat: feats is
+// [{"feat name|source": true}].
+func backgroundFeats(v any) string {
+	values, _ := v.([]any)
+	var names []string
+	for _, value := range values {
+		obj, _ := value.(map[string]any)
+		for key, granted := range obj {
+			if b, ok := granted.(bool); ok && b {
+				name := key
+				if i := strings.Index(name, "|"); i >= 0 {
+					name = name[:i]
+				}
+				names = append(names, title(name))
+			}
+		}
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// backgroundEquipmentText renders a background's startingEquipment — a
+// choice between named option sets (e.g. "A"/"B", or the unlettered "_" for
+// a set with no alternative), each a list of item refs, flat gp values, and
+// freeform "special" gear descriptions.
+func backgroundEquipmentText(v any) string {
+	list, ok := v.([]any)
+	if !ok || len(list) == 0 {
+		return ""
+	}
+	set, ok := list[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var options []string
+	for _, k := range keys {
+		items, _ := set[k].([]any)
+		text := backgroundEquipmentItems(items)
+		if text == "" {
+			continue
+		}
+		if k == "_" {
+			options = append(options, text)
+			continue
+		}
+		options = append(options, fmt.Sprintf("(%s) %s", strings.ToUpper(k), text))
+	}
+	return strings.Join(options, " or ")
+}
+
+func backgroundEquipmentItems(items []any) string {
+	var parts []string
+	for _, it := range items {
+		switch val := it.(type) {
+		case string:
+			// A bare "name|source" ref (no surrounding {@item} tag) appears
+			// directly in some background equipment lists.
+			if rendered := renderString(val); rendered != val {
+				parts = append(parts, rendered)
+			} else if i := strings.Index(val, "|"); i >= 0 {
+				parts = append(parts, val[:i])
+			} else {
+				parts = append(parts, val)
+			}
+		case map[string]any:
+			switch {
+			case val["item"] != nil:
+				name := renderString("{@item " + stringValue(val["item"]) + "}")
+				if display := stringValue(val["displayName"]); display != "" {
+					name = display
+				}
+				if cv := integer(val["containsValue"]); cv > 0 {
+					name += fmt.Sprintf(" (containing %s)", moneyText(cv))
+				}
+				parts = append(parts, name)
+			case val["special"] != nil:
+				parts = append(parts, stringValue(val["special"]))
+			case val["equipmentType"] != nil:
+				parts = append(parts, equipmentTypeName(stringValue(val["equipmentType"])))
+			case val["value"] != nil:
+				parts = append(parts, moneyText(integer(val["value"])))
+			}
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func equipmentTypeName(code string) string {
+	switch code {
+	case "setGaming":
+		return "a gaming set"
+	case "setArtisan":
+		return "a set of artisan's tools"
+	case "instrumentMusical":
+		return "a musical instrument"
+	}
+	return "a " + title(code)
+}
+
+func moneyText(copper int) string {
+	if copper%100 == 0 {
+		return fmt.Sprintf("%d gp", copper/100)
+	}
+	return fmt.Sprintf("%d cp", copper)
 }
 
 func renderRace(w io.Writer, obj map[string]any) {

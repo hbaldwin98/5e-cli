@@ -142,6 +142,13 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Size", raceSizes(obj["size"]))
 		add("Speed", speed(obj["speed"]))
 		add("Ability Scores", raceAbilities(obj["ability"]))
+	case "background":
+		add("Ability Scores", backgroundAbilityScores(obj["ability"]))
+		add("Skill Proficiencies", backgroundProficiencies(obj["skillProficiencies"]))
+		add("Tool Proficiencies", backgroundProficiencies(obj["toolProficiencies"]))
+		add("Languages", backgroundProficiencies(obj["languageProficiencies"]))
+		add("Feat", backgroundFeats(obj["feats"]))
+		add("Starting Equipment", backgroundEquipmentText(obj["startingEquipment"]))
 	case "class":
 		add("Hit Die", classHitDie(obj["hd"]))
 		add("Hit Points at 1st Level", classHitPointsFirst(obj))
