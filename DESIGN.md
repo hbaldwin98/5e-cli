@@ -184,7 +184,7 @@ Do not invent a 5etools `npc` kind. `npc` is a role over appearances.
 
 Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
 
-`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; book and adventure document chunks are excluded. Default retrieve also skips adventure documents so module prose does not ground a rules question. The embedding cache still covers the full corpus.
+`--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; book and adventure document chunks are excluded. Default retrieve also skips adventure documents so module prose does not ground a rules question, until a module is named or detected. The embedding cache still covers the full corpus.
 
 Provider is any OpenAI-compatible host:
 
@@ -200,7 +200,9 @@ Provider is any OpenAI-compatible host:
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
 
-**Adventure scope.** Module prose is reachable two ways. `5e ask --adventure` and MCP `semantic_search`'s `adventure` argument *restrict* the answer to one module. Otherwise the question is matched against `adventure_names`, a table of names that occur only inside adventures, and any module it names has its prose *added* to the normal corpus — a union, so the rulebooks still rank. On a full corpus that costs about 950 extra vectors rather than all 29,626.
+**Adventure scope.** Module prose is reachable two ways, and both are a union. `5e ask --adventure`, `5e chat --adventure`, and MCP `semantic_search`'s `adventure` argument *add* one module's prose to the rules corpus. Otherwise the question is matched against `adventure_names`, a table of names that occur only inside adventures, and any module it names is added the same way. On a full corpus, naming LMoP reads 22,251 vectors rather than the 22,009 of a default ask; detection costs about 950.
+
+Naming a module does not restrict the answer to it: a question asked while running an adventure is usually still a rules question, and the party's spells and the monsters they are fighting are in the rulebooks. `--adventure-only` (MCP `adventureOnly`, `/adventure <id> only` in chat) is the narrower reading, for "what does this module say" — on LMoP that is 260 vectors, with no PHB spell and no MM statblock among them. Detection is skipped when a module is named explicitly: that scope is the caller's answer to the same question.
 
 `adventure_names` is derived at ingest, not queried live: the equivalent correlated query costs ~2.8s. Two guards keep it conservative — a name that also appears outside adventures is dropped (removing reprints like `Commoner` and `Spy`), as is any name under seven characters (removing `Gem`, `Monk`, `Sun`). Adventure titles are included so "what happens in Curse of Strahd" scopes too. The guards cost some real NPCs, notably `Strahd von Zarovich`, whose name also appears in a book-classified source; `--adventure` covers those.
 
@@ -214,7 +216,7 @@ Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxie
 
 An ongoing conversation over the same retrieval `ask` uses. `5e chat` with no question opens a REPL; `5e chat "question"` takes one turn and returns. Either way the transcript is saved and the next run continues it.
 
-A session holds three things: the transcript, the notes the user recorded, and an optional adventure scope. Retrieval knobs (`--kind`, `--source`, `--limit`) are per invocation, so a saved conversation never carries a filter from a previous run.
+A session holds three things: the transcript, the notes the user recorded, and an optional adventure scope. That scope *adds* the module's prose to the rules corpus; `--adventure-only` or `/adventure <id> only` is the narrower reading, and it is stored on the session because a conversation that excludes the rulebooks should keep excluding them. Retrieval knobs (`--kind`, `--source`, `--limit`) are per invocation, so a saved conversation never carries a filter from a previous run.
 
 **Sessions are conversation state, not a campaign model.** They store what was asked, what was answered, and facts the user wrote down. They do not model characters, initiative, inventory, or scheduling — that is still the campaign app's job, and this remains its data plane.
 

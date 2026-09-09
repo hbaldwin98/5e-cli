@@ -23,8 +23,11 @@ type chatOptions struct {
 	Session   string
 	Kind      string
 	Adventure string
-	Sources   []string
-	Limit     int
+	// AdventureOnly is stored on the session, not applied per question: a
+	// conversation that excludes the rulebooks should keep excluding them.
+	AdventureOnly bool
+	Sources       []string
+	Limit         int
 }
 
 func chatCmd(opt *options) *cobra.Command {
@@ -49,7 +52,8 @@ saved, so a later run continues where this one stopped.`,
 	cmd.PersistentFlags().StringVar(&copt.Session, "session", "", "session name (default \"default\")")
 	cmd.Flags().StringVar(&copt.Kind, "kind", "", "restrict retrieval to one entity kind")
 	cmd.Flags().StringSliceVar(&copt.Sources, "source", nil, "restrict retrieval to source ids")
-	cmd.Flags().StringVar(&copt.Adventure, "adventure", "", "scope the session to one adventure (id or title; \"none\" clears it)")
+	cmd.Flags().StringVar(&copt.Adventure, "adventure", "", "add one adventure's prose to the session (id or title; \"none\" clears it)")
+	cmd.Flags().BoolVar(&copt.AdventureOnly, "adventure-only", false, "answer from that adventure alone, without the rulebooks")
 	cmd.Flags().IntVar(&copt.Limit, "limit", chat.DefaultLimit, "maximum retrieved chunks per question")
 	cmd.AddCommand(chatListCmd(opt, copt), chatShowCmd(opt, copt), chatNoteCmd(opt, copt), chatClearCmd(opt, copt), chatRemoveCmd(opt, copt))
 	return cmd
@@ -79,7 +83,11 @@ func chatListCmd(opt *options, copt *chatOptions) *cobra.Command {
 			for _, s := range sessions {
 				line := fmt.Sprintf("- %s  %s, %s", s.Name, plural(s.Turns, "turn"), plural(s.Notes, "note"))
 				if s.Adventure != "" {
-					line += "  [" + s.Adventure + "]"
+					scope := s.Adventure
+					if s.AdventureOnly {
+						scope += " only"
+					}
+					line += "  [" + scope + "]"
 				}
 				if when := shortTime(s.Updated); when != "" {
 					line += "  " + when
@@ -245,8 +253,11 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	if err != nil {
 		return err
 	}
+	if copt.AdventureOnly && copt.Adventure == "" {
+		return fmt.Errorf("--adventure-only needs --adventure")
+	}
 	if copt.Adventure != "" {
-		if err := scopeAdventure(st, sess, copt.Adventure); err != nil {
+		if err := scopeAdventure(st, sess, copt.Adventure, copt.AdventureOnly); err != nil {
 			return err
 		}
 		if err := cs.Save(sess); err != nil {
@@ -267,9 +278,14 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 // scopeAdventure sets or clears the session's adventure scope. The scope is
 // stored with the session rather than passed per question, since a
 // conversation about one module is about it for every follow-up.
-func scopeAdventure(st *store.Store, sess *chat.Session, name string) error {
+//
+// Scoping adds the module's prose to the corpus; the rulebooks stay unless
+// only is set. A question asked while running an adventure is usually still a
+// rules question.
+func scopeAdventure(st *store.Store, sess *chat.Session, name string, only bool) error {
 	if strings.EqualFold(name, "none") || strings.EqualFold(name, "clear") {
 		sess.Adventure = ""
+		sess.AdventureOnly = false
 		return nil
 	}
 	adv, err := adventure.Resolve(st, name)
@@ -277,6 +293,7 @@ func scopeAdventure(st *store.Store, sess *chat.Session, name string) error {
 		return err
 	}
 	sess.Adventure = adv.Source
+	sess.AdventureOnly = only
 	return nil
 }
 
@@ -329,7 +346,8 @@ const chatHelp = `Commands:
   /note <text>        record a fact this session keeps in context
   /notes              list the recorded notes
   /sources            citations for the last answer
-  /adventure <id>     scope the session to one adventure ("none" clears it)
+  /adventure <id>     add an adventure's prose ("<id> only" drops the
+                      rulebooks, "none" clears the scope)
   /limit <n>          retrieved chunks per question
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
@@ -344,8 +362,8 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 	// the prompt would be noise in the middle of the JSON.
 	if !opt.JSON {
 		fmt.Fprintf(out, "session %s (%s, %s)", sess.Name, plural(len(sess.Turns), "turn"), plural(len(sess.Notes), "note"))
-		if sess.Adventure != "" {
-			fmt.Fprintf(out, " scoped to %s", sess.Adventure)
+		if scope := sess.Scope(); scope != "" {
+			fmt.Fprintf(out, " scoped to %s", scope)
 		}
 		fmt.Fprintf(out, "\n/help for commands, /exit to leave\n\n")
 	}
@@ -427,23 +445,31 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		}
 	case "/adventure":
 		if rest == "" {
-			if sess.Adventure == "" {
+			if scope := sess.Scope(); scope == "" {
 				fmt.Fprintln(out, "not scoped to an adventure")
 			} else {
-				fmt.Fprintln(out, sess.Adventure)
+				fmt.Fprintln(out, scope)
 			}
 			break
 		}
-		if err := scopeAdventure(st, sess, rest); err != nil {
+		// "LMoP only" drops the rulebooks; plain "LMoP" adds the module to
+		// them, which is what a question asked at the table usually needs.
+		name, only := rest, false
+		if head, tail, found := strings.Cut(rest, " "); found {
+			if strings.EqualFold(strings.TrimSpace(tail), "only") {
+				name, only = strings.TrimSpace(head), true
+			}
+		}
+		if err := scopeAdventure(st, sess, name, only); err != nil {
 			return false, err
 		}
 		if err := cs.Save(sess); err != nil {
 			return false, err
 		}
-		if sess.Adventure == "" {
+		if scope := sess.Scope(); scope == "" {
 			fmt.Fprintln(out, "adventure scope cleared")
 		} else {
-			fmt.Fprintf(out, "scoped to %s\n", sess.Adventure)
+			fmt.Fprintf(out, "scoped to %s\n", scope)
 		}
 	case "/limit":
 		n, err := parseChatLimit(rest)
@@ -478,8 +504,8 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 
 func writeChatSession(w io.Writer, sess *chat.Session) error {
 	fmt.Fprintf(w, "session %s", sess.Name)
-	if sess.Adventure != "" {
-		fmt.Fprintf(w, " [%s]", sess.Adventure)
+	if scope := sess.Scope(); scope != "" {
+		fmt.Fprintf(w, " [%s]", scope)
 	}
 	fmt.Fprintln(w)
 	if len(sess.Notes) > 0 {

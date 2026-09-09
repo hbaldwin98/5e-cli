@@ -163,7 +163,14 @@ chat model:
 5e ask "how much damage does fireball do"
 5e ask --retrieve-only "grappling rules" --limit 5
 5e ask --adventure LMoP "who is Gundren Rockseeker"
+5e ask --adventure LMoP --adventure-only "what is in the Cragmaw hideout"
 ```
+
+Naming an adventure *adds* its prose to the rules corpus; it does not replace
+it. A question asked while running a module is usually still a rules question,
+so `5e ask --adventure LMoP "how much damage does fireball do"` still answers
+from the PHB. Use `--adventure-only` for the narrower question — what this
+module says, without the rulebooks.
 
 Adventure prose is excluded by default so module text does not ground a rules
 question. When the question names something that only exists inside an
@@ -197,6 +204,7 @@ Either way the transcript is saved and the next run continues it:
 ```sh
 5e chat
 5e chat --session curse-of-strahd --adventure CoS
+5e chat --session module-prep --adventure CoS --adventure-only
 5e chat "how does grappling work"
 5e chat note "the party sold the Sunsword in Vallaki"
 5e chat list
@@ -212,7 +220,8 @@ Inside a session:
 /note <text>        record a fact this session keeps in context
 /notes              list the recorded notes
 /sources            citations for the last answer
-/adventure <id>     scope the session to one adventure ("none" clears it)
+/adventure <id>     add an adventure's prose ("<id> only" drops the
+                    rulebooks, "none" clears the scope)
 /limit <n>          retrieved chunks per question
 /history            print the transcript
 /clear [all]        drop the transcript, or "all" to drop the notes too
@@ -225,6 +234,12 @@ grounded in the sources rather than in what was said earlier in the
 conversation. A follow-up is retrieved with the questions it follows, so
 `how much damage does it do` finds the spell the previous turn was about, and
 an adventure named once stays in scope for the follow-ups that only say "he".
+
+A session's adventure scope adds that module's prose to the corpus and keeps
+the rulebooks, so a scoped session still answers spell, monster, and rules
+questions. `--adventure-only` (or `/adventure LMoP only`) narrows it to the
+module alone; the narrower scope is stored with the session, so it holds for
+every later turn until you change it.
 
 Clearing empties a session without deleting it. `5e chat clear` and `/clear`
 drop the transcript but keep the notes and the adventure scope, which is how

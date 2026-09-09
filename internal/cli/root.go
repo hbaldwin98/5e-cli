@@ -445,7 +445,7 @@ func refsCmd(opt *options) *cobra.Command {
 }
 
 func askCmd(opt *options) *cobra.Command {
-	var retrieveOnly bool
+	var retrieveOnly, adventureOnly bool
 	var kind, adventure string
 	var sources []string
 	var limit int
@@ -454,21 +454,27 @@ func askCmd(opt *options) *cobra.Command {
 		Short: "Answer a question from embedded 5e sources",
 		Args:  cobra.MinimumNArgs(1),
 		Example: `  5e ask "how much damage does fireball do"
-  5e ask --adventure LMoP "who is Gundren Rockseeker"`,
+  5e ask --adventure LMoP "who is Gundren Rockseeker"
+  5e ask --adventure LMoP --adventure-only "what is in the Cragmaw hideout"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if adventureOnly && adventure == "" {
+				return fmt.Errorf("--adventure-only needs --adventure")
+			}
 			return runAsk(cmd, opt, args, askFlags{
-				RetrieveOnly: retrieveOnly,
-				Kind:         kind,
-				Sources:      splitSources(sources),
-				Limit:        limit,
-				Adventure:    adventure,
+				RetrieveOnly:  retrieveOnly,
+				Kind:          kind,
+				Sources:       splitSources(sources),
+				Limit:         limit,
+				Adventure:     adventure,
+				AdventureOnly: adventureOnly,
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&retrieveOnly, "retrieve-only", false, "return ranked chunks without calling a chat model")
 	cmd.Flags().StringVar(&kind, "kind", "", "restrict to one entity kind")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
-	cmd.Flags().StringVar(&adventure, "adventure", "", "ground the answer in one adventure's prose (id or title)")
+	cmd.Flags().StringVar(&adventure, "adventure", "", "add one adventure's prose to the corpus (id or title)")
+	cmd.Flags().BoolVar(&adventureOnly, "adventure-only", false, "answer from that adventure alone, without the rulebooks")
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum retrieved chunks")
 	return cmd
 }
@@ -476,11 +482,12 @@ func askCmd(opt *options) *cobra.Command {
 // askFlags groups the ask options; runAsk had grown past a readable parameter
 // list.
 type askFlags struct {
-	RetrieveOnly bool
-	Kind         string
-	Sources      []string
-	Limit        int
-	Adventure    string
+	RetrieveOnly  bool
+	Kind          string
+	Sources       []string
+	Limit         int
+	Adventure     string
+	AdventureOnly bool
 }
 
 func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) error {
@@ -509,6 +516,7 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 			return err
 		}
 		q.Adventure = adv.Source
+		q.AdventureOnly = flags.AdventureOnly
 	}
 	if flags.RetrieveOnly {
 		return writeRetrieve(cmd, opt.JSON, st, cfg, q)

@@ -190,7 +190,10 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 	err := store.Create(index, store.Meta{SHA: "chat", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
-	}, nil, nil)
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+	}, []parse.Document{
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "Goblins nest in the Cragmaw hideout in the hills."},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,13 +232,16 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 		}
 		var data []row
 		for i, s := range req.Input {
-			v := []float32{0.05, 0.05}
+			v := []float32{0.05, 0.05, 0.05}
 			low := strings.ToLower(s)
 			if strings.Contains(low, "fire") || strings.Contains(low, "flame") {
-				v = []float32{1, 0}
+				v = []float32{1, 0, 0}
 			}
 			if strings.Contains(low, "sword") || strings.Contains(low, "blade") {
-				v = []float32{0, 1}
+				v = []float32{0, 1, 0}
+			}
+			if strings.Contains(low, "goblin") || strings.Contains(low, "cragmaw") {
+				v = []float32{0, 0, 1}
 			}
 			data = append(data, row{Index: i, Embedding: v})
 		}
@@ -340,5 +346,83 @@ func TestChat_clearNotesFlagAndSlashCommand(t *testing.T) {
 		t.Fatal(err)
 	} else if !strings.Contains(out, "usage: /clear [all]") {
 		t.Fatalf("/clear should reject an unknown argument: %s", out)
+	}
+}
+
+func TestChat_adventureScopedSessionStillAnswersFromTheRulebooks(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir, "--adventure", "LMoP"}
+
+	out, err := runCLI(append(base, "what does fireball do")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Fireball") {
+		t.Fatalf("answer: %s", out)
+	}
+	msgs := api.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("chat calls %d", len(msgs))
+	}
+	// A module-scoped session must still reach the rules: this is the whole
+	// point of scoping widening the corpus instead of replacing it.
+	if !strings.Contains(msgs[0][1].Content, "A bright streak flashes") {
+		t.Fatalf("the scoped session lost the PHB:\n%s", msgs[0][1].Content)
+	}
+
+	// The module's prose is reachable from the same session.
+	if _, err := runCLI(append(base, "what is in the cragmaw hideout")...); err != nil {
+		t.Fatal(err)
+	}
+	msgs = api.messages()
+	if !strings.Contains(msgs[len(msgs)-1][len(msgs[len(msgs)-1])-1].Content, "Goblins nest in the Cragmaw") {
+		t.Fatalf("module prose is not reachable:\n%s", msgs[len(msgs)-1])
+	}
+}
+
+func TestChat_adventureOnlyExcludesTheRulebooks(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "--adventure", "LMoP", "--adventure-only", "what does fireball do")...); err != nil {
+		t.Fatal(err)
+	}
+	msgs := api.messages()
+	if strings.Contains(msgs[0][1].Content, "A bright streak flashes") {
+		t.Fatalf("adventure-only admitted the PHB:\n%s", msgs[0][1].Content)
+	}
+
+	// The narrower scope is the session's, so it holds for later turns too.
+	out, err := runCLI("--index", index, "--data", data, "chat", "--chat-dir", dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "[LMoP only]") {
+		t.Fatalf("list should show the narrower scope: %s", out)
+	}
+
+	if _, err := runCLI(append(base, "--adventure-only", "what does fireball do")...); err == nil {
+		t.Fatal("--adventure-only without --adventure should be refused")
+	}
+}
+
+func TestChat_slashAdventureWidensAndNarrows(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin("/adventure LMoP\n/adventure\n/adventure LMoP only\n/adventure\n/adventure none\n/adventure\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"scoped to LMoP\n", "scoped to LMoP only\n", "adventure scope cleared", "not scoped to an adventure"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }

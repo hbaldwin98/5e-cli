@@ -86,3 +86,17 @@ func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 		t.Fatalf("ask: %s", out)
 	}
 }
+
+func TestAsk_adventureOnlyNeedsAnAdventure(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "flag", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "fire"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "missing-data")
+	if _, err := runCLI("--index", index, "--data", data, "ask", "--adventure-only", "anything"); err == nil {
+		t.Fatal("--adventure-only without --adventure should be refused")
+	}
+}

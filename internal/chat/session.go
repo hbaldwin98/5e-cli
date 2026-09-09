@@ -12,12 +12,16 @@ import (
 // Session is one persisted conversation. Turns are the transcript; Notes are
 // facts the user asked to keep, which are re-sent with every question.
 type Session struct {
-	Name      string   `json:"name"`
-	Adventure string   `json:"adventure,omitempty"`
-	Created   string   `json:"created"`
-	Updated   string   `json:"updated"`
-	Notes     []Note   `json:"notes,omitempty"`
-	Turns     []Record `json:"turns,omitempty"`
+	Name      string `json:"name"`
+	Adventure string `json:"adventure,omitempty"`
+	// AdventureOnly drops the rulebooks from a scoped session. Off by default:
+	// a question asked while running a module is usually still a rules
+	// question, and the party's spells are not in the module.
+	AdventureOnly bool     `json:"adventureOnly,omitempty"`
+	Created       string   `json:"created"`
+	Updated       string   `json:"updated"`
+	Notes         []Note   `json:"notes,omitempty"`
+	Turns         []Record `json:"turns,omitempty"`
 }
 
 // Note is a durable fact about this campaign, written by the user.
@@ -37,12 +41,13 @@ type Record struct {
 
 // Summary is one session as `chat list` reports it.
 type Summary struct {
-	Name      string `json:"name"`
-	Slug      string `json:"slug"`
-	Adventure string `json:"adventure,omitempty"`
-	Turns     int    `json:"turns"`
-	Notes     int    `json:"notes"`
-	Updated   string `json:"updated"`
+	Name          string `json:"name"`
+	Slug          string `json:"slug"`
+	Adventure     string `json:"adventure,omitempty"`
+	AdventureOnly bool   `json:"adventureOnly,omitempty"`
+	Turns         int    `json:"turns"`
+	Notes         int    `json:"notes"`
+	Updated       string `json:"updated"`
 }
 
 // DefaultName is the session used when the caller names none, so that `5e
@@ -123,12 +128,13 @@ func (s *Session) Clear(withNotes bool) (turns, notes int) {
 
 func (s *Session) summary(slug string) Summary {
 	return Summary{
-		Name:      s.Name,
-		Slug:      slug,
-		Adventure: s.Adventure,
-		Turns:     len(s.Turns),
-		Notes:     len(s.Notes),
-		Updated:   s.Updated,
+		Name:          s.Name,
+		Slug:          slug,
+		Adventure:     s.Adventure,
+		AdventureOnly: s.AdventureOnly,
+		Turns:         len(s.Turns),
+		Notes:         len(s.Notes),
+		Updated:       s.Updated,
 	}
 }
 
@@ -152,4 +158,16 @@ func slug(name string) (string, error) {
 		return "", fmt.Errorf("session name %q has no usable characters", name)
 	}
 	return out, nil
+}
+
+// Scope names the session's adventure scope for display: the module, and
+// whether the rulebooks are excluded with it.
+func (s *Session) Scope() string {
+	if s.Adventure == "" {
+		return ""
+	}
+	if s.AdventureOnly {
+		return s.Adventure + " only"
+	}
+	return s.Adventure
 }

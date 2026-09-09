@@ -36,12 +36,13 @@ func Ask(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, qu
 	}
 	res, err := ask.Converse(ctx, st, cfg, ask.Turn{
 		Query: ask.Query{
-			Text:      question,
-			Kind:      opt.Kind,
-			Sources:   opt.Sources,
-			Limit:     opt.Limit,
-			SRD:       opt.SRD,
-			Adventure: sess.Adventure,
+			Text:          question,
+			Kind:          opt.Kind,
+			Sources:       opt.Sources,
+			Limit:         opt.Limit,
+			SRD:           opt.SRD,
+			Adventure:     sess.Adventure,
+			AdventureOnly: sess.AdventureOnly,
 		},
 		History: sess.History(),
 		Notes:   sess.NoteTexts(),

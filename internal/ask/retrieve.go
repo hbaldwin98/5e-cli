@@ -12,12 +12,16 @@ import (
 
 // Query is a semantic retrieve / ask request.
 type Query struct {
-	Text      string
-	Kind      string
-	Sources   []string
-	Limit     int
-	SRD       bool
-	Adventure string
+	Text    string
+	Kind    string
+	Sources []string
+	Limit   int
+	SRD     bool
+	// Adventure adds one module's prose to the corpus. AdventureOnly narrows
+	// the query to that module instead, which answers "what does this module
+	// say" but cannot answer a rules question.
+	Adventure     string
+	AdventureOnly bool
 }
 
 // Hit is a ranked chunk. IDs match `5e get` (documents use section as name).
@@ -146,14 +150,19 @@ func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source
 	}
 }
 
-// adventureScope decides which adventures the query may see. An explicit
-// Adventure restricts the answer to that module. Otherwise the question is
-// checked for names that occur only inside adventures, which lets "who is
-// Gundren Rockseeker" reach LMoP without the caller knowing it is an LMoP
-// NPC; those modules are added to the corpus rather than replacing it.
+// adventureScope decides which adventures the query may see. Naming a module
+// adds its prose to the corpus rather than replacing it: a question asked
+// inside an adventure is usually still a rules question, and the party's
+// spells and the monsters they are fighting live in the rulebooks.
+// AdventureOnly is the narrower reading, for "what does this module say".
+//
+// With no module named, the question is checked for names that occur only
+// inside adventures, which lets "who is Gundren Rockseeker" reach LMoP
+// without the caller knowing it is an LMoP NPC. Detection is skipped when a
+// module is named: that scope is the caller's answer to the same question.
 func adventureScope(st *store.Store, q Query) (adventures []string, restrict bool, err error) {
 	if q.Adventure != "" {
-		return []string{q.Adventure}, true, nil
+		return []string{q.Adventure}, q.AdventureOnly, nil
 	}
 	named, err := namedAdventures(st, q.Text)
 	return named, false, err

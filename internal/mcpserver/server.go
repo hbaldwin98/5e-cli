@@ -66,7 +66,7 @@ func New(st *store.Store, opt Options) *mcp.Server {
 	}, h.references)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
-		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Module prose is skipped unless adventure names one.",
+		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Module prose is skipped unless adventure names one, which adds it to the rules corpus; set adventureOnly to exclude the rulebooks.",
 	}, h.semanticSearch)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "adventure_search",
@@ -147,12 +147,17 @@ type searchOutput struct {
 // semanticSearchInput adds adventure scoping: module prose is excluded by
 // default so it cannot ground a rules question, which also puts every
 // adventure-only NPC and location out of reach until an adventure is named.
+// Naming one adds its prose to the rules corpus; adventureOnly narrows the
+// search to that module instead.
 type semanticSearchInput struct {
 	Query     string   `json:"query" jsonschema:"name or rules text to search"`
 	Kind      string   `json:"kind,omitempty" jsonschema:"optional entity kind filter"`
 	Sources   []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids such as PHB"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"maximum hits"`
 	Adventure string   `json:"adventure,omitempty" jsonschema:"optional adventure id or title; required to reach module prose, NPCs, and locations"`
+	// AdventureOnly is the rare reading. A question asked inside a module is
+	// usually still a rules question, so naming one widens by default.
+	AdventureOnly bool `json:"adventureOnly,omitempty" jsonschema:"search that adventure alone, excluding the rulebooks"`
 }
 
 type referencesInput struct {
@@ -226,6 +231,7 @@ func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in
 			return nil, searchOutput{}, err
 		}
 		q.Adventure = adv.Source
+		q.AdventureOnly = in.AdventureOnly
 	}
 	hits, err := ask.Retrieve(ctx, h.st, h.ask, q)
 	if err != nil {

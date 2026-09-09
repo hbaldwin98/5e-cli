@@ -520,7 +520,7 @@ func TestNamedAdventures_detectsModuleFromTheQuestion(t *testing.T) {
 	}
 }
 
-func TestAdventureScope_explicitRestrictsAndDetectedDoesNot(t *testing.T) {
+func TestAdventureScope_onlyRestrictsAndNamingDoesNot(t *testing.T) {
 	st, _, _ := harness(t)
 	defer st.Close()
 
@@ -528,8 +528,19 @@ func TestAdventureScope_explicitRestrictsAndDetectedDoesNot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if restrict {
+		t.Fatal("naming a module should add its prose, not replace the corpus")
+	}
+	if len(advs) != 1 || advs[0] != "LMoP" {
+		t.Fatalf("scoped %v", advs)
+	}
+
+	advs, restrict, err = adventureScope(st, Query{Text: "anything", Adventure: "LMoP", AdventureOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !restrict || len(advs) != 1 {
-		t.Fatalf("explicit scope should restrict: %v %v", advs, restrict)
+		t.Fatalf("--adventure-only should restrict: %v %v", advs, restrict)
 	}
 
 	advs, restrict, err = adventureScope(st, Query{Text: "who is Gundren Rockseeker"})
@@ -579,5 +590,44 @@ func TestNamedAdventures_matchesAnAdventureTitle(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "LMoP" {
 		t.Fatalf("want LMoP from the title, got %v", got)
+	}
+}
+
+func TestRetrieve_namedAdventureKeepsTheRulebooks(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	// The complaint this guards against: a question asked while running a
+	// module is usually still a rules question, and the answer is in the PHB.
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 8, Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Fireball" || hits[0].Source != "PHB" {
+		t.Fatalf("an adventure-scoped rules question lost the rulebooks: %+v", hits)
+	}
+
+	// The module's own prose is still reachable in the same scope.
+	hits, err = Retrieve(context.Background(), st, cfg, Query{Text: "goblin hideout cragmaw", Limit: 8, Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Cragmaw Hideout" {
+		t.Fatalf("module prose is not reachable: %+v", hits)
+	}
+}
+
+func TestRetrieve_adventureOnlyExcludesTheRulebooks(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 8, Adventure: "LMoP", AdventureOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Source != "LMoP" {
+			t.Fatalf("adventure-only admitted %s: %+v", h.Source, hits)
+		}
 	}
 }
