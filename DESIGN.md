@@ -134,9 +134,34 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e adventure <id-or-name> get <role> <name> [--json]
 5e adventure <id-or-name> list [--kind npc|location|item] [--chapter NAME] [--location NAME] [--json]
 5e mcp
+
+5e auth login <provider> [--api-key KEY]
+5e auth list
+5e auth logout <provider>
 ```
 
 Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`), `--srd`.
+
+### `auth`
+
+Providers are locally-stored backend credentials, an alternative to setting
+`OPENAI_API_KEY`/`OPENAI_BASE_URL` by hand. `5e auth login openai` or
+`5e auth login openrouter` stores an API key (via `--api-key`, or prompted)
+in `$XDG_CONFIG_HOME/5e/auth.json` (mode 0600) and marks it the active
+provider; `5e auth list` shows configured providers with a masked key;
+`5e auth logout <provider>` removes one. `ask.ConfigFromEnv` reads the
+active stored provider first, falling back to `OPENAI_API_KEY`/
+`OPENAI_BASE_URL` for anyone still using env vars directly;
+`FIVE_E_PROVIDER` pins which stored provider to use instead of the active
+one. OpenRouter's base URL (`https://openrouter.ai/api/v1`) is filled in
+automatically; plain `openai` uses the backend's own default.
+
+A future OpenAI Codex provider will add a distinct `5e auth login codex`
+OAuth flow (browser or headless) to this same store — but Codex's ChatGPT
+subscription auth only scopes to the chat/completion endpoints Codex
+itself uses, not the standalone Embeddings API, so a Codex login covers
+chat only; embeddings still need an API-key provider (OpenAI or
+OpenRouter, if/when it adds embedding models) configured alongside it.
 
 ### `ingest`
 

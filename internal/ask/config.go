@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hbaldwin98/5e-cli/internal/provider"
 )
 
 const (
@@ -82,11 +84,32 @@ type EmbedProgress struct {
 	Phase       string
 }
 
-// ConfigFromEnv reads OPENAI_* and FIVE_E_* variables. Paths are filled by the CLI.
+// ConfigFromEnv resolves credentials from the local provider store (set via
+// `5e auth login`) first, falling back to OPENAI_API_KEY/OPENAI_BASE_URL for
+// anyone still using the older env-var-only setup. FIVE_E_PROVIDER pins
+// which stored provider to use; otherwise the store's active provider (the
+// most recently logged-in one) is used. Non-credential tuning stays
+// env-var-only (FIVE_E_* variables). Paths are filled in by the CLI.
 func ConfigFromEnv() Config {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+
+	if path, err := provider.DefaultPath(); err == nil {
+		if store, err := provider.Load(path); err == nil {
+			if _, cred, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER")); ok {
+				if cred.APIKey != "" {
+					apiKey = cred.APIKey
+				}
+				if cred.BaseURL != "" {
+					baseURL = cred.BaseURL
+				}
+			}
+		}
+	}
+
 	return Config{
-		APIKey:          os.Getenv("OPENAI_API_KEY"),
-		BaseURL:         os.Getenv("OPENAI_BASE_URL"),
+		APIKey:          apiKey,
+		BaseURL:         baseURL,
 		EmbedModel:      os.Getenv("FIVE_E_EMBED_MODEL"),
 		AskModel:        os.Getenv("FIVE_E_ASK_MODEL"),
 		EmbedMaxTokens:  envInt("FIVE_E_EMBED_MAX_TOKENS"),
