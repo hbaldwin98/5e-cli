@@ -734,10 +734,13 @@ func writeAskHits(w io.Writer, hits []ask.Hit) error {
 		fmt.Fprintln(w, "no matches")
 		return nil
 	}
+	sty := styles(w)
 	for _, h := range hits {
-		fmt.Fprintf(w, "- %s  %s  (%s)  score=%.2f\n", h.Kind, h.Name, h.Source, h.Score)
+		name := sty.Heading.Render(fmt.Sprintf("%s  %s", h.Kind, h.Name))
+		meta := sty.Muted.Render(fmt.Sprintf("(%s)  score=%.2f", h.Source, h.Score))
+		fmt.Fprintf(w, "- %s  %s\n", name, meta)
 		if h.Snippet != "" {
-			fmt.Fprintf(w, "    %s\n", h.Snippet)
+			fmt.Fprintf(w, "    %s\n", sty.Muted.Render(h.Snippet))
 		}
 	}
 	return nil

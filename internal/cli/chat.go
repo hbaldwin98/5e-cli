@@ -271,7 +271,7 @@ func writeCleared(w io.Writer, sess *chat.Session, turns, notes int) {
 	case len(sess.Notes) > 0:
 		msg += fmt.Sprintf(" (%s kept)", plural(len(sess.Notes), "note"))
 	}
-	fmt.Fprintln(w, msg)
+	fmt.Fprintln(w, styles(w).Success.Render(msg))
 }
 
 func chatRemoveCmd(opt *options, copt *chatOptions) *cobra.Command {
@@ -288,7 +288,8 @@ func chatRemoveCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if err := cs.Delete(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, styles(out).Success.Render(fmt.Sprintf("deleted %s", args[0])))
 			return nil
 		},
 	}
@@ -311,7 +312,8 @@ func chatRenameCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if opt.JSON {
 				return writeJSON(cmd.OutOrStdout(), sess)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "renamed %q to %q\n", args[0], sess.Name)
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, styles(out).Success.Render(fmt.Sprintf("renamed %q to %q", args[0], sess.Name)))
 			return nil
 		},
 	}
@@ -339,7 +341,8 @@ func chatExportCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if err := os.WriteFile(out, raw, 0o644); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "exported %s to %s\n", args[0], out)
+			w := cmd.OutOrStdout()
+			fmt.Fprintln(w, styles(w).Success.Render(fmt.Sprintf("exported %s to %s", args[0], out)))
 			return nil
 		},
 	}
@@ -370,7 +373,8 @@ func chatImportCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if opt.JSON {
 				return writeJSON(cmd.OutOrStdout(), sess)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "imported %s as %q\n", args[0], sess.Name)
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, styles(out).Success.Render(fmt.Sprintf("imported %s as %q", args[0], sess.Name)))
 			return nil
 		},
 	}
@@ -669,7 +673,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 						return writeErr
 					}
 				} else {
-					fmt.Fprintf(errOut, "%v\n", err)
+					writeREPLError(errOut, err)
 				}
 				if quit {
 					return err
@@ -694,7 +698,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 					return writeErr
 				}
 			} else {
-				fmt.Fprintf(errOut, "%v\n", err)
+				writeREPLError(errOut, err)
 			}
 		}
 	}
@@ -934,6 +938,14 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		return false, event, fmt.Errorf("unknown command %s; /help for the list", name)
 	}
 	return false, event, nil
+}
+
+// writeREPLError prints a failed slash command or turn to the REPL's error
+// stream in human mode. It never ends the session by itself — a failed
+// question or command costs one turn, not the conversation.
+func writeREPLError(w io.Writer, err error) {
+	sty := styles(w)
+	fmt.Fprintln(w, sty.Error.Render(err.Error()))
 }
 
 func writeChatError(w io.Writer, sess *chat.Session, command, question string, err error) error {
