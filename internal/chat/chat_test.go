@@ -59,7 +59,7 @@ func TestStore_listReportsMostRecentFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	list, err := cs.List()
+	list, _, err := cs.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestStore_listReportsMostRecentFirst(t *testing.T) {
 	if err := cs.Delete("two"); err != nil {
 		t.Fatalf("deleting a missing session should not fail: %v", err)
 	}
-	list, err = cs.List()
+	list, _, err = cs.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,12 +207,15 @@ func TestStore_listSkipsAnUnreadableSession(t *testing.T) {
 	if err := writeFile(filepath.Join(cs.Dir(), "broken.json"), "{not json"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := cs.List()
+	list, corrupt, err := cs.List()
 	if err != nil {
 		t.Fatalf("one broken file must not fail the listing: %v", err)
 	}
 	if len(list) != 1 || list[0].Name != "good" {
 		t.Fatalf("got %+v", list)
+	}
+	if len(corrupt) != 1 || corrupt[0].File != "broken.json" || corrupt[0].Err == "" {
+		t.Fatalf("the broken file should be reported, not just silently dropped: %+v", corrupt)
 	}
 }
 
@@ -311,7 +314,7 @@ func TestStore_clearedSessionStaysListed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, err := cs.List()
+	list, _, err := cs.List()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -70,9 +70,12 @@ func chatListCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sessions, err := cs.List()
+			sessions, corrupt, err := cs.List()
 			if err != nil {
 				return err
+			}
+			for _, c := range corrupt {
+				fmt.Fprintf(cmd.ErrOrStderr(), "skipping corrupt session file %s: %s\n", c.File, c.Err)
 			}
 			if opt.JSON {
 				return writeJSON(cmd.OutOrStdout(), sessions)

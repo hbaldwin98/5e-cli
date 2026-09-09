@@ -178,27 +178,42 @@ func (s *Store) Save(sess *Session) error {
 	return os.Rename(name, path)
 }
 
-// List reports the stored sessions, most recently updated first.
-func (s *Store) List() ([]Summary, error) {
+// Corrupt names a session file List could not read, and why. Its presence
+// is reported, not hidden, but it never keeps the sessions that did parse
+// out of the returned list.
+type Corrupt struct {
+	File string `json:"file"`
+	Err  string `json:"error"`
+}
+
+// List reports the stored sessions, most recently updated first, plus any
+// file that failed to parse as a session. A single corrupt file used to be
+// swallowed silently so it couldn't hide the rest of the list; that part is
+// unchanged, but the caller now learns it happened instead of a session
+// quietly vanishing with no explanation.
+func (s *Store) List() ([]Summary, []Corrupt, error) {
 	entries, err := os.ReadDir(s.dir)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []Summary
+	var corrupt []Corrupt
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != sessionExt {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
 		if err != nil {
-			return nil, err
+			corrupt = append(corrupt, Corrupt{File: e.Name(), Err: err.Error()})
+			continue
 		}
 		var sess Session
 		if err := json.Unmarshal(raw, &sess); err != nil {
 			// One unreadable file must not hide the rest of the sessions.
+			corrupt = append(corrupt, Corrupt{File: e.Name(), Err: err.Error()})
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), sessionExt)
@@ -213,7 +228,8 @@ func (s *Store) List() ([]Summary, error) {
 		}
 		return out[i].Slug < out[j].Slug
 	})
-	return out, nil
+	sort.Slice(corrupt, func(i, j int) bool { return corrupt[i].File < corrupt[j].File })
+	return out, corrupt, nil
 }
 
 // Delete removes a session. A session that is not there is not an error, so

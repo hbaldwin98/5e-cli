@@ -434,6 +434,35 @@ func TestChat_clearDropsHistoryAndKeepsNotes(t *testing.T) {
 	}
 }
 
+func TestChat_listReportsACorruptSessionWithoutHidingTheRest(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "--session", "good", "note", "a real note")...); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(append(base, "list"))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "good") {
+		t.Fatalf("the valid session should still be listed: %s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "broken.json") {
+		t.Fatalf("the corrupt file should be reported, not silently hidden: %s", errOut.String())
+	}
+}
+
 func TestChat_showAndClearRefuseAnUnknownSession(t *testing.T) {
 	index, _ := chatFixture(t)
 	dir := filepath.Join(t.TempDir(), "chats")
