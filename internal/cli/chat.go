@@ -443,7 +443,14 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 		return err
 	}
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
-	if opt.JSON {
+	inWorkspace := len(args) == 0 && chatWorkspaceAvailable(cmd, opt.JSON)
+	if opt.JSON || inWorkspace {
+		// The Bubble Tea workspace owns the whole terminal (alt screen,
+		// its own render loop); a raw progress bar written straight to
+		// stderr underneath it doesn't get composited in, it corrupts the
+		// screen the program just drew. The workspace shows its own
+		// "thinking" spinner for a slow embedding build instead, so no
+		// progress output is written at all — same as --json.
 		cfg.Progress = io.Discard
 	} else {
 		cfg.Progress = cmd.ErrOrStderr()
@@ -455,7 +462,7 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	if len(args) > 0 {
 		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts)
 	}
-	if chatWorkspaceAvailable(cmd, opt.JSON) {
+	if inWorkspace {
 		return runChatWorkspace(cmd, st, cs, sess, cfg, opts, providerName)
 	}
 	return chatREPL(cmd, opt, st, cs, cfg, sess, opts, providerName)
