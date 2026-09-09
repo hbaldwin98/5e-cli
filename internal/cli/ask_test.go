@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,9 +9,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
+
+func TestWriteAskHits_showsScoreAndSnippet(t *testing.T) {
+	hits := []ask.Hit{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", Score: 0.873, Snippet: "A bright streak flashes"},
+	}
+	var out bytes.Buffer
+	if err := writeAskHits(&out, hits); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "spell") || !strings.Contains(got, "Fireball") || !strings.Contains(got, "PHB") {
+		t.Fatalf("missing identity fields: %q", got)
+	}
+	if !strings.Contains(got, "score=0.87") {
+		t.Fatalf("missing score: %q", got)
+	}
+	if !strings.Contains(got, "A bright streak flashes") {
+		t.Fatalf("missing snippet: %q", got)
+	}
+}
+
+func TestWriteAskHits_omitsSnippetLineWhenEmpty(t *testing.T) {
+	hits := []ask.Hit{{Kind: "spell", Name: "Fireball", Source: "PHB", Score: 0.5}}
+	var out bytes.Buffer
+	if err := writeAskHits(&out, hits); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 {
+		t.Fatalf("want a single line with no snippet, got:\n%s", out.String())
+	}
+}
 
 func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")

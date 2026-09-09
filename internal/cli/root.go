@@ -702,7 +702,10 @@ func writeAskHits(w io.Writer, hits []ask.Hit) error {
 		return nil
 	}
 	for _, h := range hits {
-		fmt.Fprintf(w, "- %s  %s  (%s)\n", h.Kind, h.Name, h.Source)
+		fmt.Fprintf(w, "- %s  %s  (%s)  score=%.2f\n", h.Kind, h.Name, h.Source, h.Score)
+		if h.Snippet != "" {
+			fmt.Fprintf(w, "    %s\n", h.Snippet)
+		}
 	}
 	return nil
 }
