@@ -52,8 +52,10 @@ func TestRenderString_attackTag(t *testing.T) {
 		want string
 	}{
 		{name: "melee weapon", in: "{@atk mw} {@hit 4} to hit", want: "Melee Weapon Attack: +4 to hit"},
-		{name: "multiple", in: "{@atk mw, rw}", want: "Melee Weapon Attack or Ranged Weapon Attack:"},
-		{name: "unknown", in: "{@atk special}", want: ""},
+		{name: "multiple", in: "{@atk mw, rw}", want: "Melee Weapon or Ranged Weapon Attack:"},
+		{name: "single letter", in: "{@atk r}", want: "Ranged Attack:"},
+		{name: "attack roll", in: "{@atkr r}", want: "Ranged Attack Roll:"},
+		{name: "unknown", in: "{@atk xz}", want: ""},
 		{name: "bare hit", in: "{@h} 5 damage", want: "Hit: 5 damage"},
 	}
 	for _, tt := range tests {

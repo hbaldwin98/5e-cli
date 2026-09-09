@@ -99,8 +99,8 @@ func renderTag(body string) (string, []Edge) {
 	switch tag {
 	case "i", "b", "u", "s", "italic", "bold", "strike", "underline", "color", "font":
 		return RenderString(rest)
-	case "atk":
-		return attackLabel(pipePart(rest, 0)), nil
+	case "atk", "atkr":
+		return attackTagToFull(pipePart(rest, 0), tag == "atkr"), nil
 	case "dice", "damage", "scaledice", "scaledamage", "hitYourSpellAttack":
 		inner, edges := RenderString(pipePart(rest, 0))
 		return inner, edges
@@ -123,24 +123,53 @@ func renderTag(body string) (string, []Edge) {
 	return inner, edges
 }
 
-func attackLabel(code string) string {
-	labels := map[string]string{
-		"mw": "Melee Weapon Attack: ",
-		"rw": "Ranged Weapon Attack: ",
-		"ms": "Melee Spell Attack: ",
-		"rs": "Ranged Spell Attack: ",
-	}
-	parts := strings.Split(code, ",")
-	var out []string
-	for _, part := range parts {
-		if label := labels[strings.TrimSpace(part)]; label != "" {
-			out = append(out, strings.TrimSuffix(label, ": "))
+// attackTagToFull renders a {@atk ...}/{@atkr ...} tag's code into its
+// attack-type label ("Melee Weapon Attack:", "Ranged Attack Roll:", ...).
+// The code is one or more comma-separated groups of single letters — a type
+// letter (m melee, r ranged, g magical, a area) and/or a method letter (w
+// weapon, s spell, p power) — matching 5etools' own Renderer.attackTagToFull;
+// legacy two-letter codes like "mw"/"rw"/"ms"/"rs" decompose into exactly
+// one type and one method letter each, so the same per-character scan
+// handles both. atkr (isRoll) adds " Roll" before the trailing colon.
+func attackTagToFull(code string, isRoll bool) string {
+	groups := strings.Split(strings.ToLower(code), ",")
+	var parts []string
+	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		var typ, method string
+		for _, c := range g {
+			switch c {
+			case 'm':
+				typ = "Melee "
+			case 'r':
+				typ = "Ranged "
+			case 'g':
+				typ = "Magical "
+			case 'a':
+				typ = "Area "
+			case 'w':
+				method = "Weapon "
+			case 's':
+				method = "Spell "
+			case 'p':
+				method = "Power "
+			}
+		}
+		if typ != "" || method != "" {
+			parts = append(parts, typ+method)
 		}
 	}
-	if len(out) == 0 {
+	if len(parts) == 0 {
 		return ""
 	}
-	return strings.Join(out, " or ") + ":"
+	suffix := "Attack:"
+	if isRoll {
+		suffix = "Attack Roll:"
+	}
+	return strings.Join(parts, "or ") + suffix
 }
 
 func renderBareTag(tag string) string {

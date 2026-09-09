@@ -46,6 +46,16 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderVehicle(w, obj)
 	case "trap", "hazard":
 		renderTrapHazard(w, obj)
+	case "object":
+		renderObject(w, obj)
+	case "optionalfeature":
+		renderOptionalFeature(w, obj)
+	case "reward", "boon", "cult":
+		writeField(w, "Type", stringValue(obj["type"]))
+	case "psionic":
+		renderPsionic(w, obj)
+	case "variantrule":
+		writeField(w, "Rule Type", variantRuleTypeName(stringValue(obj["ruleType"])))
 	}
 	for _, section := range entrySections(kind) {
 		if entries, ok := obj[section.key].([]any); ok && len(entries) > 0 {
@@ -599,6 +609,28 @@ func featPrerequisite(v any) string {
 		if entry["spellcasting"] == true || entry["spellcasting2020"] == true {
 			parts = append(parts, "the ability to cast at least one spell")
 		}
+		if spells, ok := entry["spell"].([]any); ok {
+			var names []string
+			for _, s := range spells {
+				switch v := s.(type) {
+				case string:
+					name := strings.TrimSuffix(v, "#c")
+					if i := strings.Index(name, "|"); i >= 0 {
+						name = name[:i]
+					}
+					names = append(names, "the "+title(name)+" spell")
+				case map[string]any:
+					if summary := stringValue(v["entrySummary"]); summary != "" {
+						names = append(names, summary)
+					} else if e := stringValue(v["entry"]); e != "" {
+						names = append(names, e)
+					}
+				}
+			}
+			if len(names) > 0 {
+				parts = append(parts, strings.Join(names, " or "))
+			}
+		}
 		if om, ok := entry["otherSummary"].(map[string]any); ok {
 			if s := stringValue(om["entrySummary"]); s != "" {
 				parts = append(parts, s)
@@ -759,6 +791,132 @@ func trapHazardTypeName(code string) string {
 		"TRAP": "Trap", "TRP": "Trap", "HAZ": "Hazard", "GEN": "Generic hazard", "EST": "Environmental hazard",
 		"HAUNT": "Haunting",
 	}
+	if name := names[code]; name != "" {
+		return name
+	}
+	return code
+}
+
+// renderObject writes an object's (a siege engine, a door, a statue that can
+// be attacked, and so on) mechanical summary — size, AC/HP, damage/condition
+// immunities — followed by its actionEntries, which use a different shape
+// (structured attack blocks) than the entries every other kind falls
+// through to, so they're rendered here rather than by Render's generic walk.
+func renderObject(w io.Writer, obj map[string]any) {
+	writeField(w, "Size", monsterSize(obj["size"]))
+	writeField(w, "Type", objectTypeName(stringValue(obj["objectType"])))
+	writeField(w, "Armor Class", armorClass(obj["ac"]))
+	writeField(w, "Hit Points", hitPoints(obj["hp"]))
+	writeField(w, "Damage Immunities", damageTags(obj["immune"]))
+	writeField(w, "Damage Resistances", damageTags(obj["resist"]))
+	writeField(w, "Damage Vulnerabilities", damageTags(obj["vulnerable"]))
+	writeField(w, "Condition Immunities", stringList(obj["conditionImmune"]))
+	actions, ok := obj["actionEntries"].([]any)
+	if !ok || len(actions) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\n## Actions")
+	for _, a := range actions {
+		am, _ := a.(map[string]any)
+		if name := renderString(stringValue(am["name"])); name != "" {
+			fmt.Fprintf(w, "\n**%s.**\n", name)
+		}
+		if entries, ok := am["entries"].([]any); ok {
+			renderEntries(w, entries, 0)
+		}
+	}
+}
+
+func objectTypeName(code string) string {
+	names := map[string]string{"SW": "siege weapon", "GEN": "generic object", "U": "unrigged vehicle"}
+	if name := names[code]; name != "" {
+		return name
+	}
+	return code
+}
+
+// renderOptionalFeature writes an optional feature's (an Eldritch Invocation,
+// a Fighting Style, a Metamagic option, ...) type and prerequisites ahead of
+// its entries.
+func renderOptionalFeature(w io.Writer, obj map[string]any) {
+	writeField(w, "Feature Type", optionalFeatureTypeNames(obj["featureType"]))
+	writeField(w, "Prerequisite", featPrerequisite(obj["prerequisite"]))
+}
+
+func optionalFeatureTypeNames(v any) string {
+	codes := map[string]string{
+		"EI": "Eldritch Invocation", "MM": "Metamagic", "MV": "Maneuver", "MV:B": "Maneuver (Battle Master)",
+		"MV:C2-UA": "Maneuver", "AI": "Artificer Infusion", "FS:F": "Fighting Style (Fighter)",
+		"FS:B": "Fighting Style (Bard)", "FS:P": "Fighting Style (Paladin)", "FS:R": "Fighting Style (Ranger)",
+		"FS:S": "Fighting Style", "OR": "Onomancy Resonant", "RN": "Rune Knight Rune", "AS": "Arcane Shot",
+		"OTH": "Other", "PB": "Pact Boon", "GENALCHM": "Alchemical Formula", "GENALTPUR": "Alternative Purpose",
+	}
+	values, _ := v.([]any)
+	var names []string
+	for _, val := range values {
+		code := stringValue(val)
+		if name := codes[code]; name != "" {
+			names = append(names, name)
+		} else {
+			names = append(names, code)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// renderPsionic writes a psionic talent's or discipline's type, order, focus
+// (a discipline's passive benefit while concentrating on it), and its modes
+// — each with the psi point cost range that activates it.
+func renderPsionic(w io.Writer, obj map[string]any) {
+	writeField(w, "Type", psionicTypeName(stringValue(obj["type"])))
+	writeField(w, "Order", stringValue(obj["order"]))
+	if focus := stringValue(obj["focus"]); focus != "" {
+		fmt.Fprintf(w, "**Focus:** %s  \n", renderString(focus))
+	}
+	modes, ok := obj["modes"].([]any)
+	if !ok || len(modes) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\n## Modes")
+	for _, m := range modes {
+		mm, _ := m.(map[string]any)
+		name := renderString(stringValue(mm["name"]))
+		fmt.Fprintf(w, "\n**%s** (%s)  \n", name, psionicModeCost(mm))
+		if entries, ok := mm["entries"].([]any); ok {
+			renderEntries(w, entries, 0)
+		}
+	}
+}
+
+func psionicTypeName(code string) string {
+	switch code {
+	case "T":
+		return "Talent"
+	case "D":
+		return "Discipline"
+	}
+	return code
+}
+
+func psionicModeCost(mode map[string]any) string {
+	cost, ok := mode["cost"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	min := integer(cost["min"])
+	max := integer(cost["max"])
+	text := fmt.Sprintf("%d psi", min)
+	if max > min {
+		text = fmt.Sprintf("%d-%d psi", min, max)
+	}
+	if conc, ok := mode["concentration"].(map[string]any); ok {
+		text += fmt.Sprintf(", concentration up to %s %s", scalar(conc["duration"]), stringValue(conc["unit"]))
+	}
+	return text
+}
+
+func variantRuleTypeName(code string) string {
+	names := map[string]string{"C": "Core", "O": "Optional", "V": "Variant", "VO": "Variant Optional"}
 	if name := names[code]; name != "" {
 		return name
 	}
@@ -1198,6 +1356,15 @@ func renderEntry(w io.Writer, entry any, depth int) {
 			}
 		case "table":
 			renderTable(w, value, depth)
+		case "attack":
+			text := renderStrings(value["attackEntries"])
+			if label := attackTypeLabel(stringValue(value["attackType"])); label != "" {
+				text = label + ": " + text
+			}
+			if hit := renderStrings(value["hitEntries"]); hit != "" {
+				text = strings.TrimSpace(text) + " Hit: " + hit
+			}
+			fmt.Fprintf(w, "%s%s\n", indent, strings.TrimSpace(text))
 		default:
 			name := renderString(stringValue(value["name"]))
 			if name != "" {
@@ -1326,6 +1493,33 @@ func scalar(v any) string {
 		if text := stringValue(value["entry"]); text != "" {
 			return renderString(text)
 		}
+	}
+	return ""
+}
+
+// renderStrings joins a []any of tagged strings (an "attack" entry's
+// attackEntries/hitEntries) into one space-separated, tag-expanded line.
+func renderStrings(v any) string {
+	values, _ := v.([]any)
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if s := stringValue(value); s != "" {
+			parts = append(parts, renderString(s))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func attackTypeLabel(code string) string {
+	switch code {
+	case "MW":
+		return "Melee Weapon Attack"
+	case "RW":
+		return "Ranged Weapon Attack"
+	case "MS":
+		return "Melee Spell Attack"
+	case "RS":
+		return "Ranged Spell Attack"
 	}
 	return ""
 }

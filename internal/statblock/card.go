@@ -35,19 +35,26 @@ type Section struct {
 // internal/cli/style.go's existing convention (e.g. its error style using
 // "9"), so a card stays legible on both light and dark terminal themes.
 var kindAccent = map[string]string{
-	"monster":    "9",  // red
-	"spell":      "13", // magenta
-	"item":       "11", // yellow
-	"itemBase":   "11",
-	"race":       "10", // green
-	"subrace":    "10",
-	"class":      "14", // cyan
-	"background": "6",  // dark cyan
-	"feat":       "3",  // yellow-green
-	"deity":      "5",  // magenta
-	"vehicle":    "4",  // blue
-	"trap":       "1",  // red
-	"hazard":     "1",
+	"monster":         "9",  // red
+	"spell":           "13", // magenta
+	"item":            "11", // yellow
+	"itemBase":        "11",
+	"race":            "10", // green
+	"subrace":         "10",
+	"class":           "14", // cyan
+	"background":      "6",  // dark cyan
+	"feat":            "3",  // yellow-green
+	"deity":           "5",  // magenta
+	"vehicle":         "4",  // blue
+	"trap":            "1",  // red
+	"hazard":          "1",
+	"object":          "1",
+	"optionalfeature": "3",
+	"reward":          "5", // magenta
+	"boon":            "5",
+	"cult":            "5",
+	"psionic":         "13", // magenta
+	"variantrule":     "12",
 }
 
 func accent(kind string) string {
@@ -179,6 +186,25 @@ func Fields(kind string, obj map[string]any) []Field {
 		}
 	case "trap", "hazard":
 		add("Type", trapHazardTypeName(stringValue(obj["trapHazType"])))
+	case "object":
+		add("Size", monsterSize(obj["size"]))
+		add("Type", objectTypeName(stringValue(obj["objectType"])))
+		add("Armor Class", armorClass(obj["ac"]))
+		add("Hit Points", hitPoints(obj["hp"]))
+		add("Damage Immunities", damageTags(obj["immune"]))
+		add("Damage Resistances", damageTags(obj["resist"]))
+		add("Damage Vulnerabilities", damageTags(obj["vulnerable"]))
+		add("Condition Immunities", stringList(obj["conditionImmune"]))
+	case "optionalfeature":
+		add("Feature Type", optionalFeatureTypeNames(obj["featureType"]))
+		add("Prerequisite", featPrerequisite(obj["prerequisite"]))
+	case "reward", "boon", "cult":
+		add("Type", stringValue(obj["type"]))
+	case "psionic":
+		add("Type", psionicTypeName(stringValue(obj["type"])))
+		add("Order", stringValue(obj["order"]))
+	case "variantrule":
+		add("Rule Type", variantRuleTypeName(stringValue(obj["ruleType"])))
 	case "class":
 		add("Hit Die", classHitDie(obj["hd"]))
 		add("Hit Points at 1st Level", classHitPointsFirst(obj))
