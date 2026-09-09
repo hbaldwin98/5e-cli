@@ -23,14 +23,33 @@ func (e Entity) Key() string {
 	return e.Kind + "\x00" + strings.ToLower(e.Name) + "\x00" + strings.ToLower(e.Source)
 }
 
-// FromObject builds an Entity from a 5etools object and its array kind.
+// FromObject builds an Entity from a 5etools object and its array kind,
+// disambiguating its name up front (see DisambiguateName). classFeature and
+// subclassFeature are the exception: a plain feature name only actually
+// collides with another feature of the same kind and source some of the
+// time (e.g. every class's own "Fighting Style" feature, all from the same
+// book), so eagerly disambiguating every one of them would force a lookup
+// like "Action Surge (Fighter 2)" even when the plain name "Action Surge" is
+// perfectly unique. The ingest pipeline instead collects those two kinds
+// with their plain name via FromObjectWithName and disambiguates only the
+// ones that actually collide once every class has been loaded — see
+// internal/ingest's resolveFeatureNames.
 func FromObject(kind string, obj map[string]any, raw json.RawMessage) (Entity, bool) {
 	name, _ := obj["name"].(string)
+	if kind != "classFeature" && kind != "subclassFeature" {
+		name = DisambiguateName(kind, name, obj)
+	}
+	return FromObjectWithName(kind, obj, raw, name)
+}
+
+// FromObjectWithName is FromObject with the name already resolved — used
+// directly by classFeature/subclassFeature ingest once collision detection
+// across every class has picked the final name for each feature.
+func FromObjectWithName(kind string, obj map[string]any, raw json.RawMessage, name string) (Entity, bool) {
 	source, _ := obj["source"].(string)
 	if name == "" || source == "" {
 		return Entity{}, false
 	}
-	name = disambiguateName(kind, name, obj)
 	text, edges := FlattenEntity(obj)
 	return Entity{
 		Kind:   kind,
@@ -44,7 +63,11 @@ func FromObject(kind string, obj map[string]any, raw json.RawMessage) (Entity, b
 	}, true
 }
 
-func disambiguateName(kind, name string, obj map[string]any) string {
+// DisambiguateName appends a distinguishing suffix to name for kinds whose
+// plain name is expected to collide (classFeature/subclassFeature, when
+// called for a colliding group, and subrace, which reuses names like "High"
+// or "Wood" across many different races).
+func DisambiguateName(kind, name string, obj map[string]any) string {
 	switch kind {
 	case "classFeature":
 		if cn, _ := obj["className"].(string); cn != "" {

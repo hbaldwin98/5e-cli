@@ -169,6 +169,20 @@ type collector struct {
 	entities map[string]parse.Entity
 	fluff    map[string]map[string]any
 	tables   map[string]parse.Entity
+	// pendingFeatures holds classFeature/subclassFeature records with a
+	// name collision still undecided — see resolveFeatureNames, which runs
+	// once every class file has been read so it can see every feature
+	// sharing a plain name before deciding which ones actually need
+	// disambiguating.
+	pendingFeatures []pendingFeature
+}
+
+// pendingFeature is one classFeature/subclassFeature record not yet
+// assigned its final (possibly disambiguated) name.
+type pendingFeature struct {
+	kind string
+	obj  map[string]any
+	raw  json.RawMessage
 }
 
 func newCollector() *collector {
@@ -197,6 +211,7 @@ func loadEntities(dataDir string) (*collector, error) {
 			return nil, err
 		}
 	}
+	resolveFeatureNames(col)
 	if err := loadAdventureCatalog(dataDir, col.entities); err != nil {
 		return nil, err
 	}
@@ -282,6 +297,11 @@ func ingestFile(path string, col *collector) error {
 				col.fluff[k] = obj
 				continue
 			}
+			if kind == "classFeature" || kind == "subclassFeature" {
+				col.pendingFeatures = append(col.pendingFeatures, pendingFeature{kind: kind, obj: obj, raw: item})
+				col.addTables(stringField(obj, "source"), obj)
+				continue
+			}
 			e, ok := parse.FromObject(kind, obj, item)
 			if !ok {
 				continue
@@ -291,6 +311,43 @@ func ingestFile(path string, col *collector) error {
 		}
 	}
 	return nil
+}
+
+func stringField(obj map[string]any, key string) string {
+	s, _ := obj[key].(string)
+	return s
+}
+
+// resolveFeatureNames assigns each pending classFeature/subclassFeature its
+// final name: the plain name when it's the only one sharing that name
+// within its kind and source, or DisambiguateName's "Name (Class Level)" /
+// "Name (Class Subclass Level)" suffix when it collides with another
+// feature of the same kind and source (e.g. every class's own "Fighting
+// Style", all from the same book). Grouping by source (not just kind+name)
+// matters: a name can coincidentally repeat across unrelated sourcebooks
+// without ever colliding as a lookup, since `5e get` already disambiguates
+// same-name-different-source hits by asking for --source.
+func resolveFeatureNames(col *collector) {
+	groups := map[string][]pendingFeature{}
+	for _, pf := range col.pendingFeatures {
+		name := stringField(pf.obj, "name")
+		source := stringField(pf.obj, "source")
+		key := pf.kind + "\x00" + strings.ToLower(name) + "\x00" + strings.ToLower(source)
+		groups[key] = append(groups[key], pf)
+	}
+	for _, group := range groups {
+		for _, pf := range group {
+			name := stringField(pf.obj, "name")
+			if len(group) > 1 {
+				name = parse.DisambiguateName(pf.kind, name, pf.obj)
+			}
+			e, ok := parse.FromObjectWithName(pf.kind, pf.obj, pf.raw, name)
+			if !ok {
+				continue
+			}
+			col.entities[e.Key()] = e
+		}
+	}
 }
 
 func loadDocuments(dataDir string) ([]parse.Document, []parse.Appearance, []parse.Entity, error) {

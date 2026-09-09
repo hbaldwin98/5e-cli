@@ -1357,13 +1357,26 @@ type FeatureLookup func(kind, name, source string) (obj map[string]any, ok bool)
 // twenty features beats losing all of it over one bad reference.
 func RenderFeatureDetails(w io.Writer, refs []FeatureRef, lookup FeatureLookup) {
 	for _, r := range refs {
-		obj, ok := lookup(r.Kind, r.LookupName(), r.Source())
+		obj, ok := lookupFeature(r, lookup)
 		if !ok {
 			continue
 		}
 		fmt.Fprintf(w, "\n### Level %d: %s\n\n", r.Level, r.Name)
 		Render(w, r.Kind, obj)
 	}
+}
+
+// lookupFeature resolves a FeatureRef against a store that only
+// disambiguates a classFeature/subclassFeature's name ("Name (Class
+// Level)"/"Name (Class Subclass Level)") when the plain name actually
+// collided with another feature at ingest — most feature names don't, so
+// the plain name is tried first and the disambiguated form is only a
+// fallback for the ones that do.
+func lookupFeature(r FeatureRef, lookup FeatureLookup) (map[string]any, bool) {
+	if obj, ok := lookup(r.Kind, r.Name, r.Source()); ok {
+		return obj, true
+	}
+	return lookup(r.Kind, r.LookupName(), r.Source())
 }
 
 type entrySection struct {

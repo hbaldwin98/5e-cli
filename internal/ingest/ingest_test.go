@@ -10,6 +10,47 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
+func TestResolveFeatureNames_plainNameKeptUnlessColliding(t *testing.T) {
+	col := newCollector()
+	col.pendingFeatures = []pendingFeature{
+		// Unique within its (kind, name, source) group: keeps the plain name.
+		{kind: "classFeature", obj: map[string]any{"name": "Action Surge", "source": "PHB", "className": "Fighter", "level": float64(2)}},
+		// Two entries share (classFeature, "Fighting Style", XPHB) across
+		// different classes: both must be disambiguated, not just the second.
+		{kind: "classFeature", obj: map[string]any{"name": "Fighting Style", "source": "XPHB", "className": "Fighter", "level": float64(1)}},
+		{kind: "classFeature", obj: map[string]any{"name": "Fighting Style", "source": "XPHB", "className": "Paladin", "level": float64(2)}},
+		// Same name, different source: not a collision (Lookup disambiguates
+		// same-name-different-source hits via --source instead).
+		{kind: "classFeature", obj: map[string]any{"name": "Second Wind", "source": "PHB", "className": "Fighter", "level": float64(1)}},
+		{kind: "classFeature", obj: map[string]any{"name": "Second Wind", "source": "XPHB", "className": "Fighter", "level": float64(1)}},
+	}
+	resolveFeatureNames(col)
+
+	want := map[string]bool{
+		"classFeature\x00action surge\x00phb":                true,
+		"classFeature\x00fighting style (fighter 1)\x00xphb": true,
+		"classFeature\x00fighting style (paladin 2)\x00xphb": true,
+		"classFeature\x00second wind\x00phb":                 true,
+		"classFeature\x00second wind\x00xphb":                true,
+	}
+	if len(col.entities) != len(want) {
+		t.Fatalf("entities = %v, want keys %v", keys(col.entities), keys(want))
+	}
+	for k := range want {
+		if _, ok := col.entities[k]; !ok {
+			t.Errorf("missing entity for key %q; have %v", k, keys(col.entities))
+		}
+	}
+}
+
+func keys[T any](m map[string]T) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestRun_syntheticCorpus(t *testing.T) {
 	dir := filepath.Join("testdata", "data")
 	index := filepath.Join(t.TempDir(), "index.sqlite")

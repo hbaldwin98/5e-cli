@@ -98,7 +98,7 @@ func writeClassFeatureDetail(w io.Writer, st *store.Store, kind string, obj map[
 		fmt.Fprintf(&b, "- %s (%s) — `5e get subclass \"%s\" --source %s` for its full features\n", sc.Name, sc.Source, sc.Name, sc.Source)
 	}
 	if !full {
-		b.WriteString("\nPass --full for every feature's rules text inline, or look one up by name (e.g. `5e get classFeature \"Action Surge (Fighter 2)\"`).\n")
+		b.WriteString("\nPass --full for every feature's rules text inline, or look one up by name directly (e.g. `5e get classFeature \"Second Wind\"`) — add \" (Class Level)\" only if the plain name comes back ambiguous.\n")
 	}
 	return renderMarkdown(w, b.String())
 }

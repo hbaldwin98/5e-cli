@@ -49,6 +49,10 @@ func TestFromObject_srdAndFluff(t *testing.T) {
 		t.Fatalf("fluff not merged: %q", e.Text)
 	}
 
+	// FromObject leaves a classFeature/subclassFeature with its plain name —
+	// disambiguation for those two kinds is deferred to ingest's
+	// resolveFeatureNames, which only needs it once a name actually
+	// collides (see TestDisambiguateName below).
 	feat, ok := FromObject("classFeature", map[string]any{
 		"name":      "Extra Attack",
 		"source":    "PHB",
@@ -56,8 +60,27 @@ func TestFromObject_srdAndFluff(t *testing.T) {
 		"level":     float64(5),
 		"entries":   []any{"You can attack twice."},
 	}, nil)
-	if !ok || feat.Name != "Extra Attack (Fighter 5)" {
-		t.Fatalf("disambiguate %q ok=%v", feat.Name, ok)
+	if !ok || feat.Name != "Extra Attack" {
+		t.Fatalf("expected plain name, got %q ok=%v", feat.Name, ok)
+	}
+}
+
+func TestDisambiguateName(t *testing.T) {
+	name := DisambiguateName("classFeature", "Extra Attack", map[string]any{
+		"className": "Fighter",
+		"level":     float64(5),
+	})
+	if name != "Extra Attack (Fighter 5)" {
+		t.Fatalf("disambiguate classFeature: %q", name)
+	}
+
+	name = DisambiguateName("subclassFeature", "Rune Carver's Fury", map[string]any{
+		"className":         "Fighter",
+		"subclassShortName": "Rune Knight",
+		"level":             float64(3),
+	})
+	if name != "Rune Carver's Fury (Fighter Rune Knight 3)" {
+		t.Fatalf("disambiguate subclassFeature: %q", name)
 	}
 }
 
