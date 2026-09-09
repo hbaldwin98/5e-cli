@@ -391,7 +391,15 @@ func listCmd(opt *options) *cobra.Command {
 				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
 			}
 			if kind == "spell" && class != "" {
-				return listSpellsForClass(cmd, st, ents, class, opt.JSON)
+				// A DM asking for a class's whole spell list wants the whole
+				// list, not the same 100-name default that makes sense for
+				// browsing every spell in the index — so it's unlimited
+				// unless --limit was actually passed.
+				classLimit := limit
+				if !cmd.Flags().Changed("limit") {
+					classLimit = 0
+				}
+				return listSpellsForClass(cmd, st, ents, class, opt.JSON, classLimit)
 			}
 			if query != "" {
 				q := strings.ToLower(query)
@@ -440,7 +448,7 @@ func listCmd(opt *options) *cobra.Command {
 // time from 5etools' generated spell/class lookup) and prints them grouped
 // by level — the shape a DM prepping a caster actually wants, not a flat
 // alphabetical dump.
-func listSpellsForClass(cmd *cobra.Command, st *store.Store, ents []store.Entity, class string, asJSON bool) error {
+func listSpellsForClass(cmd *cobra.Command, st *store.Store, ents []store.Entity, class string, asJSON bool, limit int) error {
 	type row struct {
 		Level  int
 		Name   string
@@ -468,11 +476,15 @@ func listSpellsForClass(cmd *cobra.Command, st *store.Store, ents []store.Entity
 		return rows[i].Name < rows[j].Name
 	})
 	if asJSON {
-		return writeJSON(cmd.OutOrStdout(), map[string]any{"class": class, "spells": rows})
+		return writeJSON(cmd.OutOrStdout(), map[string]any{"class": class, "total": len(rows), "spells": rows})
 	}
 	if len(rows) == 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "no spells found for class %q\n", class)
 		return nil
+	}
+	total := len(rows)
+	if limit > 0 && total > limit {
+		rows = rows[:limit]
 	}
 	tableRows := make([][]string, len(rows))
 	for i, r := range rows {
@@ -483,7 +495,13 @@ func listSpellsForClass(cmd *cobra.Command, st *store.Store, ents []store.Entity
 		tableRows[i] = []string{level, r.Name, r.Source}
 	}
 	cols := []tableColumn{{Header: "Level", Width: 8}, {Header: "Name", Width: 30}, {Header: "Source", Width: 8}}
-	return writeTable(cmd.OutOrStdout(), cols, tableRows)
+	if err := writeTable(cmd.OutOrStdout(), cols, tableRows); err != nil {
+		return err
+	}
+	if total > len(rows) {
+		fmt.Fprintf(cmd.OutOrStdout(), "... %d more (raise --limit)\n", total-len(rows))
+	}
+	return nil
 }
 
 func rollCmd(opt *options) *cobra.Command {
