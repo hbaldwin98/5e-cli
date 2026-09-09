@@ -342,3 +342,64 @@ func TestChunkID_distinguishesParts(t *testing.T) {
 		t.Fatalf("parts share id %q, which would collide on the vectors primary key", a.id())
 	}
 }
+
+func TestAsk_promptCarriesFullSourceText(t *testing.T) {
+	st, cfg, api := harness(t)
+	defer st.Close()
+
+	if _, err := Ask(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 3}); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := api.lastUser.Load().(string)
+	// The whole sentence must reach the model, not the leading fragment a
+	// display snippet would carry.
+	const full = "A bright streak flashes and explodes in a bloom of fire and flame."
+	if !strings.Contains(prompt, full) {
+		t.Fatalf("prompt is missing the full source text:\n%s", prompt)
+	}
+}
+
+func TestUserPrompt_clipsOnlyWhatExceedsTheBudget(t *testing.T) {
+	short := "a short condition entry"
+	long := strings.Repeat("long rules text. ", 500) // 8500 runes
+	ranked := []scoredChunk{
+		{chunk: chunk{Kind: "spell", Name: "Long", Source: "PHB", Text: long}},
+		{chunk: chunk{Kind: "condition", Name: "Short", Source: "PHB", Text: short}},
+	}
+	prompt := userPrompt("q", ranked, 4000)
+
+	if !strings.Contains(prompt, short) {
+		t.Fatal("a short source must never be clipped")
+	}
+	if utf8.RuneCountInString(prompt) > 4000+len(short)+200 {
+		t.Fatalf("prompt overshot the budget: %d runes", utf8.RuneCountInString(prompt))
+	}
+	if !strings.Contains(prompt, "long rules text. long rules text.") {
+		t.Fatal("the long source should still contribute a substantial body")
+	}
+}
+
+func TestShareBudget_givesUnusedShareToLongSources(t *testing.T) {
+	texts := []string{strings.Repeat("x", 1000), "tiny", strings.Repeat("y", 1000)}
+	shares := shareBudget(texts, 900)
+
+	if shares[1] != 4 {
+		t.Fatalf("short text should get exactly what it needs, got %d", shares[1])
+	}
+	if total := shares[0] + shares[1] + shares[2]; total > 900 {
+		t.Fatalf("shares exceed the budget: %d", total)
+	}
+	// An equal split would have handed each source 300; the long ones should
+	// have absorbed what "tiny" did not use.
+	if shares[0] <= 300 || shares[2] <= 300 {
+		t.Fatalf("long sources did not absorb the leftover: %v", shares)
+	}
+}
+
+func TestShareBudget_zeroBudgetIsSafe(t *testing.T) {
+	for _, share := range shareBudget([]string{"a", "b"}, 0) {
+		if share != 0 {
+			t.Fatalf("want no text at a zero budget, got %d", share)
+		}
+	}
+}

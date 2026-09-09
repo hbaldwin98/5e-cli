@@ -3,7 +3,9 @@ package ask
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -20,26 +22,66 @@ type Result struct {
 
 // Ask retrieves relevant chunks and asks the chat model to answer from them.
 func Ask(ctx context.Context, st *store.Store, cfg Config, q Query) (Result, error) {
-	hits, err := Retrieve(ctx, st, cfg, q)
+	cfg = cfg.withDefaults()
+	ranked, err := retrieveChunks(ctx, st, cfg, q)
 	if err != nil {
 		return Result{}, err
 	}
-	if len(hits) == 0 {
-		return Result{Answer: "No matching sources in the local index.", Citations: hits}, nil
+	citations := make([]Hit, len(ranked))
+	for i, r := range ranked {
+		citations[i] = r.hit()
 	}
-	cli := newClient(cfg.withDefaults())
-	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, hits))
+	if len(ranked) == 0 {
+		return Result{Answer: "No matching sources in the local index.", Citations: citations}, nil
+	}
+	cli := newClient(cfg)
+	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, ranked, promptRunes(cfg.AskMaxTokens)))
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Answer: strings.TrimSpace(answer), Citations: hits}, nil
+	return Result{Answer: strings.TrimSpace(answer), Citations: citations}, nil
 }
 
-func userPrompt(question string, hits []Hit) string {
+// userPrompt grounds the model in the retrieved source text. It deliberately
+// does not use Hit.Snippet: that is a 160-character preview for display, and
+// answering a rules question from it means answering from a fragment.
+func userPrompt(question string, ranked []scoredChunk, budget int) string {
+	texts := make([]string, len(ranked))
+	for i, r := range ranked {
+		texts[i] = r.Text
+	}
+	shares := shareBudget(texts, budget)
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Question: %s\n\nSources:\n", question)
-	for i, h := range hits {
-		fmt.Fprintf(&b, "%d. %s %s (%s)\n%s\n\n", i+1, h.Kind, h.Name, h.Source, h.Snippet)
+	for i, r := range ranked {
+		body := clipText(r.Text, shares[i])
+		fmt.Fprintf(&b, "%d. %s %s (%s)\n%s\n\n", i+1, r.Kind, r.Name, r.Source, strings.TrimSpace(body))
 	}
 	return b.String()
+}
+
+// shareBudget splits a rune budget across sources so that short sources are
+// never clipped and their unused share goes to the long ones. Handing every
+// source an equal slice would truncate a long rules section to make room for
+// a one-line condition that needed a fraction of its share.
+func shareBudget(texts []string, budget int) []int {
+	shares := make([]int, len(texts))
+	order := make([]int, len(texts))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		return utf8.RuneCountInString(texts[order[a]]) < utf8.RuneCountInString(texts[order[b]])
+	})
+	remaining := budget
+	for rank, i := range order {
+		share := remaining / (len(order) - rank)
+		if n := utf8.RuneCountInString(texts[i]); n < share {
+			share = n
+		}
+		shares[i] = share
+		remaining -= share
+	}
+	return shares
 }

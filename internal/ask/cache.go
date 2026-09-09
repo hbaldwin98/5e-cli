@@ -73,6 +73,12 @@ func windowRunes(maxTokens int) int {
 	return max(int(float64(maxTokens)*minCharsPerToken), 64)
 }
 
+// promptRunes converts a prompt token budget into runes of source text, using
+// the same pessimistic ratio as the embedding windows.
+func promptRunes(maxTokens int) int {
+	return max(int(float64(maxTokens)*minCharsPerToken), 0)
+}
+
 // estimateTokens is the same pessimistic ratio read in the other direction,
 // used to keep a batch under the per-request total.
 func estimateTokens(s string) int {

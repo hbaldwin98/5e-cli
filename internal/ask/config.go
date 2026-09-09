@@ -22,6 +22,11 @@ const (
 	// Other OpenAI-compatible backends cap lower — many local servers stop at
 	// 512 — so FIVE_E_EMBED_MAX_TOKENS overrides it.
 	DefaultEmbedMaxTokens = 8192
+
+	// DefaultAskMaxTokens budgets the source text an answer is grounded in.
+	// It is well inside gpt-4o-mini's context; FIVE_E_ASK_MAX_TOKENS lowers it
+	// for a smaller chat model or raises it for a larger one.
+	DefaultAskMaxTokens = 12000
 )
 
 // Config is an OpenAI-compatible embedding and chat backend.
@@ -31,6 +36,7 @@ type Config struct {
 	EmbedModel     string
 	AskModel       string
 	EmbedMaxTokens int
+	AskMaxTokens   int
 	CachePath      string
 	HTTPClient     *http.Client
 	Progress       io.Writer
@@ -44,6 +50,7 @@ func ConfigFromEnv() Config {
 		EmbedModel:     os.Getenv("FIVE_E_EMBED_MODEL"),
 		AskModel:       os.Getenv("FIVE_E_ASK_MODEL"),
 		EmbedMaxTokens: envInt("FIVE_E_EMBED_MAX_TOKENS"),
+		AskMaxTokens:   envInt("FIVE_E_ASK_MAX_TOKENS"),
 	}.withDefaults()
 }
 
@@ -70,6 +77,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.EmbedMaxTokens <= 0 {
 		c.EmbedMaxTokens = DefaultEmbedMaxTokens
+	}
+	if c.AskMaxTokens <= 0 {
+		c.AskMaxTokens = DefaultAskMaxTokens
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = &http.Client{Timeout: DefaultTimeout}

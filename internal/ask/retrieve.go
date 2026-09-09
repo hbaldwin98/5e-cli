@@ -30,6 +30,35 @@ type Hit struct {
 
 // Retrieve embeds the query and returns the nearest corpus chunks.
 func Retrieve(ctx context.Context, st *store.Store, cfg Config, q Query) ([]Hit, error) {
+	ranked, err := retrieveChunks(ctx, st, cfg, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Hit, len(ranked))
+	for i, r := range ranked {
+		out[i] = r.hit()
+	}
+	return out, nil
+}
+
+// scoredChunk is a ranked chunk with its text still attached. Hit carries only
+// a short snippet for display, which is not enough to ground an answer.
+type scoredChunk struct {
+	chunk
+	score float64
+}
+
+func (s scoredChunk) hit() Hit {
+	return Hit{
+		Kind:    s.Kind,
+		Name:    s.Name,
+		Source:  s.Source,
+		Score:   s.score,
+		Snippet: snippet(s.Text, 160),
+	}
+}
+
+func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) ([]scoredChunk, error) {
 	cfg = cfg.withDefaults()
 	if strings.TrimSpace(q.Text) == "" {
 		return nil, fmt.Errorf("empty query")
@@ -101,20 +130,16 @@ func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source
 	}
 }
 
-func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool) []Hit {
-	type scored struct {
-		v     vector
-		score float64
-	}
+func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool) []scoredChunk {
 	// A long section is embedded as several parts; collapse them so one
 	// section cannot fill the result list with its own windows.
 	best := map[string]int{}
-	var ranked []scored
+	var ranked []scoredChunk
 	for _, v := range vecs {
 		if !keep(v) {
 			continue
 		}
-		s := scored{v: v, score: dot(query, v.vec)}
+		s := scoredChunk{chunk: v.chunk, score: dot(query, v.vec)}
 		key := chunkKey(v.Kind, v.Name, v.Source)
 		if at, ok := best[key]; ok {
 			if s.score > ranked[at].score {
@@ -129,22 +154,12 @@ func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool
 		if ranked[i].score != ranked[j].score {
 			return ranked[i].score > ranked[j].score
 		}
-		return ranked[i].v.Name < ranked[j].v.Name
+		return ranked[i].Name < ranked[j].Name
 	})
 	if len(ranked) > q.Limit {
 		ranked = ranked[:q.Limit]
 	}
-	out := make([]Hit, len(ranked))
-	for i, r := range ranked {
-		out[i] = Hit{
-			Kind:    r.v.Kind,
-			Name:    r.v.Name,
-			Source:  r.v.Source,
-			Score:   r.score,
-			Snippet: snippet(r.v.Text, 160),
-		}
-	}
-	return out
+	return ranked
 }
 
 func sourceSet(sources []string) func(string) bool {
