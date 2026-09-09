@@ -212,6 +212,7 @@ func sessionBanner(sess *chat.Session, opts chat.Options) string {
 	if opts.Kind != "" || len(opts.Sources) > 0 || opts.SRD {
 		b.WriteString("; /scope for active filters")
 	}
+	b.WriteString("; /help for commands")
 	return b.String()
 }
 
@@ -383,13 +384,21 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.submit()
 
 	case key.Matches(msg, m.keys.Up):
-		if !strings.Contains(m.input.Value(), "\n") && len(m.history) > 0 {
+		// On a single-line input, or already on a multi-line input's first
+		// row, Up recalls history the way a shell's does. Anywhere else in a
+		// multi-line input it falls through to the textarea below and moves
+		// the cursor up a row instead — previously the mere presence of a
+		// newline blocked history recall unconditionally, which also left
+		// Up silently doing nothing once the cursor was already on the top
+		// row (nothing left to move up to), rather than falling back to
+		// history recall.
+		if m.input.Line() == 0 && len(m.history) > 0 {
 			m.recallHistory(-1)
 			return m, nil
 		}
 
 	case key.Matches(msg, m.keys.Down):
-		if !strings.Contains(m.input.Value(), "\n") && m.historyIdx < len(m.history) {
+		if m.input.Line() == m.input.LineCount()-1 && m.historyIdx < len(m.history) {
 			m.recallHistory(1)
 			return m, nil
 		}
