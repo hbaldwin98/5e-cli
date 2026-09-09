@@ -102,6 +102,98 @@ func TestStore_pathStaysInsideTheChatDirectory(t *testing.T) {
 	}
 }
 
+func TestStore_distinguishesNamesWithTheSameSlug(t *testing.T) {
+	cs := testStore(t)
+	names := []string{"a/b", "a b", "a-b"}
+	paths := make(map[string]string, len(names))
+	for _, name := range names {
+		sess, err := cs.Load(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess.AddNote(name)
+		if err := cs.Save(sess); err != nil {
+			t.Fatal(err)
+		}
+		path, err := cs.Path(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths[name] = path
+	}
+
+	if paths[names[0]] == paths[names[1]] || paths[names[1]] == paths[names[2]] || paths[names[0]] == paths[names[2]] {
+		t.Fatalf("same-slug sessions share a path: %v", paths)
+	}
+	for _, name := range names {
+		sess, err := cs.Load(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sess.Notes) != 1 || sess.Notes[0].Text != name {
+			t.Fatalf("loaded the wrong session for %q: %+v", name, sess)
+		}
+	}
+}
+
+func TestStore_loadsAndMigratesLegacySession(t *testing.T) {
+	cs := testStore(t)
+	legacy, err := cs.legacyPath("Old Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(legacy, `{"name":"Old Name","created":"created","updated":"updated"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := cs.Load("old name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Name != "Old Name" {
+		t.Fatalf("legacy session name changed: %+v", sess)
+	}
+	path, err := cs.Path("Old Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("legacy session was not migrated: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy session still exists at %s", legacy)
+	}
+}
+
+func TestStore_legacySlugCollisionDoesNotOpenAnotherSession(t *testing.T) {
+	cs := testStore(t)
+	legacy, err := cs.legacyPath("a-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(legacy, `{"name":"a-b","created":"created","updated":"updated","notes":[{"text":"wrong session"}]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := cs.Load("a b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Name != "a b" || len(sess.Notes) != 0 {
+		t.Fatalf("legacy collision opened the wrong session: %+v", sess)
+	}
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	legacySess, err := cs.Load("a-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacySess.Notes) != 1 || legacySess.Notes[0].Text != "wrong session" {
+		t.Fatalf("legacy session was overwritten: %+v", legacySess)
+	}
+}
+
 func TestStore_listSkipsAnUnreadableSession(t *testing.T) {
 	cs := testStore(t)
 	sess, err := cs.Load("good")

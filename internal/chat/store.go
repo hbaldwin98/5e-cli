@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,6 +35,16 @@ func (s *Store) Dir() string { return s.dir }
 
 // Path is where a named session is stored.
 func (s *Store) Path(name string) (string, error) {
+	id, err := sessionID(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.dir, id+sessionExt), nil
+}
+
+// legacyPath is the pre-identity-hash filename. Load uses it once so existing
+// sessions remain available after the filename format changes.
+func (s *Store) legacyPath(name string) (string, error) {
 	id, err := slug(name)
 	if err != nil {
 		return "", err
@@ -49,20 +60,68 @@ func (s *Store) Load(name string) (*Session, error) {
 		return nil, err
 	}
 	raw, err := os.ReadFile(path)
+	sourcePath := path
+	legacy := false
 	if os.IsNotExist(err) {
-		return &Session{Name: strings.TrimSpace(name), Created: now(), Updated: now()}, nil
+		legacyPath, pathErr := s.legacyPath(name)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		if legacyPath == path {
+			return newSession(name), nil
+		}
+		raw, err = os.ReadFile(legacyPath)
+		if err == nil {
+			sourcePath = legacyPath
+			legacy = true
+		}
+	}
+	if os.IsNotExist(err) {
+		return newSession(name), nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	var sess Session
 	if err := json.Unmarshal(raw, &sess); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", sourcePath, err)
 	}
 	if strings.TrimSpace(sess.Name) == "" {
 		sess.Name = strings.TrimSpace(name)
 	}
+	if !sameSessionName(sess.Name, name) {
+		// A legacy slug may belong to another name that used to collide with
+		// this one. Leave it untouched and let Save create the hashed path.
+		if legacy {
+			return newSession(name), nil
+		}
+		return nil, fmt.Errorf("session file %s belongs to %q, not %q", path, sess.Name, strings.TrimSpace(name))
+	}
+	if legacy {
+		if err := os.Rename(sourcePath, path); err != nil {
+			return nil, fmt.Errorf("migrate session %s: %w", sourcePath, err)
+		}
+	}
 	return &sess, nil
+}
+
+func newSession(name string) *Session {
+	name = strings.TrimSpace(name)
+	return &Session{Name: name, Created: now(), Updated: now()}
+}
+
+func sessionID(name string) (string, error) {
+	slugged, err := slug(name)
+	if err != nil {
+		return "", err
+	}
+	identity := strings.ToLower(strings.TrimSpace(name))
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("%s-%x", slugged, digest), nil
+}
+
+func sameSessionName(a, b string) bool {
+	return strings.ToLower(strings.TrimSpace(a)) == strings.ToLower(strings.TrimSpace(b))
 }
 
 // Save writes the session atomically, so an interrupted write cannot leave a

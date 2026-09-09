@@ -230,7 +230,7 @@ A session holds three things: the transcript, the notes the user recorded, and a
 
 **Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.
 
-**Persistence.** One JSON file per session, written temp-then-rename. Sessions live under `XDG_DATA_HOME`, not beside the index: a session is the user's own writing, and clearing the derived cache must not delete a campaign's conversation. A session name is slugged for its filename, which also keeps a name from reaching outside the chat directory. A failed answer is not written, and a failed turn does not end the REPL — a rate limit should cost one question, not the session.
+**Persistence.** One JSON file per session, written temp-then-rename. Sessions live under `XDG_DATA_HOME`, not beside the index: a session is the user's own writing, and clearing the derived cache must not delete a campaign's conversation. A session name is slugged and given an identity hash for its filename, which keeps the path safe without aliasing names such as `a/b`, `a b`, and `a-b`. Existing slug-only files are migrated when they are opened. A failed answer is not written, and a failed turn does not end the REPL — a rate limit should cost one question, not the session.
 
 `--json` makes an answer a typed `turn` event (`session`, `question`, `answer`,
 `citations`). In the REPL, every input emits one newline-delimited `turn`,
