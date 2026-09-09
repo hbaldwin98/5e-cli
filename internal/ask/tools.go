@@ -49,6 +49,11 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"monster name or text to match"},"cr":{"type":"string","description":"challenge rating such as 1/4 or 5"},"type":{"type":"string","description":"creature type such as humanoid or fey"},"size":{"type":"string","description":"creature size such as small or large"},"sources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer"}},"required":[]}`),
 		},
 		{
+			Name:        "list",
+			Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind (monster, spell, item, ...). Call with no kind to see which kinds are indexed. Use this before roll or encounter when you don't already know the exact table or region name.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind to list, such as table, encounter, monster, or spell; omit to list available kinds instead"},"query":{"type":"string","description":"optional substring to filter names by"},"sources":{"type":"array","items":{"type":"string"},"description":"optional 5etools source ids"},"limit":{"type":"integer","description":"maximum names to return, default 100"}},"required":[]}`),
+		},
+		{
 			Name:        "roll",
 			Description: "Roll an indexed random table by name: a plain table (e.g. Wild Magic Surge, a treasure table) or a random encounter table (kind \"encounter\", e.g. \"Arctic\", \"Airborne Encounters\") split into character-level bands. For arbitrary dice notation use the dice tool instead.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"table or encounter, default table"},"name":{"type":"string","description":"table name"},"source":{"type":"string","description":"optional 5etools source id"},"count":{"type":"integer","description":"number of rows to roll, default 1"},"level":{"type":"integer","description":"character level, for an encounter table with level-banded sub-tables"},"seed":{"type":"integer","description":"optional seed for a reproducible roll"}},"required":["name"]}`),
@@ -78,6 +83,8 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 			return toolSearch(st, opt, call.Arguments)
 		case "encounter":
 			return toolEncounter(st, opt, call.Arguments)
+		case "list":
+			return toolList(st, opt, call.Arguments)
 		case "roll":
 			return toolRoll(st, opt, call.Arguments)
 		case "dice":
@@ -225,6 +232,57 @@ func toolEncounter(st *store.Store, opt ToolsOptions, raw json.RawMessage) (stri
 		return "", err
 	}
 	return toJSON(map[string]any{"hits": hits})
+}
+
+type toolListArgs struct {
+	Kind    string   `json:"kind"`
+	Query   string   `json:"query"`
+	Sources []string `json:"sources"`
+	Limit   int      `json:"limit"`
+}
+
+func toolList(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, error) {
+	var args toolListArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if args.Kind == "" {
+		kinds, err := st.Kinds()
+		if err != nil {
+			return "", err
+		}
+		return toJSON(map[string]any{"kinds": kinds})
+	}
+	ents, err := st.FilteredNames(store.NameFilter{Kind: args.Kind, Sources: args.Sources, SRDOnly: opt.SRD})
+	if err != nil {
+		return "", err
+	}
+	if len(args.Sources) == 0 {
+		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, opt.Edition)
+	}
+	if args.Query != "" {
+		q := strings.ToLower(args.Query)
+		filtered := ents[:0]
+		for _, e := range ents {
+			if strings.Contains(strings.ToLower(e.Name), q) {
+				filtered = append(filtered, e)
+			}
+		}
+		ents = filtered
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	total := len(ents)
+	if total > limit {
+		ents = ents[:limit]
+	}
+	names := make([]map[string]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, map[string]string{"name": e.Name, "source": e.Source})
+	}
+	return toJSON(map[string]any{"kind": args.Kind, "total": total, "names": names})
 }
 
 type toolRollArgs struct {

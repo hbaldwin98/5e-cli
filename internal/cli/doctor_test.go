@@ -44,7 +44,7 @@ func TestDoctor_humanReportsReadySetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Status: ready") || !strings.Contains(out, "Data:") || !strings.Contains(out, "Index:") {
+	if !strings.Contains(out, "Status") || !strings.Contains(out, "ready") || !strings.Contains(out, "Data") || !strings.Contains(out, "Index") {
 		t.Fatalf("unexpected doctor output: %s", out)
 	}
 }

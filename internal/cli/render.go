@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
+	lgtable "charm.land/lipgloss/v2/table"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -44,21 +46,119 @@ func writeHumanEntity(w io.Writer, e store.Entity) error {
 }
 
 func writeSearchResults(w io.Writer, hits []search.Hit) error {
-	var markdown bytes.Buffer
-	fmt.Fprintln(&markdown, "| Kind | Name | Source | Match |")
-	fmt.Fprintln(&markdown, "| --- | --- | --- | --- |")
-	for _, hit := range hits {
-		fmt.Fprintf(&markdown, "| %s | %s | %s | %s |\n", markdownCell(hit.Kind), markdownCell(hit.Name), markdownCell(hit.Source), markdownCell(oneLine(hit.Snippet)))
+	cols := []tableColumn{
+		{Header: "Kind", Width: 12},
+		{Header: "Name", Width: 28},
+		{Header: "Source", Width: 8},
+		{Header: "Match", Width: 42},
 	}
-	return renderMarkdown(w, markdown.String())
+	rows := make([][]string, len(hits))
+	for i, hit := range hits {
+		rows[i] = []string{hit.Kind, hit.Name, hit.Source, hit.Snippet}
+	}
+	return writeTable(w, cols, rows)
 }
 
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func markdownCell(s string) string {
-	return strings.ReplaceAll(oneLine(s), "|", "\\|")
+// tableColumn describes one column of a fixed-width table. Width is a rune
+// count, not a byte count, so multi-byte content still lines up.
+type tableColumn struct {
+	Header string
+	Width  int
+	// Right right-aligns the column (numeric columns: a roll, a score).
+	Right bool
+}
+
+// tableBorderColor is the muted, low-contrast border every rendered table
+// shares, so a table reads as one consistent visual family across every
+// command instead of each one inventing its own look.
+var tableBorderColor = lipgloss.Color("240")
+
+// writeTable renders headers and rows as a table — bordered lipgloss on a
+// styled terminal, a plain fixed-width table otherwise (a pipe, a script,
+// NO_COLOR) — and writes it to w. Every table-shaped command in this package
+// goes through this one helper (directly or via renderTable) so a column
+// such as Source is exactly as wide in every table it appears in, on every
+// run, instead of a rendering library auto-sizing it from whatever that
+// particular call's content happened to be — which is why the same
+// command's tables used to visibly resize between runs.
+func writeTable(w io.Writer, cols []tableColumn, rows [][]string) error {
+	_, err := io.WriteString(w, renderTable(cols, rows, stylingEnabled(w))+"\n")
+	return err
+}
+
+// renderTable is writeTable without deciding how (or whether) styling
+// applies — for a caller (the chat TUI, a rolled-table report) that already
+// knows its own styling policy, the way renderRandomTable and
+// renderEncounterResults do for the rest of their output.
+func renderTable(cols []tableColumn, rows [][]string, styled bool) string {
+	headers := make([]string, len(cols))
+	for i, c := range cols {
+		headers[i] = padCell(c.Header, c.Width, c.Right)
+	}
+	body := make([][]string, len(rows))
+	for i, row := range rows {
+		cells := make([]string, len(cols))
+		for j, c := range cols {
+			var v string
+			if j < len(row) {
+				v = row[j]
+			}
+			cells[j] = padCell(v, c.Width, c.Right)
+		}
+		body[i] = cells
+	}
+	if !styled {
+		var b strings.Builder
+		b.WriteString(strings.Join(headers, "  "))
+		for _, row := range body {
+			b.WriteString("\n")
+			b.WriteString(strings.Join(row, "  "))
+		}
+		return b.String()
+	}
+	t := lgtable.New().
+		Headers(headers...).
+		Rows(body...).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(tableBorderColor)).
+		BorderRow(false).
+		BorderColumn(true).
+		StyleFunc(func(row, _ int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			if row == lgtable.HeaderRow {
+				return style.Bold(true)
+			}
+			return style
+		})
+	return strings.TrimRight(t.Render(), "\n")
+}
+
+// padCell collapses s to one line and pads or truncates it to exactly width
+// runes, left- or right-aligned, so every row's column is exactly as wide as
+// its declared Width — a value longer than its column is truncated with an
+// ellipsis rather than being allowed to widen the column past its fixed
+// size, which is what kept the same table's width jumping between runs.
+func padCell(s string, width int, right bool) string {
+	r := []rune(oneLine(s))
+	if width <= 0 {
+		return string(r)
+	}
+	if len(r) > width {
+		if width == 1 {
+			r = r[:1]
+		} else {
+			r = append(r[:width-1], '…')
+		}
+	}
+	pad := strings.Repeat(" ", width-len(r))
+	if right {
+		return pad + string(r)
+	}
+	return string(r) + pad
 }
 
 // isTTY reports whether w is an interactive terminal: a real *os.File

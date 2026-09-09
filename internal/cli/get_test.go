@@ -301,7 +301,7 @@ func TestAdventure_listJSONFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## Chapters", "## Locations", "## Appearances", "Cragmaw Hideout", "Cave Mouth", "Goblin"} {
+	for _, want := range []string{"Chapters", "Locations", "Appearances", "Cragmaw Hideout", "Cave Mouth", "Goblin"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("human report missing %q: %s", want, out)
 		}

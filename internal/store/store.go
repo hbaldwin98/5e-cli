@@ -804,6 +804,27 @@ func (s *Store) FilteredNames(f NameFilter) ([]Entity, error) {
 	return out, rows.Err()
 }
 
+// Kinds returns every distinct entity kind present in the index, such as
+// "table", "encounter", "monster", or "spell". It lets a caller (or a chat
+// model with a list tool) discover what's indexed without already knowing a
+// kind name to filter by.
+func (s *Store) Kinds() ([]string, error) {
+	rows, err := s.DB.Query(`SELECT DISTINCT kind FROM entities ORDER BY kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			return nil, err
+		}
+		out = append(out, kind)
+	}
+	return out, rows.Err()
+}
+
 // SRDOnly keeps entities marked SRD / basic rules at ingest.
 func SRDOnly(ents []Entity) []Entity {
 	var out []Entity

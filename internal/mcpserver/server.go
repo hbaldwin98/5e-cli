@@ -82,6 +82,10 @@ func New(st *store.Store, opt Options) *mcp.Server {
 		Description: "Find monsters for an encounter, filtered by challenge rating, creature type, and size.",
 	}, h.encounter)
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list",
+		Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind. Call with no kind to see which kinds are indexed. Use before roll or encounter when the exact name isn't already known.",
+	}, h.list)
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "roll",
 		Description: "Roll an indexed random table by name, or a random encounter table (kind \"encounter\") split into character-level bands. Pass seed for a reproducible result and source when several books share a table name.",
 	}, h.roll)
@@ -411,6 +415,65 @@ func (h *handler) encounter(_ context.Context, _ *mcp.CallToolRequest, in encoun
 		hits = []encounter.Hit{}
 	}
 	return nil, encounterOutput{Hits: hits}, nil
+}
+
+type listInput struct {
+	Kind    string   `json:"kind,omitempty" jsonschema:"entity kind to list, such as table, encounter, monster, or spell; omit to list available kinds instead"`
+	Query   string   `json:"query,omitempty" jsonschema:"optional substring to filter names by"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids"`
+	Limit   int      `json:"limit,omitempty" jsonschema:"maximum names to return, default 100"`
+}
+
+type listOutput struct {
+	Kinds []string          `json:"kinds,omitempty"`
+	Kind  string            `json:"kind,omitempty"`
+	Total int               `json:"total,omitempty"`
+	Names []listOutputEntry `json:"names,omitempty"`
+}
+
+type listOutputEntry struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+func (h *handler) list(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, listOutput, error) {
+	if in.Kind == "" {
+		kinds, err := h.st.Kinds()
+		if err != nil {
+			return nil, listOutput{}, err
+		}
+		return nil, listOutput{Kinds: kinds}, nil
+	}
+	ents, err := h.st.FilteredNames(store.NameFilter{Kind: in.Kind, Sources: in.Sources, SRDOnly: h.srd})
+	if err != nil {
+		return nil, listOutput{}, err
+	}
+	if len(in.Sources) == 0 {
+		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
+	}
+	if in.Query != "" {
+		q := strings.ToLower(in.Query)
+		filtered := ents[:0]
+		for _, e := range ents {
+			if strings.Contains(strings.ToLower(e.Name), q) {
+				filtered = append(filtered, e)
+			}
+		}
+		ents = filtered
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	total := len(ents)
+	if total > limit {
+		ents = ents[:limit]
+	}
+	names := make([]listOutputEntry, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, listOutputEntry{Name: e.Name, Source: e.Source})
+	}
+	return nil, listOutput{Kind: in.Kind, Total: total, Names: names}, nil
 }
 
 type rollInput struct {

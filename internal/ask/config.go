@@ -1,6 +1,7 @@
 package ask
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -81,6 +82,14 @@ type Config struct {
 	// use these — tool-calling is a chat feature.
 	Tools        []Tool
 	ToolExecutor ToolExecutor
+	// OnToolCall, if set, is called just before each tool call in
+	// runToolLoop executes, with the tool's name and raw arguments. It lets
+	// a TTY caller show what's happening ("calling roll...") instead of a
+	// generic spinner for however many round trips the loop takes — see
+	// HasTools' doc comment for why that loop can't stream tokens instead.
+	// Errors from the callback are ignored; a UI hook must not be able to
+	// abort a tool-calling turn.
+	OnToolCall func(name string, args json.RawMessage)
 }
 
 // hasTools reports whether tool-calling is wired up for this Config. Both

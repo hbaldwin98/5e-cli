@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -33,6 +34,8 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderItem(w, obj)
 	case "race":
 		renderRace(w, obj)
+	case "class":
+		renderClass(w, obj)
 	}
 	for _, section := range entrySections(kind) {
 		if entries, ok := obj[section.key].([]any); ok && len(entries) > 0 {
@@ -145,6 +148,173 @@ func renderRace(w io.Writer, obj map[string]any) {
 	writeField(w, "Size", raceSizes(obj["size"]))
 	writeField(w, "Speed", speed(obj["speed"]))
 	writeField(w, "Ability Scores", raceAbilities(obj["ability"]))
+}
+
+// renderClass writes a class's mechanical summary — hit die, primary
+// ability, saving throws, starting proficiencies — followed by its starting
+// equipment and its full feature progression. classFeatures/startingEquipment
+// live outside obj["entries"] (5etools links class features by id rather
+// than embedding their text), so unlike every other kind, class gets nothing
+// from Render's generic entries walk unless this writes it explicitly.
+func renderClass(w io.Writer, obj map[string]any) {
+	writeField(w, "Hit Die", classHitDie(obj["hd"]))
+	writeField(w, "Primary Ability", abilityEitherList(obj["primaryAbility"]))
+	writeField(w, "Saving Throws", abilityAbbrevList(obj["proficiency"]))
+	if sp, ok := obj["startingProficiencies"].(map[string]any); ok {
+		writeField(w, "Armor", profList(sp["armor"]))
+		writeField(w, "Weapons", profList(sp["weapons"]))
+		writeField(w, "Tools", profList(sp["tools"]))
+		writeField(w, "Skills", profList(sp["skills"]))
+	}
+	writeField(w, "Subclass", stringValue(obj["subclassTitle"]))
+	if text := classEquipmentText(obj); text != "" {
+		fmt.Fprintf(w, "\n## Starting Equipment\n\n%s\n", text)
+	}
+	if table := classLevelTable(obj["classFeatures"]); table != "" {
+		fmt.Fprintf(w, "\n## Features by Level\n\n%s\n", table)
+	}
+}
+
+func classEquipmentText(obj map[string]any) string {
+	se, ok := obj["startingEquipment"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	entries, ok := se["entries"].([]any)
+	if !ok || len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	renderEntries(&b, entries, 0)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func classHitDie(v any) string {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	faces := integer(obj["faces"])
+	if faces == 0 {
+		return ""
+	}
+	number := integer(obj["number"])
+	if number == 0 {
+		number = 1
+	}
+	return fmt.Sprintf("%dd%d", number, faces)
+}
+
+var abilityFullNames = map[string]string{
+	"str": "Strength", "dex": "Dexterity", "con": "Constitution",
+	"int": "Intelligence", "wis": "Wisdom", "cha": "Charisma",
+}
+
+func abilityFullName(abbr string) string {
+	if name, ok := abilityFullNames[strings.ToLower(abbr)]; ok {
+		return name
+	}
+	return title(abbr)
+}
+
+// abilityEitherList renders primaryAbility ([{"str":true},{"dex":true}]) as
+// "Strength or Dexterity" — 5etools lists several abilities there exactly
+// when a class lets a player choose which one to prioritize.
+func abilityEitherList(v any) string {
+	values, _ := v.([]any)
+	var out []string
+	for _, value := range values {
+		obj, _ := value.(map[string]any)
+		for _, ab := range []string{"str", "dex", "con", "int", "wis", "cha"} {
+			if b, ok := obj[ab].(bool); ok && b {
+				out = append(out, abilityFullName(ab))
+			}
+		}
+	}
+	return strings.Join(out, " or ")
+}
+
+// abilityAbbrevList renders a plain list of ability abbreviations
+// (["str","con"], a class's saving throw proficiencies) as full names.
+func abilityAbbrevList(v any) string {
+	values, _ := v.([]any)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if s := stringValue(value); s != "" {
+			out = append(out, abilityFullName(s))
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// profList renders a proficiency list that mixes plain strings ("light",
+// "martial") with 5etools' {"choose":{"from":[...],"count":n}} objects (a
+// skill or tool pick) — the shape startingProficiencies and multiclassing
+// use throughout.
+func profList(v any) string {
+	values, _ := v.([]any)
+	var out []string
+	for _, value := range values {
+		switch val := value.(type) {
+		case string:
+			out = append(out, title(val))
+		case map[string]any:
+			choose, ok := val["choose"].(map[string]any)
+			if !ok {
+				continue
+			}
+			from, _ := choose["from"].([]any)
+			count := integer(choose["count"])
+			if count == 0 {
+				count = 1
+			}
+			names := make([]string, 0, len(from))
+			for _, f := range from {
+				names = append(names, title(stringValue(f)))
+			}
+			out = append(out, fmt.Sprintf("choose %d: %s", count, strings.Join(names, ", ")))
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// classLevelTable groups classFeatures by level ("Level 3: Fighter
+// Subclass, Ability Score Improvement") so the whole level-1-through-20
+// progression is visible at once instead of only the raw
+// "Name|Class|Source|Level" reference strings 5etools stores. A plain
+// {classFeature: ref} entry (a subclass-gated feature) is unwrapped to the
+// same ref string as an ordinary entry.
+func classLevelTable(v any) string {
+	values, _ := v.([]any)
+	byLevel := map[int][]string{}
+	var levels []int
+	for _, value := range values {
+		var ref string
+		switch val := value.(type) {
+		case string:
+			ref = val
+		case map[string]any:
+			ref = stringValue(val["classFeature"])
+		}
+		parts := strings.Split(ref, "|")
+		if len(parts) < 4 || parts[0] == "" {
+			continue
+		}
+		level, err := strconv.Atoi(parts[3])
+		if err != nil {
+			continue
+		}
+		if _, ok := byLevel[level]; !ok {
+			levels = append(levels, level)
+		}
+		byLevel[level] = append(byLevel[level], parts[0])
+	}
+	sort.Ints(levels)
+	var b strings.Builder
+	for _, level := range levels {
+		fmt.Fprintf(&b, "Level %d: %s\n", level, strings.Join(byLevel[level], ", "))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 type entrySection struct {

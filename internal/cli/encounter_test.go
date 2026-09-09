@@ -59,7 +59,7 @@ func TestEncounter_humanOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"| Name | CR | Type | Size | Source | Match |", "Goblin", "Small", "PHB"} {
+	for _, want := range []string{"Name", "CR", "Type", "Size", "Source", "Match", "Goblin", "Small", "PHB"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("human output missing %q:\n%s", want, out)
 		}

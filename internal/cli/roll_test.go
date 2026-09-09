@@ -37,7 +37,7 @@ func TestRollHumanOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Weather", "*table | PHB*", "| d6 | Result |", "| 5 | 4-6 | Rain |"} {
+	for _, want := range []string{"Weather", "table | PHB", "d6", "Result", "4-6", "Rain"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

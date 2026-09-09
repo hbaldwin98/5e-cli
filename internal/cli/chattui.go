@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -109,6 +110,12 @@ func (k chatKeyMap) FullHelp() [][]key.Binding {
 // deltaMsg is one streamed token of the in-flight answer.
 type deltaMsg string
 
+// toolCallMsg reports that a tool-calling turn just invoked one tool, so the
+// spinner can say what's happening instead of a generic "thinking" for
+// however many round trips runToolLoop takes (it can't stream tokens — see
+// ask.Config.HasTools' doc comment).
+type toolCallMsg string
+
 // turnDoneMsg is the final result of a streamed question — success or
 // failure (including cancellation, which arrives as context.Canceled).
 type turnDoneMsg struct {
@@ -144,6 +151,10 @@ type chatModel struct {
 	streaming  bool
 	turnCh     <-chan any
 	cancel     context.CancelFunc
+	// toolStatus is the most recent tool name a tool-calling turn invoked,
+	// shown next to the spinner in place of a bare "thinking" while the
+	// round-trip loop runs. Cleared at the start of each turn.
+	toolStatus string
 
 	// history is every line submitted (questions and slash commands alike),
 	// most recent last, recalled with Up/Down the way a shell history does.
@@ -266,9 +277,16 @@ func (m *chatModel) refreshViewport() {
 			b.WriteString(wrapToWidth(m.pending.String(), width))
 		default:
 			// No tokens yet: show a spinner so a slow retrieval or a slow
-			// first token never looks like the workspace has frozen.
+			// first token never looks like the workspace has frozen. If a
+			// tool-calling turn has started calling tools, name the most
+			// recent one instead of a bare "thinking" — the loop can take
+			// several round trips and a static label reads as a hang.
+			label := "thinking"
+			if m.toolStatus != "" {
+				label = "calling " + m.toolStatus
+			}
 			b.WriteString("\n\n")
-			b.WriteString(lipgloss.NewStyle().Faint(true).Render(m.spin.View() + " thinking"))
+			b.WriteString(lipgloss.NewStyle().Faint(true).Render(m.spin.View() + " " + label))
 		}
 	}
 	atBottom := m.viewport.AtBottom()
@@ -307,6 +325,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case deltaMsg:
 		m.pending.WriteString(string(msg))
+		m.refreshViewport()
+		return m, listenTurn(m.turnCh)
+
+	case toolCallMsg:
+		m.toolStatus = string(msg)
 		m.refreshViewport()
 		return m, listenTurn(m.turnCh)
 
@@ -558,6 +581,7 @@ func (m *chatModel) startTurn(question string) (tea.Model, tea.Cmd) {
 	m.writeLine("> " + question)
 	m.pending.Reset()
 	m.streaming = true
+	m.toolStatus = ""
 
 	parent := m.cmd.Context()
 	if parent == nil {
@@ -567,8 +591,15 @@ func (m *chatModel) startTurn(question string) (tea.Model, tea.Cmd) {
 	m.cancel = cancel
 	ch := make(chan any, 32)
 	m.turnCh = ch
+	cfg := m.cfg
+	cfg.OnToolCall = func(name string, _ json.RawMessage) {
+		select {
+		case ch <- toolCallMsg(name):
+		case <-ctx.Done():
+		}
+	}
 	go func() {
-		res, err := chat.AskStream(ctx, m.st, m.cfg, m.sess, question, m.opts, func(delta string) error {
+		res, err := chat.AskStream(ctx, m.st, cfg, m.sess, question, m.opts, func(delta string) error {
 			select {
 			case ch <- deltaMsg(delta):
 				return nil
@@ -634,25 +665,26 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 	// Displays come before the model's own prose: a DM asking "show me a
 	// goblin" wants the actual stat block the get tool fetched, not only
 	// the model's paraphrase of it, and a roll result should be the tool's
-	// own number, not the model's retelling of it. Each goes through
-	// m.renderAnswer (or RenderCard directly, already ANSI) rather than
-	// writeTurnDisplays' own writers: those decide Markdown rendering from
-	// isTTY(w), which is false for the bytes.Buffer this used to render
-	// into, so a rolled table or an encounter list came out as literal
-	// unrendered Markdown instead of a table — this renders each at the
-	// viewport's own width, the same policy every other answer here uses.
+	// own number, not the model's retelling of it. Rolls and encounter hits
+	// render through renderRandomTable/renderEncounterResults directly
+	// (already fully rendered, styled ANSI) rather than writeTurnDisplays'
+	// own writers, which decide styling from isTTY(w) — false for the
+	// bytes.Buffer this used to render into — or through m.renderAnswer,
+	// which would run Glamour over already-rendered lipgloss output and
+	// mangle it; the workspace is always a real terminal, so styled is
+	// always true here.
 	for _, e := range displays.Entities {
 		m.writeRendered(statblock.RenderCard(e.Kind, e.Name, e.Source, e.Obj, cardWidth(m.viewport.Width())))
 	}
 	for _, r := range displays.Rolls {
-		m.writeRendered(m.renderAnswer(randomTableMarkdown(r)))
+		m.writeRendered(renderRandomTable(r, true))
 	}
 	if len(displays.DiceRolls) > 0 {
 		m.writeRendered(strings.TrimRight(diceReportsText(displays.DiceRolls), "\n"))
 	}
 	for _, hits := range displays.Encounters {
-		if md := encounterResultsMarkdown(hits); md != "" {
-			m.writeRendered(m.renderAnswer(md))
+		if s := renderEncounterResults(hits, true); s != "" {
+			m.writeRendered(s)
 		}
 	}
 	m.writeRendered(m.renderAnswer(msg.res.Answer))

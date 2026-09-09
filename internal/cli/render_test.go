@@ -140,17 +140,17 @@ func TestWriteSearchResults_singleLineAligned(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("want header, separator, and two rows, got:\n%s", out.String())
+	if len(lines) != 3 {
+		t.Fatalf("want a header and two rows, got:\n%s", out.String())
 	}
 	if !strings.Contains(lines[0], "Kind") || !strings.Contains(lines[0], "Match") {
 		t.Fatalf("missing columns: %q", lines[0])
 	}
-	if !strings.Contains(lines[2], `A bright flash \| of light`) {
-		t.Fatalf("snippet was not collapsed: %q", lines[2])
+	if !strings.Contains(lines[1], "A bright flash | of light") {
+		t.Fatalf("snippet was not collapsed: %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "spell ritual") || !strings.Contains(lines[2], `Fire\|ball`) || !strings.Contains(lines[2], `flash \| of`) {
-		t.Fatalf("table values were not safely rendered: %q", lines[2])
+	if !strings.Contains(lines[1], "spell ritual") || !strings.Contains(lines[1], "Fire|ball") {
+		t.Fatalf("table values were not rendered: %q", lines[1])
 	}
 }
 

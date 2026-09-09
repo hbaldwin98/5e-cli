@@ -35,11 +35,13 @@ type Section struct {
 // internal/cli/style.go's existing convention (e.g. its error style using
 // "9"), so a card stays legible on both light and dark terminal themes.
 var kindAccent = map[string]string{
-	"monster":  "9",  // red
-	"spell":    "13", // magenta
-	"item":     "11", // yellow
-	"itemBase": "11",
-	"race":     "10", // green
+	"monster":    "9",  // red
+	"spell":      "13", // magenta
+	"item":       "11", // yellow
+	"itemBase":   "11",
+	"race":       "10", // green
+	"class":      "14", // cyan
+	"background": "6",  // dark cyan
 }
 
 func accent(kind string) string {
@@ -124,6 +126,17 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Size", raceSizes(obj["size"]))
 		add("Speed", speed(obj["speed"]))
 		add("Ability Scores", raceAbilities(obj["ability"]))
+	case "class":
+		add("Hit Die", classHitDie(obj["hd"]))
+		add("Primary Ability", abilityEitherList(obj["primaryAbility"]))
+		add("Saving Throws", abilityAbbrevList(obj["proficiency"]))
+		if sp, ok := obj["startingProficiencies"].(map[string]any); ok {
+			add("Armor", profList(sp["armor"]))
+			add("Weapons", profList(sp["weapons"]))
+			add("Tools", profList(sp["tools"]))
+			add("Skills", profList(sp["skills"]))
+		}
+		add("Subclass", stringValue(obj["subclassTitle"]))
 	}
 	return f
 }
@@ -153,6 +166,15 @@ func Abilities(obj map[string]any) []Ability {
 // one itself.
 func Sections(kind string, obj map[string]any) []Section {
 	var out []Section
+	if kind == "class" {
+		if text := classEquipmentText(obj); text != "" {
+			out = append(out, Section{Heading: "Starting Equipment", Text: text})
+		}
+		if table := classLevelTable(obj["classFeatures"]); table != "" {
+			out = append(out, Section{Heading: "Features by Level", Text: table})
+		}
+		return out
+	}
 	for _, s := range entrySections(kind) {
 		entries, ok := obj[s.key].([]any)
 		if !ok || len(entries) == 0 {

@@ -207,6 +207,9 @@ func runToolLoop(ctx context.Context, cli *client, cfg Config, msgs []Message) (
 		}
 		msgs = append(msgs, Message{Role: "assistant", ToolCalls: result.ToolCalls})
 		for _, call := range result.ToolCalls {
+			if cfg.OnToolCall != nil {
+				cfg.OnToolCall(call.Name, call.Arguments)
+			}
 			text, err := cfg.ToolExecutor(ctx, call)
 			if err != nil {
 				// Reported back to the model as the tool's own result rather

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,7 +49,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
 	cmd.PersistentFlags().StringVar(&opt.Provider, "provider", "", "use this configured provider (see `5e auth list`) instead of the active one")
 	cmd.PersistentFlags().StringVar(&opt.Model, "model", "", "override the chat model for this run")
-	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), diceCmd(opt), refsCmd(opt), askCmd(opt), chatCmd(opt), adventureCmd(opt), mcpCmd(opt), authCmd())
+	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), diceCmd(opt), refsCmd(opt), listCmd(opt), askCmd(opt), chatCmd(opt), adventureCmd(opt), mcpCmd(opt), authCmd())
 	return cmd
 }
 
@@ -339,6 +338,95 @@ func encounterCmd(opt *options) *cobra.Command {
 	return cmd
 }
 
+func listCmd(opt *options) *cobra.Command {
+	var query string
+	var sources []string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "list [kind]",
+		Short: "List indexed names for a kind (table, encounter, monster, ...), or the kinds themselves if none is given",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, index, err := resolve(opt)
+			if err != nil {
+				return err
+			}
+			st, err := paths.OpenIndex(index, data)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			if len(args) == 0 {
+				kinds, err := st.Kinds()
+				if err != nil {
+					return err
+				}
+				if opt.JSON {
+					return writeJSON(cmd.OutOrStdout(), map[string]any{"kinds": kinds})
+				}
+				if len(kinds) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "no kinds indexed")
+					return nil
+				}
+				rows := make([][]string, len(kinds))
+				for i, k := range kinds {
+					rows[i] = []string{k}
+				}
+				return writeTable(cmd.OutOrStdout(), []tableColumn{{Header: "Kind", Width: 20}}, rows)
+			}
+			kind := args[0]
+			ed, err := opt.editionPref()
+			if err != nil {
+				return err
+			}
+			ents, err := st.FilteredNames(store.NameFilter{Kind: kind, Sources: splitSources(sources), SRDOnly: opt.SRD})
+			if err != nil {
+				return err
+			}
+			if len(sources) == 0 {
+				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
+			}
+			if query != "" {
+				q := strings.ToLower(query)
+				filtered := ents[:0]
+				for _, e := range ents {
+					if strings.Contains(strings.ToLower(e.Name), q) {
+						filtered = append(filtered, e)
+					}
+				}
+				ents = filtered
+			}
+			total := len(ents)
+			if limit > 0 && total > limit {
+				ents = ents[:limit]
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"kind": kind, "total": total, "names": ents})
+			}
+			if total == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "no %s entries indexed\n", kind)
+				return nil
+			}
+			rows := make([][]string, len(ents))
+			for i, e := range ents {
+				rows[i] = []string{e.Name, e.Source}
+			}
+			cols := []tableColumn{{Header: "Name", Width: 30}, {Header: "Source", Width: 8}}
+			if err := writeTable(cmd.OutOrStdout(), cols, rows); err != nil {
+				return err
+			}
+			if total > len(ents) {
+				fmt.Fprintf(cmd.OutOrStdout(), "... %d more (raise --limit)\n", total-len(ents))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&query, "query", "", "filter names by substring")
+	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum names to print, 0 for unlimited")
+	return cmd
+}
+
 func rollCmd(opt *options) *cobra.Command {
 	var kind, source string
 	var count, level int
@@ -462,7 +550,7 @@ scores). ` + "`adv`" + ` and ` + "`dis`" + ` are shorthand for 2d20kh1 and 2d20k
 
 // diceReportsText is writeDiceReports' output as a string. Dice rolls have
 // no Markdown in them (no headers, no tables), so this needs no rendering
-// decision the way randomTableMarkdown/encounterResultsMarkdown do — it
+// decision the way renderRandomTable/renderEncounterResults do — it
 // exists purely so a caller building a larger block (the chat workspace)
 // doesn't have to stand up an io.Writer just to capture this.
 func diceReportsText(reports []dice.Report) string {
@@ -883,15 +971,19 @@ func writeReferences(w io.Writer, refs []store.Reference) error {
 		fmt.Fprintln(w, "no references")
 		return nil
 	}
-	var markdown bytes.Buffer
-	fmt.Fprintln(&markdown, "| Direction | Tag | From | To |")
-	fmt.Fprintln(&markdown, "| --- | --- | --- | --- |")
-	for _, ref := range refs {
+	cols := []tableColumn{
+		{Header: "Direction", Width: 10},
+		{Header: "Tag", Width: 14},
+		{Header: "From", Width: 26},
+		{Header: "To", Width: 26},
+	}
+	rows := make([][]string, len(refs))
+	for i, ref := range refs {
 		from := fmt.Sprintf("%s %s (%s)", ref.From.Kind, ref.From.Name, ref.From.Source)
 		to := fmt.Sprintf("%s %s (%s)", ref.To.Kind, ref.To.Name, ref.To.Source)
-		fmt.Fprintf(&markdown, "| %s | %s | %s | %s |\n", markdownCell(ref.Direction), markdownCell(ref.Tag), markdownCell(from), markdownCell(to))
+		rows[i] = []string{ref.Direction, ref.Tag, from, to}
 	}
-	return renderMarkdown(w, markdown.String())
+	return writeTable(w, cols, rows)
 }
 
 func writeDoctorReport(w io.Writer, report paths.Inspection) error {
@@ -909,19 +1001,22 @@ func writeDoctorReport(w io.Writer, report paths.Inspection) error {
 	} else if report.DataExists && report.IndexExists {
 		status = "stale or invalid"
 	}
-	fmt.Fprintf(w, "Data:  %s [%s]\n", report.DataPath, dataStatus)
-	fmt.Fprintf(w, "Index: %s [%s]\n", report.IndexPath, indexStatus)
+	rows := [][]string{
+		{"Data", fmt.Sprintf("%s [%s]", report.DataPath, dataStatus)},
+		{"Index", fmt.Sprintf("%s [%s]", report.IndexPath, indexStatus)},
+	}
 	if report.DataFingerprint != "" {
-		fmt.Fprintf(w, "Data fingerprint:  %s\n", shortFingerprint(report.DataFingerprint))
+		rows = append(rows, []string{"Data fingerprint", shortFingerprint(report.DataFingerprint)})
 	}
 	if report.IndexFingerprint != "" {
-		fmt.Fprintf(w, "Index fingerprint: %s\n", shortFingerprint(report.IndexFingerprint))
+		rows = append(rows, []string{"Index fingerprint", shortFingerprint(report.IndexFingerprint)})
 	}
-	fmt.Fprintf(w, "Status: %s\n", status)
+	rows = append(rows, []string{"Status", status})
 	if report.Issue != "" {
-		fmt.Fprintf(w, "Issue:  %s\n", report.Issue)
+		rows = append(rows, []string{"Issue", report.Issue})
 	}
-	return nil
+	cols := []tableColumn{{Header: "Field", Width: 18}, {Header: "Value", Width: 60}}
+	return writeTable(w, cols, rows)
 }
 
 func shortFingerprint(s string) string {
@@ -932,94 +1027,112 @@ func shortFingerprint(s string) string {
 }
 
 func writeAdventureReport(w io.Writer, report adventure.Report) error {
-	var markdown bytes.Buffer
-	writeSections := func(heading string, sections []adventure.Section) {
+	sty := styles(w)
+	sectionCols := []tableColumn{{Header: "Name", Width: 30}, {Header: "Source", Width: 8}}
+	var wrote bool
+	writeSections := func(heading string, sections []adventure.Section) error {
 		if len(sections) == 0 {
-			return
+			return nil
 		}
-		fmt.Fprintf(&markdown, "## %s\n\n", heading)
-		fmt.Fprintln(&markdown, "| Name | Source |")
-		fmt.Fprintln(&markdown, "| --- | --- |")
-		for _, section := range sections {
-			fmt.Fprintf(&markdown, "| %s | %s |\n", markdownCell(section.Name), markdownCell(section.Source))
+		wrote = true
+		fmt.Fprintln(w, sty.Heading.Render(heading))
+		rows := make([][]string, len(sections))
+		for i, section := range sections {
+			rows[i] = []string{section.Name, section.Source}
 		}
-		fmt.Fprintln(&markdown)
-	}
-	writeSections("Chapters", report.Chapters)
-	writeSections("Locations", report.Locations)
-	if len(report.Appearances) > 0 {
-		fmt.Fprintln(&markdown, "## Appearances")
-		fmt.Fprintln(&markdown)
-		fmt.Fprintln(&markdown, "| Role | Name | Source | Chapter | Location |")
-		fmt.Fprintln(&markdown, "| --- | --- | --- | --- | --- |")
-		for _, appearance := range report.Appearances {
-			fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s |\n",
-				markdownCell(appearance.Role), markdownCell(appearance.Name), markdownCell(appearance.Source),
-				markdownCell(appearance.Chapter), markdownCell(appearance.Location))
+		if err := writeTable(w, sectionCols, rows); err != nil {
+			return err
 		}
-	}
-	if markdown.Len() == 0 {
-		fmt.Fprintln(w, "no matches")
+		fmt.Fprintln(w)
 		return nil
 	}
-	return renderMarkdown(w, markdown.String())
+	if err := writeSections("Chapters", report.Chapters); err != nil {
+		return err
+	}
+	if err := writeSections("Locations", report.Locations); err != nil {
+		return err
+	}
+	if len(report.Appearances) > 0 {
+		wrote = true
+		fmt.Fprintln(w, sty.Heading.Render("Appearances"))
+		cols := []tableColumn{
+			{Header: "Role", Width: 10},
+			{Header: "Name", Width: 24},
+			{Header: "Source", Width: 8},
+			{Header: "Chapter", Width: 18},
+			{Header: "Location", Width: 18},
+		}
+		rows := make([][]string, len(report.Appearances))
+		for i, appearance := range report.Appearances {
+			rows[i] = []string{appearance.Role, appearance.Name, appearance.Source, appearance.Chapter, appearance.Location}
+		}
+		if err := writeTable(w, cols, rows); err != nil {
+			return err
+		}
+	}
+	if !wrote {
+		fmt.Fprintln(w, "no matches")
+	}
+	return nil
 }
 
 func writeComparison(w io.Writer, result compare.Result) error {
-	var markdown bytes.Buffer
-	fmt.Fprintf(&markdown, "# Compare %s %s\n\n", result.Kind, result.Name)
-	fmt.Fprint(&markdown, "*Sources: ")
+	sty := styles(w)
+	sources := make([]string, len(result.Records))
 	for i, record := range result.Records {
-		if i > 0 {
-			fmt.Fprint(&markdown, ", ")
-		}
-		fmt.Fprint(&markdown, markdownCell(record.Source))
+		sources[i] = record.Source
 	}
-	fmt.Fprint(&markdown, "*\n\n")
+	fmt.Fprintln(w, sty.Heading.Render(fmt.Sprintf("Compare %s %s", result.Kind, result.Name)))
+	fmt.Fprintln(w, sty.Muted.Render("Sources: "+strings.Join(sources, ", ")))
+	fmt.Fprintln(w)
 	if len(result.Differences) == 0 {
-		fmt.Fprintln(&markdown, "No top-level differences.")
-		return renderMarkdown(w, markdown.String())
+		fmt.Fprintln(w, "No top-level differences.")
+		return nil
 	}
-	fmt.Fprint(&markdown, "| Field |")
+	cols := make([]tableColumn, 0, len(result.Records)+1)
+	cols = append(cols, tableColumn{Header: "Field", Width: 18})
 	for _, record := range result.Records {
-		fmt.Fprintf(&markdown, " %s |", markdownCell(record.Source))
+		cols = append(cols, tableColumn{Header: record.Source, Width: 24})
 	}
-	fmt.Fprintln(&markdown)
-	fmt.Fprint(&markdown, "| --- |")
-	for range result.Records {
-		fmt.Fprint(&markdown, " --- |")
-	}
-	fmt.Fprintln(&markdown)
-	for _, difference := range result.Differences {
+	rows := make([][]string, len(result.Differences))
+	for i, difference := range result.Differences {
 		values := make(map[string]compare.Value, len(difference.Values))
 		for _, value := range difference.Values {
 			values[strings.ToLower(value.Source)] = value
 		}
-		fmt.Fprintf(&markdown, "| %s |", markdownCell(difference.Field))
+		row := make([]string, 0, len(cols))
+		row = append(row, difference.Field)
 		for _, record := range result.Records {
-			value := values[strings.ToLower(record.Source)]
-			fmt.Fprintf(&markdown, " %s |", markdownCell(comparisonValue(value)))
+			row = append(row, comparisonValue(values[strings.ToLower(record.Source)]))
 		}
-		fmt.Fprintln(&markdown)
+		rows[i] = row
 	}
-	return renderMarkdown(w, markdown.String())
+	return writeTable(w, cols, rows)
 }
 
 // encounterResultsMarkdown is encounter search hits as Markdown, or "" when
 // there are none — see randomTableMarkdown for why building the text is
 // kept separate from deciding how to render it.
-func encounterResultsMarkdown(hits []encounter.Hit) string {
+// renderEncounterResults renders encounter search hits as an already-styled
+// (or plain) table, or "" when there are none — see renderRandomTable for
+// why building the display text is kept separate from writing it to w.
+func renderEncounterResults(hits []encounter.Hit, styled bool) string {
 	if len(hits) == 0 {
 		return ""
 	}
-	var markdown bytes.Buffer
-	fmt.Fprintln(&markdown, "| Name | CR | Type | Size | Source | Match |")
-	fmt.Fprintln(&markdown, "| --- | --- | --- | --- | --- | ---: |")
-	for _, hit := range hits {
-		fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s | %.2f |\n",
-			markdownCell(hit.Name), markdownCell(hit.CR), markdownCell(hit.Type), markdownCell(hit.Size), markdownCell(hit.Source), hit.Score)
+	cols := []tableColumn{
+		{Header: "Name", Width: 26},
+		{Header: "CR", Width: 6},
+		{Header: "Type", Width: 14},
+		{Header: "Size", Width: 8},
+		{Header: "Source", Width: 8},
+		{Header: "Match", Width: 6, Right: true},
 	}
-	return markdown.String()
+	rows := make([][]string, len(hits))
+	for i, hit := range hits {
+		rows[i] = []string{hit.Name, hit.CR, hit.Type, hit.Size, hit.Source, fmt.Sprintf("%.2f", hit.Score)}
+	}
+	return renderTable(cols, rows, styled)
 }
 
 func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
@@ -1027,44 +1140,45 @@ func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
 		fmt.Fprintln(w, "no encounter matches")
 		return nil
 	}
-	return renderMarkdown(w, encounterResultsMarkdown(hits))
+	_, err := io.WriteString(w, renderEncounterResults(hits, stylingEnabled(w))+"\n")
+	return err
 }
 
-// randomTableMarkdown builds a rolled table's Markdown without deciding how
-// (or whether) to render it — that decision belongs to the caller, since a
-// plain writer (the single `5e roll` command), a chat turn writing straight
-// to a real terminal, and the Bubble Tea workspace writing into an
-// in-memory transcript block each need a different rendering policy, and
-// only writeRandomTable's own isTTY(w) check is right for the first two.
-func randomTableMarkdown(report randomtable.Report) string {
-	var markdown bytes.Buffer
-	fmt.Fprintf(&markdown, "# %s\n\n*table | %s*\n\n", report.Name, report.Source)
+// renderRandomTable builds a rolled table's heading and results as an
+// already-rendered display string, without deciding how (or whether) to
+// write it — that decision belongs to the caller, since a plain writer (the
+// single `5e roll` command), a chat turn writing straight to a real
+// terminal, and the Bubble Tea workspace writing into an in-memory
+// transcript block each need a different styling policy.
+func renderRandomTable(report randomtable.Report, styled bool) string {
+	sty := newStyles(styled)
+	var b strings.Builder
+	fmt.Fprintln(&b, sty.Heading.Render(report.Name))
+	fmt.Fprintln(&b, sty.Muted.Render("table | "+report.Source))
+	fmt.Fprintln(&b)
 	headers := report.Headers
 	if len(headers) == 0 {
 		headers = []string{"Result"}
 	}
-	fmt.Fprint(&markdown, "| Roll |")
+	cols := make([]tableColumn, 0, len(headers)+1)
+	cols = append(cols, tableColumn{Header: "Roll", Width: 6, Right: true})
 	for _, header := range headers {
-		fmt.Fprintf(&markdown, " %s |", markdownCell(header))
+		cols = append(cols, tableColumn{Header: header, Width: 36})
 	}
-	fmt.Fprintln(&markdown)
-	fmt.Fprint(&markdown, "| ---: |")
-	for range headers {
-		fmt.Fprint(&markdown, " --- |")
+	rows := make([][]string, len(report.Rolls))
+	for i, roll := range report.Rolls {
+		row := make([]string, 0, len(cols))
+		row = append(row, fmt.Sprintf("%d", roll.Roll))
+		row = append(row, roll.Values...)
+		rows[i] = row
 	}
-	fmt.Fprintln(&markdown)
-	for _, roll := range report.Rolls {
-		fmt.Fprintf(&markdown, "| %d |", roll.Roll)
-		for _, value := range roll.Values {
-			fmt.Fprintf(&markdown, " %s |", markdownCell(value))
-		}
-		fmt.Fprintln(&markdown)
-	}
-	return markdown.String()
+	b.WriteString(renderTable(cols, rows, styled))
+	return b.String()
 }
 
 func writeRandomTable(w io.Writer, report randomtable.Report) error {
-	return renderMarkdown(w, randomTableMarkdown(report))
+	_, err := io.WriteString(w, renderRandomTable(report, stylingEnabled(w))+"\n")
+	return err
 }
 
 func comparisonValue(value compare.Value) string {

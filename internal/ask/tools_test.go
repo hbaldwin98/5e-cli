@@ -199,6 +199,30 @@ func TestConverseStream_withToolsFlushesFinalAnswerOnce(t *testing.T) {
 	}
 }
 
+func TestConverse_withToolsReportsOnToolCall(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	srv, _ := toolCallServer(t, "dice", `{"expression":"1d20"}`)
+	cfg.BaseURL = srv.URL
+	cfg.HTTPClient = srv.Client()
+	cfg.Tools = []Tool{{Name: "dice"}}
+	cfg.ToolExecutor = func(_ context.Context, call ToolCall) (string, error) {
+		return `{"total":11}`, nil
+	}
+	var reported []string
+	cfg.OnToolCall = func(name string, _ json.RawMessage) {
+		reported = append(reported, name)
+	}
+
+	if _, err := Converse(context.Background(), st, cfg, Turn{Query: Query{Text: "roll initiative", Limit: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported[0] != "dice" {
+		t.Fatalf("expected OnToolCall(\"dice\", ...) once, got %+v", reported)
+	}
+}
+
 func TestRunToolLoop_boundsRounds(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -265,6 +289,61 @@ func TestBuildTools_getReturnsEntityAndAmbiguityError(t *testing.T) {
 	_, err = exec(context.Background(), ToolCall{Name: "get", Arguments: json.RawMessage(`{"kind":"spell","name":"Fireball"}`)})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected an ambiguity error, got %v", err)
+	}
+}
+
+func TestBuildTools_listReturnsKindsWithNoKindGiven(t *testing.T) {
+	st, _, _ := harness(t)
+	defer st.Close()
+	_, exec := BuildTools(st, ToolsOptions{Edition: edition.All})
+
+	out, err := exec(context.Background(), ToolCall{Name: "list", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Kinds []string `json:"kinds"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !strings.Contains(strings.Join(result.Kinds, ","), "item") {
+		t.Fatalf("expected item among kinds: %s", out)
+	}
+}
+
+func TestBuildTools_listFiltersNamesByKindAndQuery(t *testing.T) {
+	st, _, _ := harness(t)
+	defer st.Close()
+	_, exec := BuildTools(st, ToolsOptions{Edition: edition.All})
+
+	out, err := exec(context.Background(), ToolCall{Name: "list", Arguments: json.RawMessage(`{"kind":"spell","query":"fire"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Total int `json:"total"`
+		Names []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		} `json:"names"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if result.Total != 2 {
+		t.Fatalf("expected both Fireball sources under edition.All, got %d: %s", result.Total, out)
+	}
+
+	out, err = exec(context.Background(), ToolCall{Name: "list", Arguments: json.RawMessage(`{"kind":"spell","query":"nonexistent"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if result.Total != 0 {
+		t.Fatalf("expected no matches: %s", out)
 	}
 }
 
