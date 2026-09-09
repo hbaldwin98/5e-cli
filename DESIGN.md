@@ -193,6 +193,10 @@ Provider is any OpenAI-compatible host:
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
 
+**Adventure scope.** `Query.Adventure` is what lets retrieval see module prose. Reachable from `5e ask --adventure` and MCP `semantic_search`'s `adventure` argument; without it an adventure-only NPC has no retrievable text beyond a name-and-race entity row.
+
+**Vector scope.** The kind, source, and adventure filters run in sqlite before rows are read, and chunk text is fetched only for the chunks that rank. A default ask reads 22k vectors rather than the full 52k, since module prose is excluded anyway.
+
 **Grounding.** `ask` sends the chat model the retrieved chunks' source text, budgeted by `FIVE_E_ASK_MAX_TOKENS` and shared so short sources are never clipped and their unused share goes to long ones. `Hit.Snippet` is a display preview only and must not be what an answer is built from.
 
 **Chunk windows.** A record longer than the embedding model's per-input limit is split into overlapping windows rather than truncated, and the windows of one record collapse to their best-scoring part at retrieval. Set `FIVE_E_EMBED_MAX_TOKENS` when the backend caps lower than OpenAI does; many local embedding servers stop at 512.

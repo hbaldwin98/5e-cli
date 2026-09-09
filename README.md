@@ -153,6 +153,27 @@ Pass `--source` when several books share a table name.
 Numeric first-column ranges are honored when present, including the `00` that
 percentile tables use for 100. Other tables use uniform row selection.
 
+## Ask
+
+Answer a question from the embedded corpus. Requires `OPENAI_API_KEY` and an
+OpenAI-compatible endpoint; `--retrieve-only` ranks chunks without calling a
+chat model:
+
+```sh
+5e ask "how much damage does fireball do"
+5e ask --retrieve-only "grappling rules" --limit 5
+5e ask --adventure LMoP "who is Gundren Rockseeker"
+```
+
+Adventure prose is excluded by default so module text does not ground a rules
+question. That also puts adventure-only NPCs and locations out of reach:
+`--adventure` scopes the answer to one module and is what makes questions
+about its characters answerable.
+
+The first run embeds the whole corpus into a sidecar cache next to the index.
+The cache is keyed by data fingerprint, base URL, embed model, and token
+limit, and rebuilds when any of those change.
+
 ## Development
 
 ```sh

@@ -45,6 +45,7 @@ func Retrieve(ctx context.Context, st *store.Store, cfg Config, q Query) ([]Hit,
 // a short snippet for display, which is not enough to ground an answer.
 type scoredChunk struct {
 	chunk
+	id    string
 	score float64
 }
 
@@ -69,7 +70,7 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err := ensureCache(ctx, st, cfg); err != nil {
 		return nil, err
 	}
-	vecs, err := loadVectors(cfg.CachePath)
+	vecs, err := loadVectors(cfg.CachePath, vectorScope{Kind: q.Kind, Sources: q.Sources, Adventure: q.Adventure})
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +87,11 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err != nil {
 		return nil, err
 	}
-	return rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK)), nil
+	ranked := rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK))
+	if err := attachText(cfg.CachePath, ranked); err != nil {
+		return nil, err
+	}
+	return ranked, nil
 }
 
 func srdAllow(st *store.Store, only bool) (func(kind, name, source string) bool, error) {
@@ -139,7 +144,7 @@ func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool
 		if !keep(v) {
 			continue
 		}
-		s := scoredChunk{chunk: v.chunk, score: dot(query, v.vec)}
+		s := scoredChunk{chunk: v.chunk, id: v.id, score: dot(query, v.vec)}
 		key := chunkKey(v.Kind, v.Name, v.Source)
 		if at, ok := best[key]; ok {
 			if s.score > ranked[at].score {

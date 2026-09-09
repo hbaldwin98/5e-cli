@@ -403,3 +403,61 @@ func TestShareBudget_zeroBudgetIsSafe(t *testing.T) {
 		}
 	}
 }
+
+func TestVectorScope_excludesAdventureDocsByDefault(t *testing.T) {
+	where, args := vectorScope{}.where()
+	if !strings.Contains(where, "adventureSection") || !strings.Contains(where, "adventureLocation") {
+		t.Fatalf("default scope must exclude module prose: %q", where)
+	}
+	if len(args) != 0 {
+		t.Fatalf("unexpected args %v", args)
+	}
+}
+
+func TestVectorScope_adventureNarrowsToThatSource(t *testing.T) {
+	where, args := vectorScope{Adventure: "LMoP"}.where()
+	if strings.Contains(where, "NOT IN") {
+		t.Fatalf("an adventure query must not exclude module prose: %q", where)
+	}
+	if len(args) != 1 || args[0] != "LMoP" {
+		t.Fatalf("args %v", args)
+	}
+}
+
+func TestVectorScope_kindAndSources(t *testing.T) {
+	where, args := vectorScope{Kind: "spell", Sources: []string{"PHB", "XPHB"}}.where()
+	if !strings.Contains(where, "kind = ?") || !strings.Contains(where, "IN (?,?)") {
+		t.Fatalf("where %q", where)
+	}
+	if len(args) != 3 {
+		t.Fatalf("args %v", args)
+	}
+}
+
+func TestRetrieve_adventureScopeReachesModuleProse(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	// Without an adventure the module section is unreachable, which is what
+	// made adventure-only NPCs unanswerable.
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "goblin hideout cragmaw", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Name == "Cragmaw Hideout" {
+			t.Fatal("default retrieve should not reach module prose")
+		}
+	}
+
+	hits, err = Retrieve(context.Background(), st, cfg, Query{Text: "goblin hideout cragmaw", Limit: 8, Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Cragmaw Hideout" {
+		t.Fatalf("adventure scope should reach module prose, got %+v", hits)
+	}
+	if hits[0].Snippet == "" {
+		t.Fatal("snippet is empty; text was not attached after ranking")
+	}
+}

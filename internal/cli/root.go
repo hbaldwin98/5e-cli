@@ -446,25 +446,44 @@ func refsCmd(opt *options) *cobra.Command {
 
 func askCmd(opt *options) *cobra.Command {
 	var retrieveOnly bool
-	var kind string
+	var kind, adventure string
 	var sources []string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "ask <query>",
 		Short: "Answer a question from embedded 5e sources",
 		Args:  cobra.MinimumNArgs(1),
+		Example: `  5e ask "how much damage does fireball do"
+  5e ask --adventure LMoP "who is Gundren Rockseeker"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAsk(cmd, opt, args, retrieveOnly, kind, splitSources(sources), limit)
+			return runAsk(cmd, opt, args, askFlags{
+				RetrieveOnly: retrieveOnly,
+				Kind:         kind,
+				Sources:      splitSources(sources),
+				Limit:        limit,
+				Adventure:    adventure,
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&retrieveOnly, "retrieve-only", false, "return ranked chunks without calling a chat model")
 	cmd.Flags().StringVar(&kind, "kind", "", "restrict to one entity kind")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
+	cmd.Flags().StringVar(&adventure, "adventure", "", "ground the answer in one adventure's prose (id or title)")
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum retrieved chunks")
 	return cmd
 }
 
-func runAsk(cmd *cobra.Command, opt *options, args []string, retrieveOnly bool, kind string, sources []string, limit int) error {
+// askFlags groups the ask options; runAsk had grown past a readable parameter
+// list.
+type askFlags struct {
+	RetrieveOnly bool
+	Kind         string
+	Sources      []string
+	Limit        int
+	Adventure    string
+}
+
+func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) error {
 	data, index, err := resolve(opt)
 	if err != nil {
 		return err
@@ -479,12 +498,19 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, retrieveOnly bool, 
 	cfg.Progress = cmd.ErrOrStderr()
 	q := ask.Query{
 		Text:    strings.Join(args, " "),
-		Kind:    kind,
-		Sources: sources,
-		Limit:   limit,
+		Kind:    flags.Kind,
+		Sources: flags.Sources,
+		Limit:   flags.Limit,
 		SRD:     opt.SRD,
 	}
-	if retrieveOnly {
+	if flags.Adventure != "" {
+		adv, err := adventure.Resolve(st, flags.Adventure)
+		if err != nil {
+			return err
+		}
+		q.Adventure = adv.Source
+	}
+	if flags.RetrieveOnly {
 		return writeRetrieve(cmd, opt.JSON, st, cfg, q)
 	}
 	return writeAskResult(cmd, opt.JSON, st, cfg, q)

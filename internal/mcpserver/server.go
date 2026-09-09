@@ -66,7 +66,7 @@ func New(st *store.Store, opt Options) *mcp.Server {
 	}, h.references)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
-		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Skips adventure module text.",
+		Description: "Embed the query and return ranked source chunks without calling a chat model. Use get for the full record. Module prose is skipped unless adventure names one.",
 	}, h.semanticSearch)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "adventure_search",
@@ -144,6 +144,17 @@ type searchOutput struct {
 	Hits []search.Hit `json:"hits"`
 }
 
+// semanticSearchInput adds adventure scoping: module prose is excluded by
+// default so it cannot ground a rules question, which also puts every
+// adventure-only NPC and location out of reach until an adventure is named.
+type semanticSearchInput struct {
+	Query     string   `json:"query" jsonschema:"name or rules text to search"`
+	Kind      string   `json:"kind,omitempty" jsonschema:"optional entity kind filter"`
+	Sources   []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids such as PHB"`
+	Limit     int      `json:"limit,omitempty" jsonschema:"maximum hits"`
+	Adventure string   `json:"adventure,omitempty" jsonschema:"optional adventure id or title; required to reach module prose, NPCs, and locations"`
+}
+
 type referencesInput struct {
 	Kind      string `json:"kind" jsonschema:"entity kind such as spell, monster, or item"`
 	Name      string `json:"name" jsonschema:"entity name"`
@@ -201,14 +212,22 @@ func (h *handler) search(_ context.Context, _ *mcp.CallToolRequest, in searchInp
 	return nil, searchOutput{Hits: hits}, nil
 }
 
-func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
-	hits, err := ask.Retrieve(ctx, h.st, h.ask, ask.Query{
+func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in semanticSearchInput) (*mcp.CallToolResult, searchOutput, error) {
+	q := ask.Query{
 		Text:    in.Query,
 		Kind:    in.Kind,
 		Sources: in.Sources,
 		Limit:   in.Limit,
 		SRD:     h.srd,
-	})
+	}
+	if in.Adventure != "" {
+		adv, err := adventure.Resolve(h.st, in.Adventure)
+		if err != nil {
+			return nil, searchOutput{}, err
+		}
+		q.Adventure = adv.Source
+	}
+	hits, err := ask.Retrieve(ctx, h.st, h.ask, q)
 	if err != nil {
 		return nil, searchOutput{}, err
 	}

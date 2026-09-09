@@ -87,7 +87,47 @@ func estimateTokens(s string) int {
 
 type vector struct {
 	chunk
+	id  string
 	vec []float32
+}
+
+// vectorScope is the part of a query that sqlite can apply before a row is
+// read. SRD status lives in the entity index, not here, so it stays in Go.
+type vectorScope struct {
+	Kind      string
+	Sources   []string
+	Adventure string
+}
+
+// where builds the prefilter. With no adventure in scope, adventure document
+// kinds are excluded outright — on a full corpus that is more than half the
+// rows, decoded and discarded on every query.
+func (v vectorScope) where() (string, []any) {
+	var clauses []string
+	var args []any
+	if v.Kind != "" {
+		clauses = append(clauses, `kind = ? COLLATE NOCASE`)
+		args = append(args, v.Kind)
+	}
+	if len(v.Sources) > 0 {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(v.Sources)), ",")
+		clauses = append(clauses, `source COLLATE NOCASE IN (`+ph+`)`)
+		for _, src := range v.Sources {
+			args = append(args, src)
+		}
+	}
+	if v.Adventure == "" {
+		clauses = append(clauses, `kind NOT IN ('adventureSection', 'adventureLocation')`)
+	} else {
+		// Every kept row must belong to the adventure: its documents by the
+		// document branch, its entities by the source branch.
+		clauses = append(clauses, `source = ? COLLATE NOCASE`)
+		args = append(args, v.Adventure)
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return ` WHERE ` + strings.Join(clauses, ` AND `), args
 }
 
 func ensureCache(ctx context.Context, st *store.Store, cfg Config) error {
@@ -224,13 +264,17 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 	return os.Rename(tmp, cfg.CachePath)
 }
 
-func loadVectors(path string) ([]vector, error) {
+// loadVectors reads the candidate vectors for one query. It deliberately does
+// not select text: ranking never reads it, and carrying the whole corpus's
+// prose through every query costs more than the vectors themselves.
+func loadVectors(path string, scope vectorScope) ([]vector, error) {
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT kind, name, source, text, embedding FROM vectors`)
+	where, args := scope.where()
+	rows, err := db.Query(`SELECT id, kind, name, source, embedding FROM vectors`+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +283,7 @@ func loadVectors(path string) ([]vector, error) {
 	for rows.Next() {
 		var v vector
 		var blob []byte
-		if err := rows.Scan(&v.Kind, &v.Name, &v.Source, &v.Text, &blob); err != nil {
+		if err := rows.Scan(&v.id, &v.Kind, &v.Name, &v.Source, &blob); err != nil {
 			return nil, err
 		}
 		v.vec, err = decodeVec(blob)
@@ -249,6 +293,44 @@ func loadVectors(path string) ([]vector, error) {
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// attachText fills in the text of the chunks that actually won, which is a
+// handful of rows rather than the whole corpus.
+func attachText(path string, ranked []scoredChunk) error {
+	if len(ranked) == 0 {
+		return nil
+	}
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ranked)), ",")
+	args := make([]any, len(ranked))
+	for i, r := range ranked {
+		args[i] = r.id
+	}
+	rows, err := db.Query(`SELECT id, text FROM vectors WHERE id IN (`+ph+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	texts := make(map[string]string, len(ranked))
+	for rows.Next() {
+		var id, text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return err
+		}
+		texts[id] = text
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range ranked {
+		ranked[i].Text = texts[ranked[i].id]
+	}
+	return nil
 }
 
 // batchEnd grows a batch until it hits the request's input count or its
