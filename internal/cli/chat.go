@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ saved, so a later run continues where this one stopped.`,
 	cmd.Flags().StringVar(&copt.Adventure, "adventure", "", "add one adventure's prose to the session (id or title; \"none\" clears it)")
 	cmd.Flags().BoolVar(&copt.AdventureOnly, "adventure-only", false, "answer from that adventure alone, without the rulebooks")
 	cmd.Flags().IntVar(&copt.Limit, "limit", chat.DefaultLimit, "maximum retrieved chunks per question")
-	cmd.AddCommand(chatListCmd(opt, copt), chatShowCmd(opt, copt), chatNoteCmd(opt, copt), chatClearCmd(opt, copt), chatRemoveCmd(opt, copt))
+	cmd.AddCommand(chatListCmd(opt, copt), chatShowCmd(opt, copt), chatNoteCmd(opt, copt), chatClearCmd(opt, copt), chatRemoveCmd(opt, copt), chatRenameCmd(opt, copt), chatExportCmd(opt, copt), chatImportCmd(opt, copt))
 	return cmd
 }
 
@@ -212,6 +213,91 @@ func chatRemoveCmd(opt *options, copt *chatOptions) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func chatRenameCmd(opt *options, copt *chatOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename <session> <new-name>",
+		Short: "Rename a saved session, keeping its transcript and notes",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			sess, err := cs.Rename(args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), sess)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "renamed %q to %q\n", args[0], sess.Name)
+			return nil
+		},
+	}
+}
+
+func chatExportCmd(opt *options, copt *chatOptions) *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "export <session>",
+		Short: "Write a session as JSON, for backup or sharing",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			raw, err := cs.Export(args[0])
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				_, err := cmd.OutOrStdout().Write(raw)
+				return err
+			}
+			if err := os.WriteFile(out, raw, 0o644); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "exported %s to %s\n", args[0], out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "write to this file instead of stdout")
+	return cmd
+}
+
+func chatImportCmd(opt *options, copt *chatOptions) *cobra.Command {
+	var name string
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Load a session previously written by `chat export`",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cs, err := openChatStore(copt)
+			if err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			sess, err := cs.Import(raw, name, force)
+			if err != nil {
+				return err
+			}
+			if opt.JSON {
+				return writeJSON(cmd.OutOrStdout(), sess)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "imported %s as %q\n", args[0], sess.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "import under this name instead of the one in the file")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing session with this name")
+	return cmd
 }
 
 func openChatStore(copt *chatOptions) (*chat.Store, error) {

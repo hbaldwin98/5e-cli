@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -430,6 +431,68 @@ func TestChat_clearDropsHistoryAndKeepsNotes(t *testing.T) {
 	}
 	if len(list) != 1 || list[0]["turns"].(float64) != 1 || list[0]["notes"].(float64) != 1 {
 		t.Fatalf("list after clear: %s", out)
+	}
+}
+
+func TestChat_renameExportImport(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "--session", "curse-of-strahd", "note", "the party sold the Sunsword")...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(append(base, "--session", "curse-of-strahd", "what does fireball do")...); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCLI(append(base, "rename", "curse-of-strahd", "cos-campaign")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `renamed "curse-of-strahd" to "cos-campaign"`) {
+		t.Fatalf("rename: %s", out)
+	}
+	if _, err := runCLI(append(base, "show", "curse-of-strahd")...); err != nil {
+		t.Fatal(err) // Load creates a fresh, empty session under a free name.
+	}
+
+	exportFile := filepath.Join(t.TempDir(), "exported.json")
+	out, err = runCLI(append(base, "export", "cos-campaign", "--out", exportFile)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "exported cos-campaign to "+exportFile) {
+		t.Fatalf("export: %s", out)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "the party sold the Sunsword") {
+		t.Fatalf("export file is missing the note:\n%s", raw)
+	}
+
+	otherDir := filepath.Join(t.TempDir(), "other-chats")
+	otherBase := []string{"--index", index, "--data", data, "chat", "--chat-dir", otherDir}
+	out, err = runCLI(append(otherBase, "import", exportFile)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `imported `+exportFile+` as "cos-campaign"`) {
+		t.Fatalf("import: %s", out)
+	}
+	if _, err := runCLI(append(otherBase, "import", exportFile)...); err == nil {
+		t.Fatal("importing onto an existing session without --force should be refused")
+	}
+
+	out, err = runCLI(append(otherBase, "show", "cos-campaign")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "the party sold the Sunsword") {
+		t.Fatalf("imported session is missing its note:\n%s", out)
 	}
 }
 

@@ -125,6 +125,9 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e chat note <text>
 5e chat clear [session] [--notes]
 5e chat rm <session>
+5e chat rename <session> <new-name>
+5e chat export <session> [--out FILE]
+5e chat import <file> [--name NAME] [--force]
 5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
 5e adventure <id-or-name> get <role> <name> [--json]
 5e adventure <id-or-name> list [--kind npc|location|item] [--chapter NAME] [--location NAME] [--json]
@@ -236,6 +239,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 **Notes.** `/note` in the REPL, or `5e chat note`, records a fact ("the party sold the Sunsword in Vallaki"). Notes are re-sent with every question, marked as the user's own record: true, preferred over the rules when they conflict, and never cited as a source.
 
 **Clearing.** `5e chat clear` (or `/clear`) empties the transcript and keeps the session, its notes, and its adventure scope: dropping the history is how you change subject without losing what you wrote down. `--notes` (or `/clear all`) drops the notes too. Deleting the session is `5e chat rm`.
+
+**Rename, export, import.** `5e chat rename <session> <new-name>` keeps the transcript and notes and refuses to overwrite an existing session, the same collision protection given a session created by `chat`. `5e chat export <session>` writes the session as the same JSON `Save` persists, to stdout or `--out FILE`, so it is both a backup format and a valid `chat import` input. `5e chat import <file>` refuses to overwrite an existing session unless `--force` is given; `--name` imports under a different name than the one recorded in the file, so an export can be shared or restored without editing it first.
 
 **Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.
 

@@ -319,3 +319,123 @@ func TestStore_clearedSessionStaysListed(t *testing.T) {
 		t.Fatalf("clearing is not deleting: %+v", list)
 	}
 }
+
+func TestStore_renamePreservesTranscriptAndFreesTheOldName(t *testing.T) {
+	cs := testStore(t)
+
+	sess, err := cs.Load("Curse of Strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AddTurn("who is Strahd", ask.Result{Answer: "A vampire."})
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := cs.Rename("Curse of Strahd", "CoS Campaign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "CoS Campaign" || len(renamed.Turns) != 1 {
+		t.Fatalf("rename should keep the transcript under the new name: %+v", renamed)
+	}
+
+	again, err := cs.Load("CoS Campaign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Turns) != 1 {
+		t.Fatalf("the renamed session did not persist: %+v", again)
+	}
+
+	fresh, err := cs.Load("Curse of Strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Turns) != 0 {
+		t.Fatalf("the old name should be free for reuse, got a nonempty session: %+v", fresh)
+	}
+}
+
+func TestStore_renameRefusesAnExistingTarget(t *testing.T) {
+	cs := testStore(t)
+	if _, err := cs.Load("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Save(mustLoad(t, cs, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Save(mustLoad(t, cs, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Rename("a", "b"); err == nil {
+		t.Fatal("renaming onto an existing session should be refused")
+	}
+	if _, err := cs.Rename("missing", "c"); err == nil {
+		t.Fatal("renaming a session that doesn't exist should be refused")
+	}
+}
+
+func mustLoad(t *testing.T, cs *Store, name string) *Session {
+	t.Helper()
+	sess, err := cs.Load(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess
+}
+
+func TestStore_exportThenImportRoundTrips(t *testing.T) {
+	cs := testStore(t)
+	sess, err := cs.Load("Curse of Strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AddNote("the party sold the Sunsword")
+	sess.AddTurn("who is Strahd", ask.Result{
+		Answer:    "A vampire.",
+		Citations: []ask.Hit{{Kind: "monster", Name: "Strahd", Source: "CoS"}},
+	})
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := cs.Export("Curse of Strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := testStore(t)
+	imported, err := other.Import(raw, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Name != "Curse of Strahd" || len(imported.Turns) != 1 || len(imported.Notes) != 1 {
+		t.Fatalf("import did not round-trip the session: %+v", imported)
+	}
+
+	if _, err := other.Import(raw, "", false); err == nil {
+		t.Fatal("importing onto an existing session without --force should be refused")
+	}
+	if _, err := other.Import(raw, "", true); err != nil {
+		t.Fatalf("force should allow overwriting: %v", err)
+	}
+
+	renamedImport, err := other.Import(raw, "A Copy", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamedImport.Name != "A Copy" {
+		t.Fatalf("--name should override the file's own name, got %q", renamedImport.Name)
+	}
+}
+
+func TestStore_importRejectsGarbage(t *testing.T) {
+	cs := testStore(t)
+	if _, err := cs.Import([]byte("not json"), "", false); err == nil {
+		t.Fatal("want an error for unparseable input")
+	}
+	if _, err := cs.Import([]byte(`{"turns":[]}`), "", false); err == nil {
+		t.Fatal("want an error when neither the file nor --name supplies a session name")
+	}
+}
