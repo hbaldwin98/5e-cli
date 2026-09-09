@@ -26,6 +26,21 @@ type Result struct {
 
 // Ask retrieves relevant chunks and asks the chat model to answer from them.
 func Ask(ctx context.Context, st *store.Store, cfg Config, q Query) (Result, error) {
+	return askWith(ctx, st, cfg, q, nil)
+}
+
+// AskStream is Ask, but calls onDelta with each token as the model generates
+// it, so a TTY caller can render the answer as it arrives. Citations are
+// still validated against the complete answer once generation finishes, so
+// streaming changes only when the text is visible, not what is grounded.
+func AskStream(ctx context.Context, st *store.Store, cfg Config, q Query, onDelta func(string) error) (Result, error) {
+	if onDelta == nil {
+		return Result{}, fmt.Errorf("AskStream requires onDelta")
+	}
+	return askWith(ctx, st, cfg, q, onDelta)
+}
+
+func askWith(ctx context.Context, st *store.Store, cfg Config, q Query, onDelta func(string) error) (Result, error) {
 	cfg = cfg.withDefaults()
 	ranked, err := retrieveChunks(ctx, st, cfg, q)
 	if err != nil {
@@ -41,7 +56,16 @@ func Ask(ctx context.Context, st *store.Store, cfg Config, q Query) (Result, err
 	// window even though the source text alone stayed under budget.
 	total := promptRunes(cfg.AskMaxTokens)
 	overhead := utf8.RuneCountInString(systemPrompt) + utf8.RuneCountInString(q.Text)
-	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, ranked, max(total-overhead, 0)))
+	msgs := []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt(q.Text, ranked, max(total-overhead, 0))},
+	}
+	var answer string
+	if onDelta != nil {
+		answer, err = cli.ChatMessagesStream(ctx, msgs, onDelta)
+	} else {
+		answer, err = cli.ChatMessages(ctx, msgs)
+	}
 	if err != nil {
 		return Result{}, err
 	}

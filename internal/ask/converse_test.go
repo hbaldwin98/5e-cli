@@ -14,6 +14,44 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
+func TestConverseStream_deliversDeltasMatchingTheNonStreamingAnswer(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	var deltas []string
+	streamed, err := ConverseStream(context.Background(), st, cfg, Turn{
+		Query: Query{Text: "what does fireball do", Limit: 3},
+	}, func(s string) error {
+		deltas = append(deltas, s)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deltas) < 2 {
+		t.Fatalf("want more than one delta, got %+v", deltas)
+	}
+	if got := strings.Join(deltas, ""); strings.TrimSpace(got) != streamed.Answer {
+		t.Fatalf("concatenated deltas %q do not match the returned answer %q", got, streamed.Answer)
+	}
+
+	whole, err := Converse(context.Background(), st, cfg, Turn{Query: Query{Text: "what does fireball do", Limit: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole.Answer != streamed.Answer {
+		t.Fatalf("streaming answer %q should match the non-streaming answer %q", streamed.Answer, whole.Answer)
+	}
+}
+
+func TestConverseStream_requiresOnDelta(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+	if _, err := ConverseStream(context.Background(), st, cfg, Turn{Query: Query{Text: "x", Limit: 1}}, nil); err == nil {
+		t.Fatal("want an error when onDelta is nil")
+	}
+}
+
 func TestConverse_carriesHistoryNotesAndSources(t *testing.T) {
 	st, cfg, api := harness(t)
 	defer st.Close()

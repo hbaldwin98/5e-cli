@@ -44,6 +44,22 @@ const retrievalLookback = 2
 // Retrieval runs on every turn, so each answer is grounded in the corpus
 // rather than in what the model said earlier.
 func Converse(ctx context.Context, st *store.Store, cfg Config, t Turn) (Result, error) {
+	return converseWith(ctx, st, cfg, t, nil)
+}
+
+// ConverseStream is Converse, but calls onDelta with each token as the model
+// generates it, so a TTY caller can render the answer as it arrives.
+// Citations are still validated against the complete answer once generation
+// finishes, so streaming changes only when the text is visible, not what is
+// grounded.
+func ConverseStream(ctx context.Context, st *store.Store, cfg Config, t Turn, onDelta func(string) error) (Result, error) {
+	if onDelta == nil {
+		return Result{}, fmt.Errorf("ConverseStream requires onDelta")
+	}
+	return converseWith(ctx, st, cfg, t, onDelta)
+}
+
+func converseWith(ctx context.Context, st *store.Store, cfg Config, t Turn, onDelta func(string) error) (Result, error) {
 	cfg = cfg.withDefaults()
 	if strings.TrimSpace(t.Query.Text) == "" {
 		return Result{}, fmt.Errorf("empty query")
@@ -79,7 +95,13 @@ func Converse(ctx context.Context, st *store.Store, cfg Config, t Turn) (Result,
 		Content: conversePromptBody(t.Query.Text, notes, ranked, max(total-spent, 0)),
 	})
 
-	answer, err := newClient(cfg).ChatMessages(ctx, msgs)
+	cli := newClient(cfg)
+	var answer string
+	if onDelta != nil {
+		answer, err = cli.ChatMessagesStream(ctx, msgs, onDelta)
+	} else {
+		answer, err = cli.ChatMessages(ctx, msgs)
+	}
 	if err != nil {
 		return Result{}, err
 	}

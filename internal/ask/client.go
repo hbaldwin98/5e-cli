@@ -1,6 +1,7 @@
 package ask
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -94,6 +95,104 @@ func (c *client) ChatMessages(ctx context.Context, msgs []Message) (string, erro
 		return "", fmt.Errorf("chat: empty choices")
 	}
 	return messageText(resp.Choices[0].Message.Content)
+}
+
+// ChatMessagesStream is ChatMessages, but calls onDelta with each token as
+// the model generates it, so a TTY caller can render an answer as it
+// arrives instead of waiting for the whole thing. It still returns the
+// complete answer at the end, so a caller that needs the final text (to
+// validate citations against, or to persist) does not have to reassemble it
+// from the deltas itself.
+func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta func(string) error) (string, error) {
+	if c.cfg.APIKey == "" {
+		return "", fmt.Errorf("OPENAI_API_KEY is not set")
+	}
+	messages := make([]map[string]string, len(msgs))
+	for i, m := range msgs {
+		messages[i] = map[string]string{"role": m.Role, "content": m.Content}
+	}
+	body := map[string]any{
+		"model":       c.cfg.AskModel,
+		"messages":    messages,
+		"temperature": 0,
+		"max_tokens":  c.cfg.AnswerMaxTokens,
+		"stream":      true,
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	url := c.cfg.BaseURL + "/" + strings.TrimLeft("chat/completions", "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		msg := strings.TrimSpace(string(payload))
+		if len(msg) > 512 {
+			msg = msg[:512] + "…"
+		}
+		if msg == "" {
+			msg = resp.Status
+		}
+		return "", fmt.Errorf("chat/completions: %s", msg)
+	}
+
+	var full strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Error *apiError `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return full.String(), fmt.Errorf("chat/completions: stream decode: %w", err)
+		}
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return full.String(), fmt.Errorf("chat: %s", chunk.Error.Message)
+		}
+		for _, c := range chunk.Choices {
+			if c.Delta.Content == "" {
+				continue
+			}
+			full.WriteString(c.Delta.Content)
+			if onDelta != nil {
+				if err := onDelta(c.Delta.Content); err != nil {
+					return full.String(), err
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return full.String(), fmt.Errorf("chat/completions: stream: %w", err)
+	}
+	if full.Len() == 0 {
+		return "", fmt.Errorf("chat: empty message")
+	}
+	return full.String(), nil
 }
 
 type apiError struct {

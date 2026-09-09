@@ -540,19 +540,52 @@ func writeRetrieve(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Con
 	return writeAskHits(cmd.OutOrStdout(), hits)
 }
 
+// writeAskResult prints an answer either whole or streamed as it generates,
+// depending on the destination. --json needs the complete Result to encode
+// one valid object, and a redirected or piped stdout gets one deterministic
+// write rather than a stream of partial writes a script would have to
+// reassemble; only an interactive TTY streams tokens as the model produces
+// them.
 func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Config, q ask.Query) error {
-	res, err := ask.Ask(cmd.Context(), st, cfg, q)
-	if err != nil {
-		return err
-	}
+	out := cmd.OutOrStdout()
 	if asJSON {
-		return writeJSON(cmd.OutOrStdout(), res)
+		res, err := ask.Ask(cmd.Context(), st, cfg, q)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, res)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), res.Answer)
+
+	var res ask.Result
+	var err error
+	if isTTY(out) {
+		var streamed bool
+		res, err = ask.AskStream(cmd.Context(), st, cfg, q, func(delta string) error {
+			streamed = true
+			_, werr := io.WriteString(out, delta)
+			return werr
+		})
+		if err != nil {
+			return err
+		}
+		if streamed {
+			fmt.Fprintln(out)
+		} else {
+			// The "no matching sources" short-circuit never calls onDelta.
+			fmt.Fprintln(out, res.Answer)
+		}
+	} else {
+		res, err = ask.Ask(cmd.Context(), st, cfg, q)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, res.Answer)
+	}
+
 	if len(res.Citations) > 0 {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "Sources:")
-		return writeAskHits(cmd.OutOrStdout(), res.Citations)
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Sources:")
+		return writeAskHits(out, res.Citations)
 	}
 	return nil
 }

@@ -396,18 +396,40 @@ func scopeAdventure(st *store.Store, sess *chat.Session, name string, only bool)
 
 // chatTurn answers one question and saves the session before returning, so an
 // interrupted run never loses an answer the user already read.
+//
+// On an interactive TTY in human mode, the answer streams to stdout as the
+// model generates it rather than appearing all at once; --json and a
+// redirected or piped stdout stay on the whole-answer path, since --json
+// needs one complete object and a script reading stdout should get one
+// deterministic write.
 func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, question string, opts chat.Options) error {
-	res, err := chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
+	out := cmd.OutOrStdout()
+	var res ask.Result
+	var err error
+	streamed := false
+	if !asJSON && isTTY(out) {
+		res, err = chat.AskStream(cmd.Context(), st, cfg, sess, question, opts, func(delta string) error {
+			streamed = true
+			_, werr := io.WriteString(out, delta)
+			return werr
+		})
+	} else {
+		res, err = chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
+	}
 	if err != nil {
 		return err
 	}
 	if err := cs.Save(sess); err != nil {
 		return err
 	}
-	return writeChatTurn(cmd, asJSON, sess, question, res)
+	return writeChatTurn(cmd, asJSON, sess, question, res, streamed)
 }
 
-func writeChatTurn(cmd *cobra.Command, asJSON bool, sess *chat.Session, question string, res ask.Result) error {
+// writeChatTurn prints the answer and its citations. When streamed is true,
+// the answer's own text already reached stdout as raw deltas during
+// generation; only the trailing newline and citations are left to print, and
+// re-rendering it as Markdown here would duplicate the answer on screen.
+func writeChatTurn(cmd *cobra.Command, asJSON bool, sess *chat.Session, question string, res ask.Result, streamed bool) error {
 	out := cmd.OutOrStdout()
 	if asJSON {
 		return writeJSON(out, chatTurnResult{
@@ -418,7 +440,9 @@ func writeChatTurn(cmd *cobra.Command, asJSON bool, sess *chat.Session, question
 			Citations: res.Citations,
 		})
 	}
-	if err := renderMarkdown(out, res.Answer+"\n"); err != nil {
+	if streamed {
+		fmt.Fprintln(out)
+	} else if err := renderMarkdown(out, res.Answer+"\n"); err != nil {
 		return err
 	}
 	if len(res.Citations) > 0 {

@@ -191,6 +191,58 @@ func TestAsk_groundsInRetrievedSources(t *testing.T) {
 	}
 }
 
+func TestAskStream_deliversDeltasAndTheFinalAnswerMatchesNonStreaming(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	var deltas []string
+	streamed, err := AskStream(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 3}, func(s string) error {
+		deltas = append(deltas, s)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deltas) < 2 {
+		t.Fatalf("want more than one delta, got %+v", deltas)
+	}
+	if got := strings.Join(deltas, ""); strings.TrimSpace(got) != streamed.Answer {
+		t.Fatalf("concatenated deltas %q do not match the returned answer %q", got, streamed.Answer)
+	}
+
+	whole, err := Ask(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole.Answer != streamed.Answer {
+		t.Fatalf("streaming answer %q should match the non-streaming answer %q", streamed.Answer, whole.Answer)
+	}
+	if len(streamed.Citations) == 0 || streamed.Citations[0].Name != "Fireball" {
+		t.Fatalf("streaming should still validate citations against the complete answer: %+v", streamed.Citations)
+	}
+}
+
+func TestAskStream_requiresOnDelta(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+	if _, err := AskStream(context.Background(), st, cfg, Query{Text: "x", Limit: 1}, nil); err == nil {
+		t.Fatal("want an error when onDelta is nil")
+	}
+}
+
+func TestChatMessagesStream_stopsOnACancelledContext(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+	cli := newClient(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := cli.ChatMessagesStream(ctx, []Message{{Role: "user", Content: "hi"}}, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("want an error for a request made with an already-cancelled context")
+	}
+}
+
 func TestClient_requiresAPIKey(t *testing.T) {
 	cfg := Config{BaseURL: "http://127.0.0.1:1", CachePath: filepath.Join(t.TempDir(), "e.sqlite")}
 	cli := newClient(cfg)
@@ -272,6 +324,7 @@ func (f *fakeAPI) handler() http.Handler {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			Stream bool `json:"stream"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -293,11 +346,26 @@ func (f *fakeAPI) handler() http.Handler {
 		if kind, name, source, ok := firstRetrievedSource(user); ok {
 			answer = fmt.Sprintf("%s says so (%s, %s, %s).", name, kind, name, source)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{"message": map[string]any{"content": answer}},
-			},
-		})
+		if !req.Stream {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"content": answer}},
+				},
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for _, word := range strings.Fields(answer) {
+			chunk, _ := json.Marshal(map[string]any{
+				"choices": []map[string]any{{"delta": map[string]any{"content": word + " "}}},
+			})
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	return mux
 }

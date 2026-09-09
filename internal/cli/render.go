@@ -595,15 +595,23 @@ func markdownCell(s string) string {
 	return strings.ReplaceAll(oneLine(s), "|", "\\|")
 }
 
-func renderMarkdown(w io.Writer, markdown string) error {
+// isTTY reports whether w is an interactive terminal: a real *os.File
+// connected to a character device, not redirected to a file or pipe, and not
+// a "dumb" terminal that can't render ANSI. Streaming output, spinners, and
+// Glamour rendering are all gated on this — none of them belong in --json
+// output, a script's captured stdout, or a CI log.
+func isTTY(w io.Writer) bool {
 	file, ok := w.(*os.File)
 	if !ok || os.Getenv("TERM") == "dumb" {
-		_, err := io.WriteString(w, markdown)
-		return err
+		return false
 	}
 	info, err := file.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		_, err = io.WriteString(w, markdown)
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func renderMarkdown(w io.Writer, markdown string) error {
+	if !isTTY(w) {
+		_, err := io.WriteString(w, markdown)
 		return err
 	}
 	renderer, err := glamour.NewTermRenderer(

@@ -29,6 +29,19 @@ const DefaultLimit = 8
 // its transcript. The caller persists the session; nothing here writes to
 // disk, so a failed answer leaves the transcript alone.
 func Ask(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, question string, opt Options) (ask.Result, error) {
+	return askWith(ctx, st, cfg, sess, question, opt, nil)
+}
+
+// AskStream is Ask, but calls onDelta with each token as the model generates
+// it, so a TTY caller can render the answer as it arrives.
+func AskStream(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, question string, opt Options, onDelta func(string) error) (ask.Result, error) {
+	if onDelta == nil {
+		return ask.Result{}, fmt.Errorf("AskStream requires onDelta")
+	}
+	return askWith(ctx, st, cfg, sess, question, opt, onDelta)
+}
+
+func askWith(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, question string, opt Options, onDelta func(string) error) (ask.Result, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
 		return ask.Result{}, fmt.Errorf("empty question")
@@ -36,7 +49,7 @@ func Ask(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, qu
 	if opt.Limit <= 0 {
 		opt.Limit = DefaultLimit
 	}
-	res, err := ask.Converse(ctx, st, cfg, ask.Turn{
+	turn := ask.Turn{
 		Query: ask.Query{
 			Text:          question,
 			Kind:          opt.Kind,
@@ -49,7 +62,14 @@ func Ask(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, qu
 		},
 		History: sess.History(),
 		Notes:   sess.NoteTexts(),
-	})
+	}
+	var res ask.Result
+	var err error
+	if onDelta != nil {
+		res, err = ask.ConverseStream(ctx, st, cfg, turn, onDelta)
+	} else {
+		res, err = ask.Converse(ctx, st, cfg, turn)
+	}
 	if err != nil {
 		return ask.Result{}, err
 	}
