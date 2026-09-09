@@ -316,6 +316,9 @@ func firstRetrievedSource(prompt string) (kind, name, source string, ok bool) {
 
 func keywordEmbed(text string) []float32 {
 	t := strings.ToLower(text)
+	if strings.Contains(t, "return zero vector") {
+		return []float32{0, 0, 0, 0, 0}
+	}
 	v := []float32{0.05, 0.05, 0.05, 0.05, 0.05}
 	add := func(i int, words ...string) {
 		for _, w := range words {
@@ -408,6 +411,51 @@ func TestBatchEnd_respectsCountAndTokenBudget(t *testing.T) {
 	}
 	if got >= len(big) {
 		t.Fatalf("oversized chunks should split the batch, got %d", got)
+	}
+}
+
+func TestValidateVector_rejectsEmptyAndZero(t *testing.T) {
+	if err := validateVector(nil, "x"); err == nil {
+		t.Fatal("want an error for an empty vector")
+	}
+	if err := validateVector([]float32{0, 0, 0}, "x"); err == nil {
+		t.Fatal("want an error for an all-zero vector")
+	}
+	if err := validateVector([]float32{0, 0.1, 0}, "x"); err != nil {
+		t.Fatalf("a non-zero vector should pass, got %v", err)
+	}
+}
+
+func TestRetrieve_rejectsAZeroCorpusVector(t *testing.T) {
+	api := &fakeAPI{}
+	srv := httptest.NewServer(api.handler())
+	t.Cleanup(srv.Close)
+
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Broken", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "return zero vector"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := Config{
+		APIKey:     "test-key",
+		BaseURL:    srv.URL,
+		EmbedModel: "fake-embed",
+		AskModel:   "fake-ask",
+		CachePath:  filepath.Join(t.TempDir(), "embeddings.sqlite"),
+		HTTPClient: srv.Client(),
+		Progress:   io.Discard,
+	}
+	_, err = Retrieve(context.Background(), st, cfg, Query{Text: "anything", Limit: 3})
+	if err == nil || !strings.Contains(err.Error(), "zero vector") {
+		t.Fatalf("want a zero-vector build error, got %v", err)
 	}
 }
 

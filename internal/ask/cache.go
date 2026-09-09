@@ -255,6 +255,9 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 			return err
 		}
 		for j, ch := range batch {
+			if err := validateVector(vecs[j], fmt.Sprintf("%s %s (%s)", ch.Kind, ch.Name, ch.Source)); err != nil {
+				return err
+			}
 			v := l2norm(vecs[j])
 			if dim == 0 {
 				dim = len(v)
@@ -450,6 +453,26 @@ func clipText(s string, window int) string {
 		return s
 	}
 	return string([]rune(s)[:window])
+}
+
+// validateVector rejects an embedding that would silently corrupt ranking:
+// empty (the API returned nothing for this input), or all-zero (l2norm
+// cannot scale a zero vector, so it would pass through unnormalized and score
+// zero cosine similarity against everything, indifferent from a
+// too-low-to-clear-the-gate result but actually indicating a broken
+// embedding call). label identifies which input failed for diagnostics.
+func validateVector(v []float32, label string) error {
+	if len(v) == 0 {
+		return fmt.Errorf("embeddings: empty vector for %s", label)
+	}
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	if sum == 0 {
+		return fmt.Errorf("embeddings: zero vector for %s", label)
+	}
+	return nil
 }
 
 func l2norm(v []float32) []float32 {

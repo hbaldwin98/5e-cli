@@ -98,6 +98,12 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if len(qv) != 1 {
 		return nil, fmt.Errorf("embeddings: expected 1 query vector")
 	}
+	if err := validateVector(qv[0], "the query"); err != nil {
+		return nil, err
+	}
+	if len(vecs) > 0 && len(qv[0]) != len(vecs[0].vec) {
+		return nil, fmt.Errorf("embeddings: query dimension %d does not match the cached corpus dimension %d; rebuild the index or clear the embedding cache", len(qv[0]), len(vecs[0].vec))
+	}
 	query := l2norm(qv[0])
 	srdOK, err := srdAllow(st, q.SRD)
 	if err != nil {
