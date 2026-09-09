@@ -120,7 +120,8 @@ func chatShowCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if opt.JSON {
 				return writeJSON(cmd.OutOrStdout(), sess)
 			}
-			return writeChatSession(cmd.OutOrStdout(), sess)
+			out := cmd.OutOrStdout()
+			return writeChatSession(out, sess, ttyAnswerRenderer(out))
 		},
 	}
 }
@@ -687,6 +688,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 		fmt.Fprintf(out, "\n/help for commands, /exit to leave\n\n")
 	}
 
+	renderAnswer := ttyAnswerRenderer(out)
 	lines := bufio.NewScanner(cmd.InOrStdin())
 	lines.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for {
@@ -701,7 +703,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			quit, event, err := chatCommand(cmd, st, cs, sess, &cfg, &opts, &providerName, line, opt.JSON)
+			quit, event, err := chatCommand(cmd, st, cs, sess, &cfg, &opts, &providerName, renderAnswer, line, opt.JSON)
 			if err != nil {
 				if opt.JSON {
 					if writeErr := writeChatError(out, sess, event.Command, "", err); writeErr != nil {
@@ -762,7 +764,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 // chatCommand runs one slash command, reporting whether the session should
 // end. Anything it changes is saved immediately, since the REPL is the thing
 // people leave open and then close the terminal on.
-func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg *ask.Config, opts *chat.Options, providerName *string, line string, asJSON bool) (bool, chatCommandResult, error) {
+func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg *ask.Config, opts *chat.Options, providerName *string, renderAnswer func(string) string, line string, asJSON bool) (bool, chatCommandResult, error) {
 	out := cmd.OutOrStdout()
 	name, rest, _ := strings.Cut(line, " ")
 	rest = strings.TrimSpace(rest)
@@ -965,7 +967,7 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 	case "/history":
 		event.Data = sess
 		if !asJSON {
-			if err := writeChatSession(out, sess); err != nil {
+			if err := writeChatSession(out, sess, renderAnswer); err != nil {
 				return false, event, err
 			}
 		}
@@ -1034,7 +1036,13 @@ func writeChatError(w io.Writer, sess *chat.Session, command, question string, e
 	})
 }
 
-func writeChatSession(w io.Writer, sess *chat.Session) error {
+// writeChatSession prints a session's notes and transcript. renderAnswer, if
+// not nil, is applied to each turn's answer before it's printed — the
+// answer text is Markdown (the source material routinely carries
+// bold/italics/tables), and without rendering it shows up as literal
+// `**`/`#`/table-pipe syntax. A nil renderAnswer prints the raw text
+// unchanged, for a destination (a script, a pipe) that shouldn't see ANSI.
+func writeChatSession(w io.Writer, sess *chat.Session, renderAnswer func(string) string) error {
 	fmt.Fprintf(w, "session %s", sess.Name)
 	if scope := sess.Scope(); scope != "" {
 		fmt.Fprintf(w, " [%s]", scope)
@@ -1051,7 +1059,11 @@ func writeChatSession(w io.Writer, sess *chat.Session) error {
 		return nil
 	}
 	for _, t := range sess.Turns {
-		fmt.Fprintf(w, "\n> %s\n%s\n", t.Question, t.Answer)
+		answer := t.Answer
+		if renderAnswer != nil {
+			answer = renderAnswer(answer)
+		}
+		fmt.Fprintf(w, "\n> %s\n%s\n", t.Question, answer)
 		if len(t.Citations) > 0 {
 			if err := writeAskHits(w, t.Citations); err != nil {
 				return err

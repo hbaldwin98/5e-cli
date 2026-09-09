@@ -490,9 +490,22 @@ func (m *chatModel) runSlashCommand(line string) (tea.Model, tea.Cmd) {
 	var buf bytes.Buffer
 	captured.SetOut(&buf)
 	captured.SetErr(&buf)
-	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.cfg, &m.opts, &m.providerName, line, false)
+	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.cfg, &m.opts, &m.providerName, m.renderAnswer, line, false)
 	if out := strings.TrimSpace(buf.String()); out != "" {
-		m.writeLine(out)
+		// /history's captured output already carries glamour-rendered,
+		// ANSI-styled answers interleaved with plain question/citation
+		// text (chatCommand applied m.renderAnswer per turn, via
+		// writeChatSession) — the whole block has to go in preWrapped, the
+		// same as a single rendered answer, or refreshViewport's normal
+		// wrap pass would corrupt the already-styled parts exactly like it
+		// used to for a single answer. Every other command's output is
+		// plain text and still wants normal wrapping.
+		name, _, _ := strings.Cut(line, " ")
+		if strings.EqualFold(name, "/history") {
+			m.writeRendered(out)
+		} else {
+			m.writeLine(out)
+		}
 	}
 	if err != nil {
 		m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(err.Error()))
@@ -636,12 +649,14 @@ func (m *chatModel) resize() {
 func (m *chatModel) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
-	// Deliberately not enabling mouse reporting (tea.View.MouseMode): doing
-	// so hands every mouse event to the program, which is exactly what
-	// breaks a terminal's own click-drag text selection and copy — most
-	// terminals stop offering native selection the moment an app requests
-	// mouse tracking. PgUp/PgDn/ctrl+u/ctrl+f (chatKeyMap.ScrollUp/Down)
-	// are the only way to scroll here, so that copy/paste keeps working.
+	// Mouse reporting is on so the wheel can scroll the viewport (its
+	// Update already handles tea.MouseWheelMsg); PgUp/PgDn/ctrl+u/ctrl+f
+	// (chatKeyMap.ScrollUp/Down) work regardless. Enabling this does mean
+	// a plain click-drag no longer selects text natively — most terminals
+	// (xterm, iTerm2, kitty, Alacritty, GNOME Terminal/Konsole, Windows
+	// Terminal) still let you get a native selection for copy by holding
+	// Shift while dragging, which bypasses the application's mouse grab.
+	v.MouseMode = tea.MouseModeCellMotion
 	if !m.ready {
 		v.SetContent("")
 		return v

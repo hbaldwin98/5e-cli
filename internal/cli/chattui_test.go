@@ -213,6 +213,25 @@ func TestChatModel_slashSuggestionsLineListsMatches(t *testing.T) {
 	}
 }
 
+func TestChatModel_slashHistoryRendersPastAnswersAsMarkdown(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.sess.Turns = append(m.sess.Turns, chat.Record{
+		Question: "what does fireball do",
+		Answer:   "**bold** and *italic* text",
+	})
+
+	m.input.SetValue("/history")
+	m.submit()
+
+	transcript := m.transcriptText()
+	if strings.Contains(transcript, "**bold**") || strings.Contains(transcript, "*italic*") {
+		t.Fatalf("want /history's past answer rendered as Markdown, got literal syntax:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, "bold") || !strings.Contains(transcript, "italic") {
+		t.Fatalf("want the answer's text still present after rendering, got:\n%s", transcript)
+	}
+}
+
 func TestChatModel_scrollKeysMoveTheViewportWithoutTouchingHistory(t *testing.T) {
 	m, _ := newTestChatModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})

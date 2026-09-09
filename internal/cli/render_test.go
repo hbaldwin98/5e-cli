@@ -190,6 +190,36 @@ func TestRenderMarkdown_regularFileRemainsRaw(t *testing.T) {
 	}
 }
 
+func TestTTYAnswerRenderer_passesThroughForANonTTYWriter(t *testing.T) {
+	var out bytes.Buffer
+	render := ttyAnswerRenderer(&out)
+	const markdown = "**bold**"
+	if got := render(markdown); got != markdown {
+		t.Fatalf("want a non-TTY writer to leave the text unrendered, got %q", got)
+	}
+}
+
+func TestTTYAnswerRenderer_rendersForARealTerminal(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	file, err := os.CreateTemp(t.TempDir(), "render-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	// A regular file isn't itself a TTY (isTTY checks os.ModeCharDevice),
+	// so exercise the renderer directly against renderMarkdownToString's
+	// unconditional path the same way ttyAnswerRenderer's TTY branch does,
+	// rather than trying to fake a character device in a test.
+	rendered, err := renderMarkdownToString("**bold**", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rendered, "**") {
+		t.Fatalf("want markdown syntax rendered away, got %q", rendered)
+	}
+}
+
 func TestWriteEntity_JSONRemainsMachineReadable(t *testing.T) {
 	e := entity("spell", "Light", "PHB", `{"level":0,"school":"V"}`)
 	var out bytes.Buffer

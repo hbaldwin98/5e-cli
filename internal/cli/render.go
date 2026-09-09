@@ -636,6 +636,26 @@ func renderMarkdown(w io.Writer, markdown string) error {
 	return err
 }
 
+// ttyAnswerRenderer returns a function applying renderMarkdown's own
+// TTY policy — glamour-rendered on a real terminal, passed through
+// unchanged otherwise — to a string instead of writing straight to w. It
+// exists for a caller assembling a larger formatted block itself (like
+// writeChatSession, which interleaves each turn's answer with its question
+// and citations) rather than handing the whole thing to renderMarkdown at
+// once.
+func ttyAnswerRenderer(w io.Writer) func(string) string {
+	if !isTTY(w) {
+		return func(s string) string { return s }
+	}
+	return func(s string) string {
+		rendered, err := renderMarkdownToString(s, 100)
+		if err != nil {
+			return s
+		}
+		return rendered
+	}
+}
+
 // renderMarkdownToString renders markdown to ANSI-styled text at width,
 // unconditionally — unlike renderMarkdown, it has no writer to run isTTY
 // against, so the caller (the chat TUI, which is only ever running on a
