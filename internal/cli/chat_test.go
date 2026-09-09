@@ -661,6 +661,75 @@ func TestChat_slashAdventureOnlyWithAMultiwordTitle(t *testing.T) {
 	}
 }
 
+func TestChat_slashKindSourceSrdControlRetrieval(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin(strings.Join([]string{
+		"/source PHB",
+		"what does fireball do",
+		"/source none",
+		"/srd on",
+		"/srd",
+		"/exit",
+	}, "\n")+"\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"sources PHB\n", "sources cleared\n", "srd true\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	msgs := api.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("want one chat call, got %d", len(msgs))
+	}
+	prompt := msgs[0][len(msgs[0])-1].Content
+	if !strings.Contains(prompt, "(PHB)") {
+		t.Fatalf("/source PHB should still reach Fireball/PHB:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "(XPHB)") {
+		t.Fatalf("/source PHB should exclude Fireball/XPHB:\n%s", prompt)
+	}
+}
+
+func TestChat_slashKindClearsWithNoneOrAny(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin("/kind spell\n/kind\n/kind none\n/kind\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "kind spell\n") {
+		t.Fatalf("missing kind confirmation:\n%s", out)
+	}
+	if !strings.Contains(out, "kind cleared\n") {
+		t.Fatalf("missing kind-cleared confirmation:\n%s", out)
+	}
+}
+
+func TestChat_slashSrdRejectsAnInvalidArgument(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin("/srd maybe\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "usage: /srd [on|off]") {
+		t.Fatalf("want a usage error for an invalid /srd argument:\n%s", out)
+	}
+}
+
 func TestChat_slashScopeShowsAdventureAndFilters(t *testing.T) {
 	index, _ := chatFixture(t)
 	dir := filepath.Join(t.TempDir(), "chats")

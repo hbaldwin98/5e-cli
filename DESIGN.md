@@ -237,6 +237,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 
 **Visible scope.** `/scope` in the REPL (or the `scope` field on any `command` JSON event that changes it) prints every active retrieval filter together — adventure scope, kind, sources, limit, edition, srd — not only the adventure part `/adventure` alone reports. The REPL banner shows adventure scope up front and, when a `--kind`/`--source`/`--srd` filter is active, a one-line pointer to `/scope`, rather than dumping the full filter set on every startup.
 
+**Interactive filter controls.** `/kind`, `/source`, and `/srd` change the retrieval filters mid-session the same way `/limit` already did, so a table doesn't have to leave the REPL to narrow or widen retrieval. `/kind [kind|none]` and `/source [ids|none]` (comma-separated) take "none" or "any" as a clear; `/srd [on|off]` with no argument reports the current value instead of erroring, so a bare `/srd` is a status check. These are per-invocation `chat.Options`, not part of the saved session — same as `--kind`/`--source`/`--limit`/`--srd` at the command line.
+
 **Sessions are conversation state, not a campaign model.** They store what was asked, what was answered, and facts the user wrote down. They do not model characters, initiative, inventory, or scheduling — that is still the campaign app's job, and this remains its data plane.
 
 **Grounding still runs every turn.** `ask.Converse` retrieves fresh chunks for each question and sends them with the question, so an answer is grounded in the corpus rather than in what the model said three turns ago. The system prompt says as much: earlier turns are context, not sources.

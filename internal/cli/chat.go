@@ -545,6 +545,9 @@ const chatHelp = `Commands:
                       drop the rulebooks, or use "none" to clear the scope)
   /scope              show the active adventure scope and retrieval filters
   /limit <n>          retrieved chunks per question
+  /kind [kind|none]   restrict retrieval to one entity kind, or clear it
+  /source [ids|none]  restrict retrieval to source ids (comma-separated), or clear it
+  /srd [on|off]       show or set whether retrieval is SRD-only
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
   /help               this list
@@ -751,6 +754,42 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		if !asJSON {
 			fmt.Fprintf(out, "limit %d\n", n)
 		}
+	case "/kind":
+		if strings.EqualFold(rest, "none") || strings.EqualFold(rest, "any") {
+			rest = ""
+		}
+		opts.Kind = rest
+		event.Data = map[string]any{"kind": opts.Kind}
+		if !asJSON {
+			if opts.Kind == "" {
+				fmt.Fprintln(out, "kind cleared")
+			} else {
+				fmt.Fprintf(out, "kind %s\n", opts.Kind)
+			}
+		}
+	case "/source":
+		if strings.EqualFold(rest, "none") || strings.EqualFold(rest, "any") {
+			rest = ""
+		}
+		opts.Sources = splitSources([]string{rest})
+		event.Data = map[string]any{"sources": opts.Sources}
+		if !asJSON {
+			if len(opts.Sources) == 0 {
+				fmt.Fprintln(out, "sources cleared")
+			} else {
+				fmt.Fprintf(out, "sources %s\n", strings.Join(opts.Sources, ", "))
+			}
+		}
+	case "/srd":
+		on, err := parseChatToggle(rest, opts.SRD)
+		if err != nil {
+			return false, event, err
+		}
+		opts.SRD = on
+		event.Data = map[string]any{"srd": opts.SRD}
+		if !asJSON {
+			fmt.Fprintf(out, "srd %v\n", opts.SRD)
+		}
 	case "/clear":
 		withNotes := false
 		switch strings.ToLower(rest) {
@@ -824,6 +863,22 @@ func parseChatLimit(s string) (int, error) {
 		return 0, fmt.Errorf("usage: /limit <positive number>")
 	}
 	return n, nil
+}
+
+// parseChatToggle reads a boolean argument for a flag-like slash command.
+// No argument at all reports the current value rather than erroring, so
+// "/srd" alone is a status check and "/srd on" or "/srd off" is a change.
+func parseChatToggle(s string, current bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return current, nil
+	case "on", "true", "yes", "1":
+		return true, nil
+	case "off", "false", "no", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("usage: /srd [on|off]")
+	}
 }
 
 func plural(n int, word string) string {
