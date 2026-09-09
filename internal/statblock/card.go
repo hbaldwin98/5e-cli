@@ -42,6 +42,11 @@ var kindAccent = map[string]string{
 	"race":       "10", // green
 	"class":      "14", // cyan
 	"background": "6",  // dark cyan
+	"feat":       "3",  // yellow-green
+	"deity":      "5",  // magenta
+	"vehicle":    "4",  // blue
+	"trap":       "1",  // red
+	"hazard":     "1",
 }
 
 func accent(kind string) string {
@@ -149,6 +154,30 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Languages", backgroundProficiencies(obj["languageProficiencies"]))
 		add("Feat", backgroundFeats(obj["feats"]))
 		add("Starting Equipment", backgroundEquipmentText(obj["startingEquipment"]))
+	case "feat":
+		add("Category", featCategoryName(stringValue(obj["category"])))
+		add("Prerequisite", featPrerequisite(obj["prerequisite"]))
+		add("Ability Score Increase", featAbilityIncrease(obj["ability"]))
+		add("Saving Throw Proficiencies", profList(obj["savingThrowProficiencies"]))
+	case "deity":
+		add("Pantheon", stringValue(obj["pantheon"]))
+		add("Alignment", monsterAlignment(obj["alignment"]))
+		add("Title", stringValue(obj["title"]))
+		add("Domains", stringList(obj["domains"]))
+		add("Symbol", stringValue(obj["symbol"]))
+	case "vehicle":
+		add("Type", vehicleTypeName(stringValue(obj["vehicleType"])))
+		add("Size", monsterSize(obj["size"]))
+		add("Terrain", stringList(obj["terrain"]))
+		if hull, ok := obj["hull"].(map[string]any); ok {
+			add("Hull", vehiclePartLine(hull))
+		} else {
+			add("Armor Class", armorClass(obj["ac"]))
+			add("Hit Points", hitPoints(obj["hp"]))
+			add("Speed", speed(obj["speed"]))
+		}
+	case "trap", "hazard":
+		add("Type", trapHazardTypeName(stringValue(obj["trapHazType"])))
 	case "class":
 		add("Hit Die", classHitDie(obj["hd"]))
 		add("Hit Points at 1st Level", classHitPointsFirst(obj))

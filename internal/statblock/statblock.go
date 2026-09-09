@@ -38,6 +38,14 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderClass(w, obj)
 	case "background":
 		renderBackground(w, obj)
+	case "feat":
+		renderFeat(w, obj)
+	case "deity":
+		renderDeity(w, obj)
+	case "vehicle":
+		renderVehicle(w, obj)
+	case "trap", "hazard":
+		renderTrapHazard(w, obj)
 	}
 	for _, section := range entrySections(kind) {
 		if entries, ok := obj[section.key].([]any); ok && len(entries) > 0 {
@@ -529,6 +537,232 @@ func moneyText(copper int) string {
 		return fmt.Sprintf("%d gp", copper/100)
 	}
 	return fmt.Sprintf("%d cp", copper)
+}
+
+// renderFeat writes a feat's mechanical summary — category, prerequisites,
+// any ability score increase it grants, and saving throw proficiencies —
+// ahead of its entries (Render's generic walk still handles those).
+func renderFeat(w io.Writer, obj map[string]any) {
+	writeField(w, "Category", featCategoryName(stringValue(obj["category"])))
+	writeField(w, "Prerequisite", featPrerequisite(obj["prerequisite"]))
+	writeField(w, "Ability Score Increase", featAbilityIncrease(obj["ability"]))
+	writeField(w, "Saving Throw Proficiencies", profList(obj["savingThrowProficiencies"]))
+	if obj["repeatable"] == true {
+		fmt.Fprintln(w, "*This feat can be taken more than once.*")
+	}
+}
+
+func featCategoryName(code string) string {
+	switch code {
+	case "G":
+		return "General"
+	case "O":
+		return "Origin"
+	case "FS:P", "FS:R", "FS:S":
+		return "Fighting Style"
+	case "EB":
+		return "Epic Boon"
+	}
+	return code
+}
+
+// featPrerequisite renders a feat's prerequisite alternatives — each option
+// a level/ability-score/race/spellcasting requirement, or a freeform
+// otherSummary — joined as alternatives a player can meet any one of.
+func featPrerequisite(v any) string {
+	values, _ := v.([]any)
+	var options []string
+	for _, value := range values {
+		entry, _ := value.(map[string]any)
+		var parts []string
+		if lvl := integer(entry["level"]); lvl > 0 {
+			parts = append(parts, fmt.Sprintf("level %d", lvl))
+		}
+		if abilities, ok := entry["ability"].([]any); ok {
+			for _, a := range abilities {
+				am, _ := a.(map[string]any)
+				for k, val := range am {
+					parts = append(parts, fmt.Sprintf("%s %s or higher", abilityFullName(k), scalar(val)))
+				}
+			}
+		}
+		if races, ok := entry["race"].([]any); ok {
+			var names []string
+			for _, r := range races {
+				rm, _ := r.(map[string]any)
+				names = append(names, stringValue(rm["name"]))
+			}
+			if len(names) > 0 {
+				parts = append(parts, strings.Join(names, " or "))
+			}
+		}
+		if entry["spellcasting"] == true || entry["spellcasting2020"] == true {
+			parts = append(parts, "the ability to cast at least one spell")
+		}
+		if om, ok := entry["otherSummary"].(map[string]any); ok {
+			if s := stringValue(om["entrySummary"]); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) > 0 {
+			options = append(options, strings.Join(parts, ", "))
+		}
+	}
+	return strings.Join(options, "; or ")
+}
+
+// featAbilityIncrease renders a feat's ability field — either a fixed
+// increment ([{"str":1}]) or a choice among several abilities
+// ([{"choose":{"from":[...],"amount":n}}]).
+func featAbilityIncrease(v any) string {
+	values, _ := v.([]any)
+	var out []string
+	for _, value := range values {
+		obj, _ := value.(map[string]any)
+		if choose, ok := obj["choose"].(map[string]any); ok {
+			from, _ := choose["from"].([]any)
+			var names []string
+			for _, f := range from {
+				names = append(names, abilityFullName(stringValue(f)))
+			}
+			amount := integer(choose["amount"])
+			if amount == 0 {
+				amount = 1
+			}
+			if len(names) > 0 {
+				out = append(out, fmt.Sprintf("+%d to one of %s", amount, strings.Join(names, ", ")))
+			}
+			continue
+		}
+		keys := make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if n := integer(obj[k]); n != 0 {
+				out = append(out, fmt.Sprintf("+%d %s", n, abilityFullName(k)))
+			}
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// renderDeity writes a deity's identity fields — pantheon, alignment, title,
+// domains, and symbol — which have no analogue in the generic entries walk
+// since a deity entry is almost always empty or purely flavor text.
+func renderDeity(w io.Writer, obj map[string]any) {
+	writeField(w, "Pantheon", stringValue(obj["pantheon"]))
+	writeField(w, "Alignment", monsterAlignment(obj["alignment"]))
+	writeField(w, "Title", stringValue(obj["title"]))
+	writeField(w, "Domains", stringList(obj["domains"]))
+	writeField(w, "Symbol", stringValue(obj["symbol"]))
+}
+
+// renderVehicle writes a vehicle's core stats — type, size, terrain,
+// capacity, pace, and hull AC/HP — followed by its control/movement/weapon
+// components, each with its own AC/HP the way a monster's actions carry
+// their own attack line. Ship-scale vehicles (the shape most DMG/GoS
+// vehicles use) have no ability scores or a flat AC/HP the way a mundane
+// cart or wagon does, so both shapes are handled.
+func renderVehicle(w io.Writer, obj map[string]any) {
+	writeField(w, "Type", vehicleTypeName(stringValue(obj["vehicleType"])))
+	writeField(w, "Size", monsterSize(obj["size"]))
+	writeField(w, "Terrain", stringList(obj["terrain"]))
+	capacity := joinNonEmpty(", ",
+		nonZeroField("Crew", integer(obj["capCrew"])),
+		nonZeroField("Passengers", integer(obj["capPassenger"])),
+		nonZeroField("Cargo (tons)", integer(obj["capCargo"])),
+	)
+	writeField(w, "Capacity", capacity)
+	if pace := integer(obj["pace"]); pace > 0 {
+		writeField(w, "Pace", fmt.Sprintf("%d mph", pace))
+	}
+	if hull, ok := obj["hull"].(map[string]any); ok {
+		writeField(w, "Hull", vehiclePartLine(hull))
+	} else {
+		writeField(w, "Armor Class", armorClass(obj["ac"]))
+		writeField(w, "Hit Points", hitPoints(obj["hp"]))
+		writeField(w, "Speed", speed(obj["speed"]))
+	}
+	for _, section := range []struct{ key, heading string }{
+		{"control", "Control"}, {"movement", "Movement"}, {"weapon", "Weapons"},
+	} {
+		parts, ok := obj[section.key].([]any)
+		if !ok || len(parts) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\n## %s\n\n", section.heading)
+		for _, p := range parts {
+			pm, _ := p.(map[string]any)
+			name := stringValue(pm["name"])
+			if count := integer(pm["count"]); count > 1 {
+				name = fmt.Sprintf("%s (×%d)", name, count)
+			}
+			fmt.Fprintf(w, "**%s.** %s\n\n", name, vehiclePartLine(pm))
+			if entries, ok := pm["entries"].([]any); ok {
+				renderEntries(w, entries, 0)
+			}
+		}
+	}
+}
+
+func vehicleTypeName(code string) string {
+	switch code {
+	case "SHIP":
+		return "Ship"
+	case "INFWAR":
+		return "Infernal War Machine"
+	case "CREATURE":
+		return "Creature-drawn vehicle"
+	case "OBJECT":
+		return "Object"
+	}
+	return title(code)
+}
+
+func vehiclePartLine(part map[string]any) string {
+	var pieces []string
+	if ac := integer(part["ac"]); ac > 0 {
+		pieces = append(pieces, fmt.Sprintf("AC %d", ac))
+	}
+	if hp := integer(part["hp"]); hp > 0 {
+		pieces = append(pieces, fmt.Sprintf("HP %d", hp))
+	}
+	if dt := integer(part["dt"]); dt > 0 {
+		pieces = append(pieces, fmt.Sprintf("Damage Threshold %d", dt))
+	}
+	if note := stringValue(part["hpNote"]); note != "" {
+		pieces = append(pieces, note)
+	}
+	return strings.Join(pieces, ", ")
+}
+
+func nonZeroField(label string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s %d", label, n)
+}
+
+// renderTrapHazard writes a trap's or hazard's type label ahead of its
+// entries (which carry the trigger/effect narrative as freeform prose in
+// this data set, so there's no further structured field to extract).
+func renderTrapHazard(w io.Writer, obj map[string]any) {
+	writeField(w, "Type", trapHazardTypeName(stringValue(obj["trapHazType"])))
+}
+
+func trapHazardTypeName(code string) string {
+	names := map[string]string{
+		"MECH": "Mechanical trap", "MAG": "Magic trap", "SMPL": "Simple trap", "CMPX": "Complex trap",
+		"WLD": "Environmental hazard", "WTH": "Weather hazard", "ENV": "Environmental hazard",
+		"TRAP": "Trap", "TRP": "Trap", "HAZ": "Hazard", "GEN": "Generic hazard", "EST": "Environmental hazard",
+		"HAUNT": "Haunting",
+	}
+	if name := names[code]; name != "" {
+		return name
+	}
+	return code
 }
 
 func renderRace(w io.Writer, obj map[string]any) {
