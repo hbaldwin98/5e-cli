@@ -112,7 +112,7 @@ func toJSON(v any) (string, error) {
 // internal/mcpserver use for get/roll/references, and reports the same two
 // failure shapes: nothing matched, or more than one candidate remains and
 // the caller must supply a source.
-func disambiguate(ents []store.Entity, source string, opt ToolsOptions, kind, name string) ([]store.Entity, error) {
+func disambiguate(st *store.Store, ents []store.Entity, source string, opt ToolsOptions, kind, name string) ([]store.Entity, error) {
 	if source == "" {
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, opt.Edition)
 	}
@@ -120,7 +120,7 @@ func disambiguate(ents []store.Entity, source string, opt ToolsOptions, kind, na
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, fmt.Errorf("no %s named %q", kind, name)
+		return nil, search.NotFoundError(st, kind, name)
 	}
 	if len(ents) > 1 {
 		parts := make([]string, 0, len(ents))
@@ -148,7 +148,7 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 	if err != nil {
 		return "", err
 	}
-	ents, err = disambiguate(ents, args.Source, opt, args.Kind, args.Name)
+	ents, err = disambiguate(st, ents, args.Source, opt, args.Kind, args.Name)
 	if err != nil {
 		return "", err
 	}
@@ -367,16 +367,7 @@ func toolList(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, e
 	if len(args.Sources) == 0 {
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, opt.Edition)
 	}
-	if args.Query != "" {
-		q := strings.ToLower(args.Query)
-		filtered := ents[:0]
-		for _, e := range ents {
-			if strings.Contains(strings.ToLower(e.Name), q) {
-				filtered = append(filtered, e)
-			}
-		}
-		ents = filtered
-	}
+	ents = search.FilterByQuery(ents, args.Query)
 	limit := args.Limit
 	if limit <= 0 {
 		limit = 100
@@ -414,7 +405,7 @@ func toolRoll(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	ents, err = disambiguate(ents, args.Source, opt, kind, args.Name)
+	ents, err = disambiguate(st, ents, args.Source, opt, kind, args.Name)
 	if err != nil {
 		return "", err
 	}
@@ -473,7 +464,7 @@ func toolReferences(st *store.Store, opt ToolsOptions, raw json.RawMessage) (str
 	if err != nil {
 		return "", err
 	}
-	ents, err = disambiguate(ents, args.Source, opt, args.Kind, args.Name)
+	ents, err = disambiguate(st, ents, args.Source, opt, args.Kind, args.Name)
 	if err != nil {
 		return "", err
 	}
@@ -506,7 +497,7 @@ func toolCompare(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return "", fmt.Errorf("no %s named %q", args.Kind, args.Name)
+		return "", search.NotFoundError(st, args.Kind, args.Name)
 	}
 	result, err := compare.Compare(ents)
 	if err != nil {

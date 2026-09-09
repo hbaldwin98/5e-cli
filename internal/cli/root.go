@@ -187,7 +187,7 @@ rules text — pass --full for that, or look up a feature by name directly.`,
 				ents = store.SRDOnly(ents)
 			}
 			if len(ents) == 0 {
-				return fmt.Errorf("no %s named %q", kind, name)
+				return search.NotFoundError(st, kind, name)
 			}
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)
@@ -284,7 +284,7 @@ func compareCmd(opt *options) *cobra.Command {
 				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
 			}
 			if len(ents) == 0 {
-				return fmt.Errorf("no %s named %q", kind, name)
+				return search.NotFoundError(st, kind, name)
 			}
 			result, err := compare.Compare(ents)
 			if err != nil {
@@ -409,16 +409,7 @@ func listCmd(opt *options) *cobra.Command {
 				}
 				return listSpellsForClass(cmd, st, ents, class, opt.JSON, classLimit)
 			}
-			if query != "" {
-				q := strings.ToLower(query)
-				filtered := ents[:0]
-				for _, e := range ents {
-					if strings.Contains(strings.ToLower(e.Name), q) {
-						filtered = append(filtered, e)
-					}
-				}
-				ents = filtered
-			}
+			ents = search.FilterByQuery(ents, query)
 			total := len(ents)
 			if limit > 0 && total > limit {
 				ents = ents[:limit]
@@ -556,7 +547,7 @@ when omitted).`,
 				ents = store.SRDOnly(ents)
 			}
 			if len(ents) == 0 {
-				return fmt.Errorf("no %s named %q", kind, name)
+				return search.NotFoundError(st, kind, name)
 			}
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)
@@ -705,7 +696,7 @@ func refsCmd(opt *options) *cobra.Command {
 				ents = store.SRDOnly(ents)
 			}
 			if len(ents) == 0 {
-				return fmt.Errorf("no %s named %q", kind, name)
+				return search.NotFoundError(st, kind, name)
 			}
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)

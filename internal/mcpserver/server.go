@@ -117,7 +117,7 @@ func (h *handler) get(_ context.Context, _ *mcp.CallToolRequest, in getInput) (*
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, getOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
+		return nil, getOutput{}, search.NotFoundError(h.st, in.Kind, in.Name)
 	}
 	if len(ents) > 1 {
 		return nil, getOutput{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
@@ -193,7 +193,7 @@ func (h *handler) references(_ context.Context, _ *mcp.CallToolRequest, in refer
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, referencesOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
+		return nil, referencesOutput{}, search.NotFoundError(h.st, in.Kind, in.Name)
 	}
 	if len(ents) > 1 {
 		return nil, referencesOutput{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
@@ -349,7 +349,7 @@ func (h *handler) compare(_ context.Context, _ *mcp.CallToolRequest, in compareI
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, compareOutput{}, fmt.Errorf("no %s named %q", in.Kind, in.Name)
+		return nil, compareOutput{}, search.NotFoundError(h.st, in.Kind, in.Name)
 	}
 	result, err := compare.Compare(ents)
 	if err != nil {
@@ -451,16 +451,7 @@ func (h *handler) list(_ context.Context, _ *mcp.CallToolRequest, in listInput) 
 	if len(in.Sources) == 0 {
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
 	}
-	if in.Query != "" {
-		q := strings.ToLower(in.Query)
-		filtered := ents[:0]
-		for _, e := range ents {
-			if strings.Contains(strings.ToLower(e.Name), q) {
-				filtered = append(filtered, e)
-			}
-		}
-		ents = filtered
-	}
+	ents = search.FilterByQuery(ents, in.Query)
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 100
@@ -501,7 +492,7 @@ func (h *handler) roll(_ context.Context, _ *mcp.CallToolRequest, in rollInput) 
 		ents = store.SRDOnly(ents)
 	}
 	if len(ents) == 0 {
-		return nil, randomtable.Report{}, fmt.Errorf("no %s named %q", kind, in.Name)
+		return nil, randomtable.Report{}, search.NotFoundError(h.st, kind, in.Name)
 	}
 	if len(ents) > 1 {
 		return nil, randomtable.Report{}, fmt.Errorf("ambiguous match; pass source: %s", matchList(ents))
