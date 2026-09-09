@@ -465,8 +465,8 @@ const chatHelp = `Commands:
   /note <text>        record a fact this session keeps in context
   /notes              list the recorded notes
   /sources            citations for the last answer
-  /adventure <id>     add an adventure's prose ("<id> only" drops the
-                      rulebooks, "none" clears the scope)
+  /adventure <id-or-title>   add an adventure's prose (append " only" to
+                      drop the rulebooks, or use "none" to clear the scope)
   /limit <n>          retrieved chunks per question
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
