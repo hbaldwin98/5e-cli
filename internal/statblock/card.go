@@ -71,7 +71,7 @@ func Summary(kind string, obj map[string]any) string {
 		}
 		return d
 	case "item", "itemBase":
-		line := joinNonEmpty(", ", itemType(obj), stringValue(obj["rarity"]))
+		line := joinNonEmpty(", ", itemType(obj), itemRarity(obj))
 		if attune := obj["reqAttune"]; attune != nil && attune != false {
 			text := "requires attunement"
 			if detail, ok := attune.(string); ok && detail != "" {
@@ -124,9 +124,20 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Challenge", challengeRating(obj["cr"]))
 	case "item", "itemBase":
 		add("Damage", itemDamage(obj))
+		add("Properties", itemProperties(obj))
+		add("Weapon Mastery", itemMastery(obj))
+		add("Range", stringValue(obj["range"]))
 		add("Weight", itemWeight(obj))
 		add("Value", itemValue(obj))
-		add("Armor Class", armorClass(obj["ac"]))
+		add("Armor Class", itemAC(obj))
+		add("Strength Requirement", itemStrength(obj))
+		add("Stealth", itemStealth(obj))
+		add("Bonus to AC", scalar(obj["bonusAc"]))
+		add("Bonus to Attack Rolls", scalar(obj["bonusWeapon"]))
+		add("Bonus to Damage Rolls", scalar(obj["bonusWeaponDamage"]))
+		add("Bonus to Spell Attacks", scalar(obj["bonusSpellAttack"]))
+		add("Bonus to Saving Throws", scalar(obj["bonusSavingThrow"]))
+		add("Prerequisite", itemPrerequisite(obj))
 	case "race":
 		add("Size", raceSizes(obj["size"]))
 		add("Speed", speed(obj["speed"]))

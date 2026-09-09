@@ -183,7 +183,7 @@ func renderMonster(w io.Writer, obj map[string]any) {
 }
 
 func renderItem(w io.Writer, obj map[string]any) {
-	line := joinNonEmpty(", ", itemType(obj), stringValue(obj["rarity"]))
+	line := joinNonEmpty(", ", itemType(obj), itemRarity(obj))
 	if attune := obj["reqAttune"]; attune != nil && attune != false {
 		text := "requires attunement"
 		if detail, ok := attune.(string); ok && detail != "" {
@@ -199,9 +199,114 @@ func renderItem(w io.Writer, obj map[string]any) {
 		fmt.Fprintln(w, line)
 	}
 	writeField(w, "Damage", itemDamage(obj))
+	writeField(w, "Properties", itemProperties(obj))
+	writeField(w, "Weapon Mastery", itemMastery(obj))
+	writeField(w, "Range", stringValue(obj["range"]))
 	writeField(w, "Weight", itemWeight(obj))
 	writeField(w, "Value", itemValue(obj))
-	writeField(w, "Armor Class", armorClass(obj["ac"]))
+	writeField(w, "Armor Class", itemAC(obj))
+	writeField(w, "Strength Requirement", itemStrength(obj))
+	writeField(w, "Stealth", itemStealth(obj))
+	writeField(w, "Bonus to AC", scalar(obj["bonusAc"]))
+	writeField(w, "Bonus to Attack Rolls", scalar(obj["bonusWeapon"]))
+	writeField(w, "Bonus to Damage Rolls", scalar(obj["bonusWeaponDamage"]))
+	writeField(w, "Bonus to Spell Attacks", scalar(obj["bonusSpellAttack"]))
+	writeField(w, "Bonus to Saving Throws", scalar(obj["bonusSavingThrow"]))
+	writeField(w, "Prerequisite", itemPrerequisite(obj))
+}
+
+// itemProperties expands a weapon's property codes (V versatile, F finesse,
+// H heavy, 2H two-handed, L light, R reach, T thrown, A ammunition, S
+// special) — 5etools ships these as bare codes with no separate rendering,
+// so without this a weapon's finesse/versatile/etc traits are invisible.
+func itemProperties(obj map[string]any) string {
+	codes := map[string]string{"A": "ammunition", "AF": "ammunition", "F": "finesse", "H": "heavy", "L": "light", "LD": "loading", "R": "reach", "RLD": "reload", "S": "special", "T": "thrown", "2H": "two-handed", "V": "versatile"}
+	values, _ := obj["property"].([]any)
+	var out []string
+	for _, v := range values {
+		code := stringValue(v)
+		if i := strings.Index(code, "|"); i >= 0 {
+			code = code[:i]
+		}
+		name := codes[code]
+		if name == "" {
+			name = code
+		}
+		if code == "V" {
+			if dmg2 := stringValue(obj["dmg2"]); dmg2 != "" {
+				name = fmt.Sprintf("versatile (%s)", dmg2)
+			}
+		}
+		out = append(out, name)
+	}
+	return strings.Join(out, ", ")
+}
+
+func itemMastery(obj map[string]any) string {
+	values, _ := obj["mastery"].([]any)
+	var out []string
+	for _, v := range values {
+		s := stringValue(v)
+		if i := strings.Index(s, "|"); i >= 0 {
+			s = s[:i]
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, ", ")
+}
+
+func itemAC(obj map[string]any) string {
+	if acSpecial := stringValue(obj["acSpecial"]); acSpecial != "" {
+		return renderString(acSpecial)
+	}
+	return armorClass(obj["ac"])
+}
+
+func itemStrength(obj map[string]any) string {
+	if str := stringValue(obj["strength"]); str != "" {
+		return "Str " + str
+	}
+	return ""
+}
+
+func itemStealth(obj map[string]any) string {
+	if obj["stealth"] == true {
+		return "Disadvantage on Stealth checks"
+	}
+	return ""
+}
+
+func itemPrerequisite(obj map[string]any) string {
+	values, _ := obj["prerequisite"].([]any)
+	var parts []string
+	for _, v := range values {
+		entry, _ := v.(map[string]any)
+		for key, val := range entry {
+			switch key {
+			case "level":
+				if lv, ok := val.(map[string]any); ok {
+					parts = append(parts, fmt.Sprintf("level %v", lv["level"]))
+				}
+			case "race":
+				if list, ok := val.([]any); ok {
+					var names []string
+					for _, r := range list {
+						if rm, ok := r.(map[string]any); ok {
+							names = append(names, stringValue(rm["name"]))
+						}
+					}
+					parts = append(parts, strings.Join(names, " or "))
+				}
+			case "spellcasting", "spellcasting2020":
+				parts = append(parts, "the ability to cast at least one spell")
+			case "otherSummary":
+				if om, ok := val.(map[string]any); ok {
+					parts = append(parts, stringValue(om["entrySummary"]))
+				}
+			}
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderRace(w io.Writer, obj map[string]any) {
@@ -1169,10 +1274,24 @@ func itemType(obj map[string]any) string {
 	}
 	codes := map[string]string{"A": "ammunition", "AF": "ammunition", "AT": "artisan's tools", "G": "adventuring gear", "HA": "heavy armor", "INS": "instrument", "LA": "light armor", "M": "melee weapon", "MA": "medium armor", "P": "potion", "R": "ranged weapon", "RD": "rod", "RG": "ring", "S": "shield", "SC": "scroll", "ST": "staff", "T": "tools", "W": "wand", "WD": "wand", "WOND": "wondrous item"}
 	code := stringValue(obj["type"])
+	if i := strings.Index(code, "|"); i >= 0 {
+		code = code[:i]
+	}
 	if value := codes[code]; value != "" {
 		return value
 	}
 	return strings.ToLower(code)
+}
+
+// itemRarity is an item's rarity, or "" for the "none" placeholder 5etools
+// gives every mundane (non-magic) item — showing that literal word in a
+// card's summary line reads as if the item had a rarity called "none".
+func itemRarity(obj map[string]any) string {
+	rarity := stringValue(obj["rarity"])
+	if rarity == "none" || rarity == "" {
+		return ""
+	}
+	return rarity
 }
 
 func itemDamage(obj map[string]any) string {
