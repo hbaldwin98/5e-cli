@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -122,6 +123,89 @@ func TestChat_replSurvivesAFailedTurn(t *testing.T) {
 	}
 	if sess["turns"] != nil {
 		t.Fatalf("a failed answer must not enter the transcript: %s", out)
+	}
+}
+
+func TestChat_jsonREPLIsAStreamOfTypedEvents(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	script := strings.Join([]string{
+		"/help",
+		"/note the party's wizard is a tiefling named Rekt",
+		"/notes",
+		"what does fireball do",
+		"/nope",
+		"/sources",
+		"/limit 3",
+		"/clear",
+		"/exit",
+	}, "\n") + "\n"
+
+	out, err := runCLIStdin(script, "--index", index, "--data", data, "--json", "chat", "--chat-dir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(out))
+	var types []string
+	for {
+		var event map[string]json.RawMessage
+		err := dec.Decode(&event)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("JSON REPL output is not a stream of objects: %v\n%s", err, out)
+		}
+		var typ string
+		if err := json.Unmarshal(event["type"], &typ); err != nil {
+			t.Fatalf("event has no type: %s", out)
+		}
+		types = append(types, typ)
+	}
+	want := []string{"command", "command", "command", "turn", "error", "command", "command", "command", "command"}
+	if strings.Join(types, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("event types = %v, want %v\n%s", types, want, out)
+	}
+}
+
+func TestChat_jsonREPLReportsFailedQuestionsAsEvents(t *testing.T) {
+	index, api := chatFixture(t)
+	api.fail(true)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLIStdin("what does fireball do\n/exit\n", "--index", index, "--data", data, "--json", "chat", "--chat-dir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(out))
+	var events []map[string]json.RawMessage
+	for {
+		var event map[string]json.RawMessage
+		err := dec.Decode(&event)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("JSON REPL output is not a stream of objects: %v\n%s", err, out)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2\n%s", len(events), out)
+	}
+	var typ, question string
+	if err := json.Unmarshal(events[0]["type"], &typ); err != nil || typ != "error" {
+		t.Fatalf("first event type = %q: %s", typ, out)
+	}
+	if err := json.Unmarshal(events[0]["question"], &question); err != nil || question != "what does fireball do" {
+		t.Fatalf("failed question = %q: %s", question, out)
+	}
+	if err := json.Unmarshal(events[1]["type"], &typ); err != nil || typ != "command" {
+		t.Fatalf("second event type = %q: %s", typ, out)
 	}
 }
 

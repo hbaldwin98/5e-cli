@@ -266,7 +266,11 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	}
 	cfg := ask.ConfigFromEnv()
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
-	cfg.Progress = cmd.ErrOrStderr()
+	if opt.JSON {
+		cfg.Progress = io.Discard
+	} else {
+		cfg.Progress = cmd.ErrOrStderr()
+	}
 	opts := chat.Options{Kind: copt.Kind, Sources: splitSources(copt.Sources), Limit: copt.Limit, SRD: opt.SRD}
 
 	if len(args) > 0 {
@@ -314,6 +318,7 @@ func writeChatTurn(cmd *cobra.Command, asJSON bool, sess *chat.Session, question
 	out := cmd.OutOrStdout()
 	if asJSON {
 		return writeJSON(out, chatTurnResult{
+			Type:      "turn",
 			Session:   sess.Name,
 			Question:  question,
 			Answer:    res.Answer,
@@ -336,10 +341,31 @@ func writeChatTurn(cmd *cobra.Command, asJSON bool, sess *chat.Session, question
 // chatTurnResult is one exchange in --json mode. It names the session so a
 // caller piping turns can tell which conversation an answer belongs to.
 type chatTurnResult struct {
+	Type      string    `json:"type"`
 	Session   string    `json:"session"`
 	Question  string    `json:"question"`
 	Answer    string    `json:"answer"`
 	Citations []ask.Hit `json:"citations,omitempty"`
+}
+
+// chatCommandResult is one successful slash-command event in a JSON REPL.
+// Data contains the command-specific result without making consumers parse
+// human-oriented output.
+type chatCommandResult struct {
+	Type    string `json:"type"`
+	Session string `json:"session"`
+	Command string `json:"command"`
+	Data    any    `json:"data,omitempty"`
+}
+
+// chatErrorResult keeps failures in the JSON stream. A failed question has a
+// question; a failed slash command has a command.
+type chatErrorResult struct {
+	Type     string `json:"type"`
+	Session  string `json:"session,omitempty"`
+	Command  string `json:"command,omitempty"`
+	Question string `json:"question,omitempty"`
+	Message  string `json:"message"`
 }
 
 const chatHelp = `Commands:
@@ -382,9 +408,24 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			quit, err := chatCommand(cmd, st, cs, sess, &opts, line)
+			quit, event, err := chatCommand(cmd, st, cs, sess, &opts, line, opt.JSON)
 			if err != nil {
-				fmt.Fprintf(errOut, "%v\n", err)
+				if opt.JSON {
+					if writeErr := writeChatError(out, sess, event.Command, "", err); writeErr != nil {
+						return writeErr
+					}
+				} else {
+					fmt.Fprintf(errOut, "%v\n", err)
+				}
+				if quit {
+					return err
+				}
+				continue
+			}
+			if opt.JSON {
+				if err := writeJSON(out, event); err != nil {
+					return err
+				}
 			}
 			if quit {
 				return nil
@@ -394,61 +435,104 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 		// A failed question must not end the conversation: a rate limit or a
 		// dropped connection should cost one turn, not the session.
 		if err := chatTurn(cmd, opt.JSON, st, cs, cfg, sess, line, opts); err != nil {
-			fmt.Fprintf(errOut, "%v\n", err)
+			if opt.JSON {
+				if writeErr := writeChatError(out, sess, "", line, err); writeErr != nil {
+					return writeErr
+				}
+			} else {
+				fmt.Fprintf(errOut, "%v\n", err)
+			}
 		}
 	}
 	if err := lines.Err(); err != nil && err != io.EOF {
+		if opt.JSON {
+			if writeErr := writeChatError(out, sess, "", "", err); writeErr != nil {
+				return writeErr
+			}
+		}
 		return err
 	}
 	if !opt.JSON {
 		fmt.Fprintln(out)
 	}
-	return cs.Save(sess)
+	if err := cs.Save(sess); err != nil {
+		if opt.JSON {
+			if writeErr := writeChatError(out, sess, "", "", err); writeErr != nil {
+				return writeErr
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // chatCommand runs one slash command, reporting whether the session should
 // end. Anything it changes is saved immediately, since the REPL is the thing
 // people leave open and then close the terminal on.
-func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, opts *chat.Options, line string) (bool, error) {
+func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, opts *chat.Options, line string, asJSON bool) (bool, chatCommandResult, error) {
 	out := cmd.OutOrStdout()
 	name, rest, _ := strings.Cut(line, " ")
 	rest = strings.TrimSpace(rest)
+	event := chatCommandResult{Type: "command", Session: sess.Name, Command: name}
 	switch strings.ToLower(name) {
 	case "/exit", "/quit":
-		return true, cs.Save(sess)
+		return true, event, cs.Save(sess)
 	case "/help":
-		fmt.Fprintln(out, chatHelp)
+		event.Data = map[string]any{"help": chatHelp}
+		if !asJSON {
+			fmt.Fprintln(out, chatHelp)
+		}
 	case "/note":
 		if !sess.AddNote(rest) {
-			return false, fmt.Errorf("usage: /note <text>")
+			return false, event, fmt.Errorf("usage: /note <text>")
 		}
 		if err := cs.Save(sess); err != nil {
-			return false, err
+			return false, event, err
 		}
-		fmt.Fprintf(out, "noted (%d)\n", len(sess.Notes))
+		event.Data = map[string]any{"notes": len(sess.Notes)}
+		if !asJSON {
+			fmt.Fprintf(out, "noted (%d)\n", len(sess.Notes))
+		}
 	case "/notes":
+		event.Data = map[string]any{"notes": sess.Notes}
 		if len(sess.Notes) == 0 {
-			fmt.Fprintln(out, "no notes")
+			if !asJSON {
+				fmt.Fprintln(out, "no notes")
+			}
 			break
 		}
-		for i, n := range sess.Notes {
-			fmt.Fprintf(out, "%d. %s\n", i+1, n.Text)
+		if !asJSON {
+			for i, n := range sess.Notes {
+				fmt.Fprintf(out, "%d. %s\n", i+1, n.Text)
+			}
 		}
 	case "/sources":
+		var citations []ask.Hit
 		if len(sess.Turns) == 0 {
-			fmt.Fprintln(out, "no answers yet")
+			if !asJSON {
+				fmt.Fprintln(out, "no answers yet")
+			}
 			break
 		}
 		last := sess.Turns[len(sess.Turns)-1]
-		if err := writeAskHits(out, last.Citations); err != nil {
-			return false, err
+		citations = last.Citations
+		event.Data = map[string]any{"citations": citations}
+		if !asJSON {
+			if err := writeAskHits(out, citations); err != nil {
+				return false, event, err
+			}
 		}
 	case "/adventure":
 		if rest == "" {
+			event.Data = map[string]any{"scope": sess.Scope()}
 			if scope := sess.Scope(); scope == "" {
-				fmt.Fprintln(out, "not scoped to an adventure")
+				if !asJSON {
+					fmt.Fprintln(out, "not scoped to an adventure")
+				}
 			} else {
-				fmt.Fprintln(out, scope)
+				if !asJSON {
+					fmt.Fprintln(out, scope)
+				}
 			}
 			break
 		}
@@ -461,23 +545,31 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			}
 		}
 		if err := scopeAdventure(st, sess, name, only); err != nil {
-			return false, err
+			return false, event, err
 		}
 		if err := cs.Save(sess); err != nil {
-			return false, err
+			return false, event, err
 		}
+		event.Data = map[string]any{"scope": sess.Scope()}
 		if scope := sess.Scope(); scope == "" {
-			fmt.Fprintln(out, "adventure scope cleared")
+			if !asJSON {
+				fmt.Fprintln(out, "adventure scope cleared")
+			}
 		} else {
-			fmt.Fprintf(out, "scoped to %s\n", scope)
+			if !asJSON {
+				fmt.Fprintf(out, "scoped to %s\n", scope)
+			}
 		}
 	case "/limit":
 		n, err := parseChatLimit(rest)
 		if err != nil {
-			return false, err
+			return false, event, err
 		}
 		opts.Limit = n
-		fmt.Fprintf(out, "limit %d\n", n)
+		event.Data = map[string]any{"limit": n}
+		if !asJSON {
+			fmt.Fprintf(out, "limit %d\n", n)
+		}
 	case "/clear":
 		withNotes := false
 		switch strings.ToLower(rest) {
@@ -485,21 +577,37 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		case "all", "notes":
 			withNotes = true
 		default:
-			return false, fmt.Errorf("usage: /clear [all]")
+			return false, event, fmt.Errorf("usage: /clear [all]")
 		}
 		turns, notes := sess.Clear(withNotes)
 		if err := cs.Save(sess); err != nil {
-			return false, err
+			return false, event, err
 		}
-		writeCleared(out, sess, turns, notes)
+		event.Data = map[string]any{"turns": turns, "notes": notes}
+		if !asJSON {
+			writeCleared(out, sess, turns, notes)
+		}
 	case "/history":
-		if err := writeChatSession(out, sess); err != nil {
-			return false, err
+		event.Data = sess
+		if !asJSON {
+			if err := writeChatSession(out, sess); err != nil {
+				return false, event, err
+			}
 		}
 	default:
-		return false, fmt.Errorf("unknown command %s; /help for the list", name)
+		return false, event, fmt.Errorf("unknown command %s; /help for the list", name)
 	}
-	return false, nil
+	return false, event, nil
+}
+
+func writeChatError(w io.Writer, sess *chat.Session, command, question string, err error) error {
+	return writeJSON(w, chatErrorResult{
+		Type:     "error",
+		Session:  sess.Name,
+		Command:  command,
+		Question: question,
+		Message:  err.Error(),
+	})
 }
 
 func writeChatSession(w io.Writer, sess *chat.Session) error {

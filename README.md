@@ -256,8 +256,10 @@ Sessions are stored one JSON file each under `$XDG_DATA_HOME/5e-cli/chats`
 `FIVE_E_CHAT_DIR` or `--chat-dir`. They live outside the cache on purpose:
 re-ingesting or clearing the index does not delete a campaign's conversation.
 
-`--json` turns each answer into one object with the session name, question,
-answer, and citations.
+`--json` marks one-shot answers with `"type": "turn"`. In an interactive
+JSON session, each input emits one newline-delimited event: `turn` for an
+answer, `command` for a slash command, or `error` for a failed command or
+question. The banner, prompt, and human-readable command output are omitted.
 
 ## Development
 
