@@ -142,6 +142,7 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 	}
 
 	var full strings.Builder
+	done := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -151,6 +152,7 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
+			done = true
 			break
 		}
 		var chunk struct {
@@ -181,6 +183,15 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 	}
 	if err := scanner.Err(); err != nil {
 		return full.String(), fmt.Errorf("chat/completions: stream: %w", err)
+	}
+	if !done {
+		// The connection closed (or the server ended the response) before a
+		// terminal "[DONE]" ever arrived. Without this check that reads as
+		// total success — full.String() is whatever text happened to arrive
+		// before the cutoff, and a caller has no way to tell it apart from a
+		// genuinely complete answer, so a truncated mid-sentence response
+		// silently gets treated (and saved) as the real one.
+		return full.String(), fmt.Errorf("chat/completions: stream ended before completion (connection closed early)")
 	}
 	if full.Len() == 0 {
 		return "", fmt.Errorf("chat: empty message")

@@ -39,12 +39,14 @@ const (
 	DefaultMinScore = 0.15
 
 	// DefaultAnswerMaxTokens caps how many tokens the chat model may generate
-	// for one answer. A rules answer with a couple of citations comfortably
-	// fits well inside this; the cap exists so a model that would otherwise
-	// ramble (or a backend that defaults to "as long as the context allows")
-	// has a predictable cost and latency ceiling. FIVE_E_ANSWER_MAX_TOKENS
-	// raises it for a use case that wants longer answers.
-	DefaultAnswerMaxTokens = 1024
+	// for one answer. The cap exists so a model that would otherwise ramble
+	// (or a backend that defaults to "as long as the context allows") has a
+	// predictable cost and latency ceiling, but a synthesized answer that
+	// pulls together several sources (e.g. "flesh out this quest") routinely
+	// runs well past a couple of citations' worth of text, so the default
+	// leaves generous headroom rather than cutting a real answer off
+	// mid-sentence. FIVE_E_ANSWER_MAX_TOKENS overrides it either way.
+	DefaultAnswerMaxTokens = 4096
 )
 
 // Config is an OpenAI-compatible embedding and chat backend.

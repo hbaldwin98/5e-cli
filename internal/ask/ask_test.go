@@ -231,6 +231,40 @@ func TestAskStream_requiresOnDelta(t *testing.T) {
 	}
 }
 
+func TestChatMessagesStream_errorsWhenTheConnectionClosesBeforeDONE(t *testing.T) {
+	// A provider or proxy can drop the connection mid-answer without ever
+	// sending the terminal "data: [DONE]" line. Before this was checked for,
+	// ChatMessagesStream treated that as a normal, complete answer — the
+	// caller (and the saved chat history) had no way to tell a cut-off
+	// mid-sentence response apart from a real one.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial answer, then\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// No "[DONE]" line: the handler returns, closing the connection.
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := newClient(Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	var got strings.Builder
+	answer, err := cli.ChatMessagesStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(d string) error {
+		got.WriteString(d)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("want an error when the stream ends without a [DONE]")
+	}
+	if got.String() != "partial answer, then" {
+		t.Fatalf("want the partial text still delivered via onDelta before the error, got %q", got.String())
+	}
+	if answer != "partial answer, then" {
+		t.Fatalf("want the partial text still returned alongside the error, got %q", answer)
+	}
+}
+
 func TestChatMessagesStream_stopsOnACancelledContext(t *testing.T) {
 	st, cfg, _ := harness(t)
 	defer st.Close()

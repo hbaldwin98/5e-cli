@@ -587,10 +587,14 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 	defer m.refreshViewport()
 
 	if msg.err != nil {
+		// Whatever text already streamed to the screen stays visible either
+		// way — a cancelled or interrupted turn still leaves it, so the
+		// answer doesn't just vanish behind the error line once it's been
+		// sitting there in front of the user.
+		if m.pending.Len() > 0 {
+			m.writeLine(m.pending.String())
+		}
 		if errors.Is(msg.err, context.Canceled) {
-			if m.pending.Len() > 0 {
-				m.writeLine(m.pending.String())
-			}
 			m.writeLine(lipgloss.NewStyle().Faint(true).Render("(cancelled)"))
 		} else {
 			m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(msg.err.Error()))
