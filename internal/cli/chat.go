@@ -540,11 +540,17 @@ func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, 
 	var err error
 	streamed := false
 	if !asJSON && isTTY(out) {
+		// A spinner covers retrieval and the wait for the first token; once
+		// a delta arrives, stop() clears it so the spinner and the streamed
+		// answer never compete for the line.
+		stop := runSpinner(out, "thinking")
 		res, err = chat.AskStream(cmd.Context(), st, cfg, sess, question, opts, func(delta string) error {
+			stop()
 			streamed = true
 			_, werr := io.WriteString(out, delta)
 			return werr
 		})
+		stop() // no-op if a delta already stopped it; guards the no-matches path
 	} else {
 		res, err = chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
 	}

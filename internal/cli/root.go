@@ -530,14 +530,24 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 }
 
 func writeRetrieve(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Config, q ask.Query) error {
-	hits, err := ask.Retrieve(cmd.Context(), st, cfg, q)
+	out := cmd.OutOrStdout()
+	if asJSON {
+		hits, err := ask.Retrieve(cmd.Context(), st, cfg, q)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, hits)
+	}
+	var hits []ask.Hit
+	err := runWithStatus(cmd.Context(), out, "retrieving", func(ctx context.Context, _ func(string)) error {
+		var err error
+		hits, err = ask.Retrieve(ctx, st, cfg, q)
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	if asJSON {
-		return writeJSON(cmd.OutOrStdout(), hits)
-	}
-	return writeAskHits(cmd.OutOrStdout(), hits)
+	return writeAskHits(out, hits)
 }
 
 // writeAskResult prints an answer either whole or streamed as it generates,
@@ -559,12 +569,18 @@ func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Co
 	var res ask.Result
 	var err error
 	if isTTY(out) {
+		// A spinner covers retrieval and the wait for the first token; once
+		// a delta arrives, stop() clears it and every following delta is
+		// the streamed answer itself, so the two never compete for the line.
+		stop := runSpinner(out, "thinking")
 		var streamed bool
 		res, err = ask.AskStream(cmd.Context(), st, cfg, q, func(delta string) error {
+			stop()
 			streamed = true
 			_, werr := io.WriteString(out, delta)
 			return werr
 		})
+		stop() // no-op if a delta already stopped it; guards the no-matches path
 		if err != nil {
 			return err
 		}
