@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -502,6 +503,65 @@ func TestValidateVector_rejectsEmptyAndZero(t *testing.T) {
 	}
 	if err := validateVector([]float32{0, 0.1, 0}, "x"); err != nil {
 		t.Fatalf("a non-zero vector should pass, got %v", err)
+	}
+}
+
+func TestRetrieve_reportsStructuredEmbedProgress(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	var updates []EmbedProgress
+	cfg.OnProgress = func(p EmbedProgress) { updates = append(updates, p) }
+	// Progress is set too, to confirm OnProgress takes priority over it
+	// rather than both firing.
+	var lines strings.Builder
+	cfg.Progress = &lines
+
+	if _, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire", Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) == 0 {
+		t.Fatal("want at least one structured progress update")
+	}
+	last := updates[len(updates)-1]
+	if last.Done != last.Total || last.Phase != "embedding" {
+		t.Fatalf("want the final update to report completion, got %+v", last)
+	}
+	for i := 1; i < len(updates); i++ {
+		if updates[i].Done < updates[i-1].Done {
+			t.Fatalf("progress should never go backward: %+v", updates)
+		}
+	}
+	if lines.Len() != 0 {
+		t.Fatalf("OnProgress should supersede the Progress writer, not run alongside it: %q", lines.String())
+	}
+}
+
+func TestEnsureCache_cancellationLeavesNoPartialCacheFile(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Retrieve(ctx, st, cfg, Query{Text: "fire", Limit: 1}); err == nil {
+		t.Fatal("want an error for an already-cancelled context")
+	}
+	if _, err := os.Stat(cfg.CachePath); !os.IsNotExist(err) {
+		t.Fatalf("a cancelled build must not leave a cache file behind: %v", err)
+	}
+	if _, err := os.Stat(cfg.CachePath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("a cancelled build must clean up its temp file: %v", err)
+	}
+
+	// The corpus must still be buildable normally afterward — a cancelled
+	// attempt leaves nothing behind that would make a retry fail or serve
+	// stale data.
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion", Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Fireball" {
+		t.Fatalf("a retry after cancellation should build and query normally, got %+v", hits)
 	}
 }
 

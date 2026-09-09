@@ -61,7 +61,25 @@ type Config struct {
 	MinScore   float64
 	CachePath  string
 	HTTPClient *http.Client
-	Progress   io.Writer
+	// Progress receives one concise line per embedding batch ("embedding
+	// 40/120") when the cache needs to be built or rebuilt. Ignored when
+	// OnProgress is set.
+	Progress io.Writer
+	// OnProgress, if set, receives structured build progress instead of
+	// Progress getting a written line — a caller that wants to render its
+	// own view (a determinate progress bar, a phase label) rather than
+	// consume preformatted text uses this.
+	OnProgress func(EmbedProgress)
+}
+
+// EmbedProgress is one update on building the embedding cache: how many of
+// how many chunks have been embedded so far, and what phase that count
+// belongs to. Phase exists because a future step (say, writing the built
+// vectors to disk) is a distinct, separately-reportable phase from
+// embedding itself, even though today embedding is the only one.
+type EmbedProgress struct {
+	Done, Total int
+	Phase       string
 }
 
 // ConfigFromEnv reads OPENAI_* and FIVE_E_* variables. Paths are filled by the CLI.

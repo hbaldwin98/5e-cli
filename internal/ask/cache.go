@@ -247,7 +247,9 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 		for j, ch := range batch {
 			inputs[j] = ch.Text
 		}
-		if cfg.Progress != nil {
+		if cfg.OnProgress != nil {
+			cfg.OnProgress(EmbedProgress{Done: end, Total: len(chunks), Phase: "embedding"})
+		} else if cfg.Progress != nil {
 			fmt.Fprintf(cfg.Progress, "embedding %d/%d\n", end, len(chunks))
 		}
 		vecs, err := cli.Embed(ctx, inputs)

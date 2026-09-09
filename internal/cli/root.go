@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
@@ -48,9 +49,17 @@ func rootCmd() *cobra.Command {
 	return cmd
 }
 
-// Execute runs the CLI.
+// Execute runs the CLI. Ctrl-C (SIGINT) cancels cmd.Context() rather than
+// killing the process outright, so an in-flight HTTP request (a chat
+// completion, an embedding batch) gets a chance to abort cleanly and any
+// deferred cleanup — the embedding cache's temp-file removal in
+// particular — still runs. A second Ctrl-C falls back to the normal
+// immediate-exit behavior, so a genuinely stuck operation can still be
+// killed outright.
 func Execute() error {
-	return rootCmd().Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return rootCmd().ExecuteContext(ctx)
 }
 
 func resolve(opt *options) (data, index string, err error) {
@@ -507,6 +516,7 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 	cfg := ask.ConfigFromEnv()
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	cfg.Progress = cmd.ErrOrStderr()
+	cfg.OnProgress = embedProgressRenderer(cfg.Progress)
 	q := ask.Query{
 		Text:    strings.Join(args, " "),
 		Kind:    flags.Kind,

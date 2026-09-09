@@ -444,6 +444,7 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	} else {
 		cfg.Progress = cmd.ErrOrStderr()
 	}
+	cfg.OnProgress = embedProgressRenderer(cfg.Progress)
 	opts := chat.Options{Kind: copt.Kind, Sources: splitSources(copt.Sources), Limit: copt.Limit, Edition: ed, SRD: opt.SRD}
 
 	if len(args) > 0 {
