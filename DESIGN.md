@@ -188,8 +188,11 @@ Provider is any OpenAI-compatible host:
 | `FIVE_E_EMBED_MODEL` | `text-embedding-3-small` |
 | `FIVE_E_ASK_MODEL` | `gpt-4o-mini` |
 | `FIVE_E_EMBEDDINGS` | sidecar next to `--index` |
+| `FIVE_E_EMBED_MAX_TOKENS` | `8192` |
 
-Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, and embed model. Do not store the API key.
+Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
+
+**Chunk windows.** A record longer than the embedding model's per-input limit is split into overlapping windows rather than truncated, and the windows of one record collapse to their best-scoring part at retrieval. Set `FIVE_E_EMBED_MAX_TOKENS` when the backend caps lower than OpenAI does; many local embedding servers stop at 512.
 
 ### `mcp`
 

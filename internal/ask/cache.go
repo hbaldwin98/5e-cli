@@ -25,6 +25,7 @@ CREATE TABLE meta (
   base_url    TEXT NOT NULL,
   embed_model TEXT NOT NULL,
   dim         INTEGER NOT NULL,
+  max_tokens  INTEGER NOT NULL,
   built_at    TEXT NOT NULL
 );
 
@@ -37,19 +38,45 @@ CREATE TABLE vectors (
   embedding BLOB NOT NULL
 );
 `
-	embedBatch = 64
-	maxRunes   = 24000
+	// embedBatch bounds inputs per request; maxBatchTokens bounds their
+	// combined size, since the API caps a request's total tokens too.
+	embedBatch     = 64
+	maxBatchTokens = 250000
+
+	// minCharsPerToken is a deliberately pessimistic tokenizer ratio. Ordinary
+	// English runs near 4 characters per token; rules text with dice notation
+	// and proper nouns runs denser. Sizing windows at 1.9 keeps a window under
+	// the model's limit without shipping a tokenizer.
+	minCharsPerToken = 1.9
+
+	// chunkOverlapRunes repeats a little text across window boundaries so a
+	// passage split down the middle is still retrievable from either side.
+	// splitText clamps it to a fraction of the window.
+	chunkOverlapRunes = 400
 )
 
 type chunk struct {
 	Kind   string
 	Name   string
 	Source string
+	Part   int
 	Text   string
 }
 
 func (c chunk) id() string {
-	return c.Kind + "\x1f" + c.Name + "\x1f" + c.Source
+	return fmt.Sprintf("%s\x1f%s\x1f%s\x1f%d", c.Kind, c.Name, c.Source, c.Part)
+}
+
+// windowRunes is the largest chunk that fits the model's per-input token
+// limit under the pessimistic ratio above.
+func windowRunes(maxTokens int) int {
+	return max(int(float64(maxTokens)*minCharsPerToken), 64)
+}
+
+// estimateTokens is the same pessimistic ratio read in the other direction,
+// used to keep a batch under the per-request total.
+func estimateTokens(s string) int {
+	return int(float64(utf8.RuneCountInString(s))/minCharsPerToken) + 1
 }
 
 type vector struct {
@@ -66,12 +93,12 @@ func ensureCache(ctx context.Context, st *store.Store, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if ok, err := cacheFresh(cfg.CachePath, meta.SHA, cfg.BaseURL, cfg.EmbedModel); err != nil {
+	if ok, err := cacheFresh(cfg.CachePath, meta.SHA, cfg.BaseURL, cfg.EmbedModel, cfg.EmbedMaxTokens); err != nil {
 		return err
 	} else if ok {
 		return nil
 	}
-	chunks, err := corpus(st)
+	chunks, err := corpus(st, windowRunes(cfg.EmbedMaxTokens))
 	if err != nil {
 		return err
 	}
@@ -82,7 +109,7 @@ func ensureCache(ctx context.Context, st *store.Store, cfg Config) error {
 	return writeCache(ctx, cli, cfg, meta.SHA, chunks)
 }
 
-func cacheFresh(path, sha, baseURL, model string) (bool, error) {
+func cacheFresh(path, sha, baseURL, model string, maxTokens int) (bool, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -99,15 +126,18 @@ func cacheFresh(path, sha, baseURL, model string) (bool, error) {
 	}
 	defer db.Close()
 	var gotSHA, gotURL, gotModel string
-	var n int
-	err = db.QueryRow(`SELECT corpus_sha, base_url, embed_model FROM meta LIMIT 1`).Scan(&gotSHA, &gotURL, &gotModel)
+	var gotMaxTokens, n int
+	// A cache written before max_tokens existed fails this scan, which is the
+	// wanted answer: it was chunked under different limits and must be rebuilt.
+	err = db.QueryRow(`SELECT corpus_sha, base_url, embed_model, max_tokens FROM meta LIMIT 1`).
+		Scan(&gotSHA, &gotURL, &gotModel, &gotMaxTokens)
 	if err != nil {
 		return false, nil
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&n); err != nil || n == 0 {
 		return false, nil
 	}
-	return gotSHA == sha && gotURL == baseURL && gotModel == model, nil
+	return gotSHA == sha && gotURL == baseURL && gotModel == model && gotMaxTokens == maxTokens, nil
 }
 
 func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks []chunk) error {
@@ -140,15 +170,13 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 	}
 	defer ins.Close()
 
-	for i := 0; i < len(chunks); i += embedBatch {
+	for i := 0; i < len(chunks); {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		end := i + embedBatch
-		if end > len(chunks) {
-			end = len(chunks)
-		}
+		end := batchEnd(chunks, i)
 		batch := chunks[i:end]
+		i = end
 		inputs := make([]string, len(batch))
 		for j, ch := range batch {
 			inputs[j] = ch.Text
@@ -176,8 +204,8 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 		return fmt.Errorf("embeddings: no vectors returned")
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO meta (corpus_sha, base_url, embed_model, dim, built_at) VALUES (?, ?, ?, ?, ?)`,
-		sha, cfg.BaseURL, cfg.EmbedModel, dim, store.Now(),
+		`INSERT INTO meta (corpus_sha, base_url, embed_model, dim, max_tokens, built_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sha, cfg.BaseURL, cfg.EmbedModel, dim, cfg.EmbedMaxTokens, store.Now(),
 	); err != nil {
 		return err
 	}
@@ -217,7 +245,25 @@ func loadVectors(path string) ([]vector, error) {
 	return out, rows.Err()
 }
 
-func corpus(st *store.Store) ([]chunk, error) {
+// batchEnd grows a batch until it hits the request's input count or its
+// combined token budget, always taking at least one chunk.
+func batchEnd(chunks []chunk, start int) int {
+	tokens := 0
+	for i := start; i < len(chunks) && i-start < embedBatch; i++ {
+		next := tokens + estimateTokens(chunks[i].Text)
+		if i > start && next > maxBatchTokens {
+			return i
+		}
+		tokens = next
+	}
+	end := start + embedBatch
+	if end > len(chunks) {
+		end = len(chunks)
+	}
+	return end
+}
+
+func corpus(st *store.Store, window int) ([]chunk, error) {
 	ents, err := st.Names()
 	if err != nil {
 		return nil, err
@@ -228,28 +274,74 @@ func corpus(st *store.Store) ([]chunk, error) {
 	}
 	out := make([]chunk, 0, len(ents)+len(docs))
 	for _, e := range ents {
-		text := clipText(e.Text)
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		out = append(out, chunk{Kind: e.Kind, Name: e.Name, Source: e.Source, Text: text})
+		out = appendChunks(out, e.Kind, e.Name, e.Source, e.Text, window)
 	}
 	for _, d := range docs {
-		text := clipText(d.Text)
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		out = append(out, chunk{Kind: d.Kind, Name: d.Section, Source: d.ParentID, Text: text})
+		out = appendChunks(out, d.Kind, d.Section, d.ParentID, d.Text, window)
 	}
 	return out, nil
 }
 
-func clipText(s string) string {
-	if utf8.RuneCountInString(s) <= maxRunes {
+// appendChunks splits one record's text across as many windows as it needs.
+// Long book and adventure sections used to be truncated to a single window,
+// which both risked the model's input limit and dropped most of the section.
+func appendChunks(out []chunk, kind, name, source, text string, window int) []chunk {
+	for i, part := range splitText(text, window) {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		out = append(out, chunk{Kind: kind, Name: name, Source: source, Part: i, Text: part})
+	}
+	return out
+}
+
+// splitText cuts s into overlapping windows of at most window runes, breaking
+// on a line or space near the edge so a window rarely ends mid-word.
+func splitText(s string, window int) []string {
+	if window <= 0 || utf8.RuneCountInString(s) <= window {
+		return []string{s}
+	}
+	runes := []rune(s)
+	// Keep the overlap a fraction of the window. A small window configured
+	// through FIVE_E_EMBED_MAX_TOKENS would otherwise overlap by more than it
+	// advances and never reach the end of the text.
+	overlap := min(chunkOverlapRunes, window/4)
+	var out []string
+	for start := 0; start < len(runes); {
+		end := start + window
+		if end >= len(runes) {
+			out = append(out, string(runes[start:]))
+			break
+		}
+		end = breakPoint(runes, start, end)
+		out = append(out, string(runes[start:end]))
+		next := end - overlap
+		if next <= start {
+			next = end // never lose forward progress
+		}
+		start = next
+	}
+	return out
+}
+
+// breakPoint backs up to the last newline or space in the final tenth of the
+// window, falling back to a hard cut when the text has no break there.
+func breakPoint(runes []rune, start, end int) int {
+	limit := end - (end-start)/10
+	for i := end - 1; i > limit; i-- {
+		if runes[i] == '\n' || runes[i] == ' ' {
+			return i + 1
+		}
+	}
+	return end
+}
+
+// clipText bounds a single ad-hoc input, such as the user's query.
+func clipText(s string, window int) string {
+	if window <= 0 || utf8.RuneCountInString(s) <= window {
 		return s
 	}
-	r := []rune(s)
-	return string(r[:maxRunes])
+	return string([]rune(s)[:window])
 }
 
 func l2norm(v []float32) []float32 {

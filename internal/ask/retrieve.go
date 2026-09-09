@@ -45,7 +45,7 @@ func Retrieve(ctx context.Context, st *store.Store, cfg Config, q Query) ([]Hit,
 		return nil, err
 	}
 	cli := newClient(cfg)
-	qv, err := cli.Embed(ctx, []string{clipText(q.Text)})
+	qv, err := cli.Embed(ctx, []string{clipText(q.Text, windowRunes(cfg.EmbedMaxTokens))})
 	if err != nil {
 		return nil, err
 	}
@@ -106,12 +106,24 @@ func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool
 		v     vector
 		score float64
 	}
+	// A long section is embedded as several parts; collapse them so one
+	// section cannot fill the result list with its own windows.
+	best := map[string]int{}
 	var ranked []scored
 	for _, v := range vecs {
 		if !keep(v) {
 			continue
 		}
-		ranked = append(ranked, scored{v: v, score: dot(query, v.vec)})
+		s := scored{v: v, score: dot(query, v.vec)}
+		key := chunkKey(v.Kind, v.Name, v.Source)
+		if at, ok := best[key]; ok {
+			if s.score > ranked[at].score {
+				ranked[at] = s
+			}
+			continue
+		}
+		best[key] = len(ranked)
+		ranked = append(ranked, s)
 	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {

@@ -3,6 +3,7 @@ package ask
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
@@ -252,4 +254,91 @@ func keywordEmbed(text string) []float32 {
 	add(2, "breath", "suffocat", "underwater")
 	add(3, "goblin", "hideout", "cragmaw")
 	return v
+}
+
+func TestSplitText_windowsStayUnderLimit(t *testing.T) {
+	const window = 100
+	// Unique words: repetitive text would make the overlap in reassemble
+	// ambiguous and the coverage check meaningless.
+	var b strings.Builder
+	for i := range 1200 {
+		fmt.Fprintf(&b, "w%05d ", i)
+	}
+	body := strings.TrimSpace(b.String())
+	parts := splitText(body, window)
+	if len(parts) < 2 {
+		t.Fatalf("want several windows, got %d", len(parts))
+	}
+	for i, p := range parts {
+		if n := utf8.RuneCountInString(p); n > window {
+			t.Fatalf("part %d is %d runes, over the %d window", i, n, window)
+		}
+	}
+	if got := reassemble(parts); got != body {
+		t.Fatalf("windows do not cover the text: rebuilt %d of %d runes", len(got), len(body))
+	}
+}
+
+// reassemble stitches overlapping windows back together, so the test proves
+// the split covers every rune rather than just that it produced windows.
+func reassemble(parts []string) string {
+	out := parts[0]
+	for _, p := range parts[1:] {
+		overlap := 0
+		for n := min(len(out), len(p)); n > 0; n-- {
+			if strings.HasSuffix(out, p[:n]) {
+				overlap = n
+				break
+			}
+		}
+		out += p[overlap:]
+	}
+	return out
+}
+
+func TestSplitText_shortTextIsOneWindow(t *testing.T) {
+	if got := splitText("a bolt of testing", 100); len(got) != 1 || got[0] != "a bolt of testing" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWindowRunes_fitsTheModelLimit(t *testing.T) {
+	// The window must stay under the limit even if real text tokenizes at the
+	// pessimistic ratio the sizing assumes.
+	for _, limit := range []int{512, 8192} {
+		w := windowRunes(limit)
+		if got := estimateTokens(strings.Repeat("x", w)); got > limit {
+			t.Fatalf("limit %d: a full window estimates %d tokens", limit, got)
+		}
+	}
+}
+
+func TestBatchEnd_respectsCountAndTokenBudget(t *testing.T) {
+	small := make([]chunk, 200)
+	for i := range small {
+		small[i] = chunk{Text: "short"}
+	}
+	if got := batchEnd(small, 0); got != embedBatch {
+		t.Fatalf("small chunks should fill the batch, got %d", got)
+	}
+
+	big := make([]chunk, 10)
+	for i := range big {
+		big[i] = chunk{Text: strings.Repeat("x", maxBatchTokens)}
+	}
+	got := batchEnd(big, 0)
+	if got < 1 {
+		t.Fatal("batchEnd must always take at least one chunk")
+	}
+	if got >= len(big) {
+		t.Fatalf("oversized chunks should split the batch, got %d", got)
+	}
+}
+
+func TestChunkID_distinguishesParts(t *testing.T) {
+	a := chunk{Kind: "bookSection", Name: "Combat", Source: "PHB", Part: 0}
+	b := chunk{Kind: "bookSection", Name: "Combat", Source: "PHB", Part: 1}
+	if a.id() == b.id() {
+		t.Fatalf("parts share id %q, which would collide on the vectors primary key", a.id())
+	}
 }
