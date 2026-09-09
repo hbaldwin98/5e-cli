@@ -667,7 +667,9 @@ func buildChatHelp() string {
 	b.WriteString("  /note rm <n>        remove the note numbered <n> in /notes\n")
 	b.WriteString("  /note edit <n> <text>   replace the text of note <n>\n")
 	b.WriteString("In the interactive workspace: PgUp/PgDn scroll the transcript, Tab\n")
-	b.WriteString("completes a slash command, Ctrl-G toggles the key reference.\n")
+	b.WriteString("completes a slash command, Ctrl-T toggles mouse-wheel scrolling\n")
+	b.WriteString("(off by default so click-drag select/copy works natively), Ctrl-G\n")
+	b.WriteString("toggles the key reference.\n")
 	b.WriteString("Anything else is a question.")
 	return b.String()
 }

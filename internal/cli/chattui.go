@@ -54,16 +54,17 @@ func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess 
 }
 
 type chatKeyMap struct {
-	Submit     key.Binding
-	Newline    key.Binding
-	Up         key.Binding
-	Down       key.Binding
-	ScrollUp   key.Binding
-	ScrollDown key.Binding
-	Complete   key.Binding
-	Cancel     key.Binding
-	Quit       key.Binding
-	Help       key.Binding
+	Submit      key.Binding
+	Newline     key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	ScrollUp    key.Binding
+	ScrollDown  key.Binding
+	Complete    key.Binding
+	ToggleMouse key.Binding
+	Cancel      key.Binding
+	Quit        key.Binding
+	Help        key.Binding
 }
 
 func defaultChatKeyMap() chatKeyMap {
@@ -74,17 +75,18 @@ func defaultChatKeyMap() chatKeyMap {
 		Down:    key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "history")),
 		// ctrl+b is deliberately not bound here: it's tmux's default prefix
 		// key, so under tmux it would never reach this program at all.
-		ScrollUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "scroll up")),
-		ScrollDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "scroll down")),
-		Complete:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "complete command")),
-		Cancel:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
-		Quit:       key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
-		Help:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
+		ScrollUp:    key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "scroll up")),
+		ScrollDown:  key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "scroll down")),
+		Complete:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "complete command")),
+		ToggleMouse: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "toggle mouse")),
+		Cancel:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
+		Quit:        key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
+		Help:        key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
 	}
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Newline, k.Up, k.ScrollUp, k.Complete, k.Cancel, k.Quit, k.Help}
+	return []key.Binding{k.Submit, k.Newline, k.Up, k.ScrollUp, k.Complete, k.ToggleMouse, k.Cancel, k.Quit, k.Help}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
@@ -140,6 +142,13 @@ type chatModel struct {
 	ready         bool
 	showHelp      bool
 	quitting      bool
+	// mouseEnabled toggles tea.View.MouseMode (Ctrl-T). Off by default: a
+	// terminal that requests mouse reporting is exactly what stops most
+	// terminals offering their own click-drag text selection, and Shift+drag
+	// (the usual override) isn't reliable across every terminal — so the
+	// default favors copy/paste working out of the box, with the wheel a
+	// keystroke away for whoever wants it instead.
+	mouseEnabled bool
 }
 
 func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string) *chatModel {
@@ -357,6 +366,16 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.completeSlashCommand() {
 			return m, nil
 		}
+
+	case key.Matches(msg, m.keys.ToggleMouse):
+		m.mouseEnabled = !m.mouseEnabled
+		if m.mouseEnabled {
+			m.writeLine(lipgloss.NewStyle().Faint(true).Render("mouse: on (wheel scrolls; drag-select needs Shift on most terminals)"))
+		} else {
+			m.writeLine(lipgloss.NewStyle().Faint(true).Render("mouse: off (native click-drag select/copy restored; PgUp/PgDn still scroll)"))
+		}
+		m.refreshViewport()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -649,14 +668,16 @@ func (m *chatModel) resize() {
 func (m *chatModel) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
-	// Mouse reporting is on so the wheel can scroll the viewport (its
-	// Update already handles tea.MouseWheelMsg); PgUp/PgDn/ctrl+u/ctrl+f
-	// (chatKeyMap.ScrollUp/Down) work regardless. Enabling this does mean
-	// a plain click-drag no longer selects text natively — most terminals
-	// (xterm, iTerm2, kitty, Alacritty, GNOME Terminal/Konsole, Windows
-	// Terminal) still let you get a native selection for copy by holding
-	// Shift while dragging, which bypasses the application's mouse grab.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Mouse reporting (wheel-scroll) and native click-drag text selection
+	// can't both be on: a terminal that requests mouse tracking is exactly
+	// what stops most terminals offering their own selection, and Shift+drag
+	// (the usual override) isn't reliable enough across terminals to lean
+	// on by default. Ctrl-T (m.mouseEnabled) toggles it; off — selection
+	// and copy work natively — is the default, with PgUp/PgDn always
+	// available as the keyboard scroll path either way.
+	if m.mouseEnabled {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	if !m.ready {
 		v.SetContent("")
 		return v

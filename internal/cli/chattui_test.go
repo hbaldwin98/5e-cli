@@ -232,6 +232,29 @@ func TestChatModel_slashHistoryRendersPastAnswersAsMarkdown(t *testing.T) {
 	}
 }
 
+func TestChatModel_mouseIsOffByDefaultAndCtrlTTogglesIt(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	if m.mouseEnabled {
+		t.Fatal("want mouse reporting off by default, so click-drag select/copy works out of the box")
+	}
+	if m.View().MouseMode != tea.MouseModeNone {
+		t.Fatalf("want MouseModeNone by default, got %v", m.View().MouseMode)
+	}
+
+	m.handleKey(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if !m.mouseEnabled {
+		t.Fatal("want Ctrl-T to enable mouse reporting")
+	}
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("want MouseModeCellMotion once enabled, got %v", m.View().MouseMode)
+	}
+
+	m.handleKey(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if m.mouseEnabled {
+		t.Fatal("want a second Ctrl-T to disable mouse reporting again")
+	}
+}
+
 func TestChatModel_scrollKeysMoveTheViewportWithoutTouchingHistory(t *testing.T) {
 	m, _ := newTestChatModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
