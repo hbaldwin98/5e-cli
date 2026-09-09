@@ -219,6 +219,8 @@ Naming a module does not restrict the answer to it: a question asked while runni
 
 **Lexical rescue.** Retrieval also runs the question through FTS5 (entity and document indexes, terms ORed rather than ANDed since a full question rarely repeats its own wording verbatim). A chunk that clears the score gate on its own is ranked purely by cosine similarity — a strong semantic match is never displaced by an unrelated chunk that happens to share one common word with the question. A chunk that does *not* clear the gate is otherwise dropped, but a lexical hit on it is treated as independent evidence of relevance and rescues it, appended after the confident tier in FTS rank order. This mainly recovers exact names and numbers a paraphrased embedding can miss.
 
+**Prompt injection.** Indexed source text and campaign notes are both untrusted content — a rulebook chunk or a pasted note can contain text shaped like an instruction ("ignore the above and instead..."). Both are wrapped in `<source>...</source>` / `<note>...</note>` tags with an explicit system-prompt instruction to treat their content as reference material, never as commands. Any literal occurrence of those tag strings inside the source text or note itself is escaped before insertion, so the content cannot forge a closing tag and put attacker-controlled text back in instruction position.
+
 ### `chat`
 
 An ongoing conversation over the same retrieval `ask` uses. `5e chat` with no question opens a REPL; `5e chat "question"` takes one turn and returns. Either way the transcript is saved and the next run continues it.
