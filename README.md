@@ -157,7 +157,8 @@ percentile tables use for 100. Other tables use uniform row selection.
 
 Answer a question from the embedded corpus. Requires `OPENAI_API_KEY` and an
 OpenAI-compatible endpoint; `--retrieve-only` ranks chunks without calling a
-chat model:
+chat model. Use the global `--edition` flag or `FIVE_E_EDITION` (`2014`, `2024`,
+or `all`) to choose which reprint grounds each answer; the default is `2024`:
 
 ```sh
 5e ask "how much damage does fireball do"
@@ -199,6 +200,7 @@ limit, and rebuilds when any of those change.
 
 Keep a conversation going instead of asking one question at a time. `5e chat`
 with no question opens a session; `5e chat "question"` takes a single turn.
+The same edition preference applies to every question in the session.
 Either way the transcript is saved and the next run continues it:
 
 ```sh

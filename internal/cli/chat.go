@@ -249,6 +249,10 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	if err != nil {
 		return err
 	}
+	ed, err := opt.editionPref()
+	if err != nil {
+		return err
+	}
 	sess, err := cs.Load(sessionName(copt, nil))
 	if err != nil {
 		return err
@@ -271,7 +275,7 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	} else {
 		cfg.Progress = cmd.ErrOrStderr()
 	}
-	opts := chat.Options{Kind: copt.Kind, Sources: splitSources(copt.Sources), Limit: copt.Limit, SRD: opt.SRD}
+	opts := chat.Options{Kind: copt.Kind, Sources: splitSources(copt.Sources), Limit: copt.Limit, Edition: ed, SRD: opt.SRD}
 
 	if len(args) > 0 {
 		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts)

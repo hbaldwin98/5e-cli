@@ -500,6 +500,10 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 		return err
 	}
 	defer st.Close()
+	ed, err := opt.editionPref()
+	if err != nil {
+		return err
+	}
 	cfg := ask.ConfigFromEnv()
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	cfg.Progress = cmd.ErrOrStderr()
@@ -508,6 +512,7 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 		Kind:    flags.Kind,
 		Sources: flags.Sources,
 		Limit:   flags.Limit,
+		Edition: ed,
 		SRD:     opt.SRD,
 	}
 	if flags.Adventure != "" {

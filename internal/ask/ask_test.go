@@ -13,6 +13,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -45,6 +46,53 @@ func TestRetrieve_ranksKeywordNeighbors(t *testing.T) {
 	}
 	if api.chatCalls.Load() != 0 {
 		t.Fatalf("retrieve must not call chat, got %d", api.chatCalls.Load())
+	}
+}
+
+func TestRetrieve_appliesEditionPreference(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	tests := []struct {
+		name   string
+		pref   edition.Pref
+		source string
+		count  int
+	}{
+		{name: "default", source: "XPHB", count: 1},
+		{name: "classic", pref: edition.Classic, source: "PHB", count: 1},
+		{name: "all", pref: edition.All, count: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hits, err := Retrieve(context.Background(), st, cfg, Query{
+				Text:    "fire explosion",
+				Limit:   8,
+				Edition: tt.pref,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sources []string
+			var hasFallback bool
+			for _, hit := range hits {
+				if hit.Name == "Fireball" {
+					sources = append(sources, hit.Source)
+				}
+				if hit.Name == "Longsword" {
+					hasFallback = true
+				}
+			}
+			if len(sources) != tt.count {
+				t.Fatalf("Fireball sources = %v, want %d", sources, tt.count)
+			}
+			if tt.source != "" && (len(sources) != 1 || sources[0] != tt.source) {
+				t.Fatalf("Fireball sources = %v, want %s", sources, tt.source)
+			}
+			if !hasFallback {
+				t.Fatalf("edition preference removed the PHB-only Longsword: %+v", hits)
+			}
+		})
 	}
 }
 
@@ -163,6 +211,7 @@ func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Fireball"}`), Text: "A bright streak flashes and explodes in a bloom of fire and flame."},
+		{Kind: "spell", Name: "Fireball", Source: "XPHB", SRD: true, JSON: json.RawMessage(`{"name":"Fireball"}`), Text: "A bright streak flashes and explodes in a bloom of fire and flame."},
 		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
 		{Kind: "monster", Name: "Gundren Rockseeker", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "Gundren Rockseeker\nCommoner\nMountain Dwarf"},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{"name":"Longsword"}`), Text: "A martial melee weapon with a steel blade that deals slashing damage."},
@@ -598,12 +647,13 @@ func TestRetrieve_namedAdventureKeepsTheRulebooks(t *testing.T) {
 	defer st.Close()
 
 	// The complaint this guards against: a question asked while running a
-	// module is usually still a rules question, and the answer is in the PHB.
+	// module is usually still a rules question, and the answer is in the
+	// preferred core rules reprint.
 	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "what does fireball do", Limit: 8, Adventure: "LMoP"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) == 0 || hits[0].Name != "Fireball" || hits[0].Source != "PHB" {
+	if len(hits) == 0 || hits[0].Name != "Fireball" || hits[0].Source != "XPHB" {
 		t.Fatalf("an adventure-scoped rules question lost the rulebooks: %+v", hits)
 	}
 

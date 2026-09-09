@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -16,6 +17,7 @@ type Options struct {
 	Kind    string
 	Sources []string
 	Limit   int
+	Edition edition.Pref
 	SRD     bool
 }
 
@@ -40,6 +42,7 @@ func Ask(ctx context.Context, st *store.Store, cfg ask.Config, sess *Session, qu
 			Kind:          opt.Kind,
 			Sources:       opt.Sources,
 			Limit:         opt.Limit,
+			Edition:       opt.Edition,
 			SRD:           opt.SRD,
 			Adventure:     sess.Adventure,
 			AdventureOnly: sess.AdventureOnly,

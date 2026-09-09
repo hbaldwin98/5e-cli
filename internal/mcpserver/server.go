@@ -223,6 +223,7 @@ func (h *handler) semanticSearch(ctx context.Context, _ *mcp.CallToolRequest, in
 		Kind:    in.Kind,
 		Sources: in.Sources,
 		Limit:   in.Limit,
+		Edition: h.ed,
 		SRD:     h.srd,
 	}
 	if in.Adventure != "" {

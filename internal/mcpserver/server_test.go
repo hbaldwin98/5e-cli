@@ -218,7 +218,7 @@ func TestSemanticSearch_doesNotCallChat(t *testing.T) {
 	}))
 	t.Cleanup(api.Close)
 
-	session := connect(t, New(st, Options{Ask: ask.Config{
+	session := connect(t, New(st, Options{Edition: edition.Classic, Ask: ask.Config{
 		APIKey:     "test",
 		BaseURL:    api.URL,
 		EmbedModel: "fake-embed",
@@ -252,6 +252,28 @@ func TestSemanticSearch_doesNotCallChat(t *testing.T) {
 	first, _ := hits[0].(map[string]any)
 	if first["name"] != "Testbolt" {
 		t.Fatalf("first hit %#v", first)
+	}
+
+	res, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "semantic_search",
+		Arguments: map[string]any{
+			"query": "skill",
+			"limit": 3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %+v", res.Content)
+	}
+	hits, _ = toolJSON(t, res)["hits"].([]any)
+	if len(hits) == 0 {
+		t.Fatalf("no edition-filtered hits")
+	}
+	first, _ = hits[0].(map[string]any)
+	if first["name"] != "Testing" || first["source"] != "PHB" {
+		t.Fatalf("classic semantic search selected %#v", first)
 	}
 }
 

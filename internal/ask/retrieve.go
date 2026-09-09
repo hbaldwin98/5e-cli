@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/hbaldwin98/5e-cli/internal/edition"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -16,6 +17,7 @@ type Query struct {
 	Kind    string
 	Sources []string
 	Limit   int
+	Edition edition.Pref
 	SRD     bool
 	// Adventure adds one module's prose to the corpus. AdventureOnly narrows
 	// the query to that module instead, which answers "what does this module
@@ -101,7 +103,7 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err != nil {
 		return nil, err
 	}
-	ranked := rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK, adventures, restrict))
+	ranked := rankVectors(vecs, query, q, adventures, chunkFilter(q, sourceSet(q.Sources), srdOK, adventures, restrict))
 	if err := attachText(cfg.CachePath, ranked); err != nil {
 		return nil, err
 	}
@@ -217,7 +219,7 @@ func normalizeWords(s string) string {
 	return b.String()
 }
 
-func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool) []scoredChunk {
+func rankVectors(vecs []vector, query []float32, q Query, adventures []string, keep func(vector) bool) []scoredChunk {
 	// A long section is embedded as several parts; collapse them so one
 	// section cannot fill the result list with its own windows.
 	best := map[string]int{}
@@ -237,6 +239,7 @@ func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool
 		best[key] = len(ranked)
 		ranked = append(ranked, s)
 	}
+	ranked = editionChunks(ranked, q.Edition, adventures)
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
 			return ranked[i].score > ranked[j].score
@@ -247,6 +250,60 @@ func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool
 		ranked = ranked[:q.Limit]
 	}
 	return ranked
+}
+
+// editionChunks keeps the preferred reprint for each logical record. A source
+// without a preferred-edition counterpart stays available, matching get's
+// fallback behavior. Adventure sources are content scope, not rules-edition
+// reprints, so they are never removed by this preference.
+func editionChunks(chunks []scoredChunk, pref edition.Pref, adventures []string) []scoredChunk {
+	if pref == edition.All || len(chunks) == 0 {
+		return chunks
+	}
+	advOK := sourceSet(adventures)
+	isAdventure := func(c scoredChunk) bool {
+		return store.AdventureDoc(c.Kind) || (len(adventures) > 0 && advOK(c.Source))
+	}
+	sources := make(map[string][]string)
+	seen := make(map[string]map[string]bool)
+	for _, c := range chunks {
+		if isAdventure(c) {
+			continue
+		}
+		key := recordKey(c.Kind, c.Name)
+		if seen[key] == nil {
+			seen[key] = make(map[string]bool)
+		}
+		source := strings.ToLower(c.Source)
+		if !seen[key][source] {
+			seen[key][source] = true
+			sources[key] = append(sources[key], c.Source)
+		}
+	}
+
+	allowed := make(map[string]map[string]bool, len(sources))
+	for key, srcs := range sources {
+		allowed[key] = make(map[string]bool)
+		for _, src := range edition.Prefer(srcs, pref) {
+			allowed[key][strings.ToLower(src)] = true
+		}
+	}
+
+	out := make([]scoredChunk, 0, len(chunks))
+	for _, c := range chunks {
+		if isAdventure(c) {
+			out = append(out, c)
+			continue
+		}
+		if allowed[recordKey(c.Kind, c.Name)][strings.ToLower(c.Source)] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func recordKey(kind, name string) string {
+	return strings.ToLower(kind) + "\x00" + strings.ToLower(name)
 }
 
 func sourceSet(sources []string) func(string) bool {

@@ -16,6 +16,7 @@ func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "ask", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "spell", Name: "Fireball", Source: "XPHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater."},
@@ -72,10 +73,24 @@ func TestAsk_retrieveOnlyAndAnswer(t *testing.T) {
 	if len(hits) == 0 || hits[0]["name"] != "Fireball" {
 		t.Fatalf("retrieve: %s", out)
 	}
+	if hits[0]["source"] != "XPHB" {
+		t.Fatalf("default edition should prefer XPHB: %s", out)
+	}
 	for _, h := range hits {
 		if h["name"] == "Longsword" || h["name"] == "Holding Breath" {
 			t.Fatalf("srd leaked %s", out)
 		}
+	}
+
+	out, err = runCLI("--edition", "2014", "--srd", "--index", index, "--data", data, "--json", "ask", "--retrieve-only", "fire explosion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0]["name"] != "Fireball" || hits[0]["source"] != "PHB" {
+		t.Fatalf("classic edition should prefer PHB: %s", out)
 	}
 
 	out, err = runCLI("--index", index, "--data", data, "ask", "what does fireball do")

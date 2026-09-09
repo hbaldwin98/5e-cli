@@ -182,7 +182,7 @@ Do not invent a 5etools `npc` kind. `npc` is a role over appearances.
 
 ### `ask`
 
-Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
+Embed the query against cached vectors, retrieve entity/document chunks, then optionally call a chat model. `--edition` / `FIVE_E_EDITION` keeps the preferred reprint for each logical record when both editions are indexed, while retaining a source that has no preferred-edition counterpart. Citations are `(kind, name, source)` or book section IDs so the caller can `get` the full record. Do not build a second corpus: vectors are derived from the sqlite `text` columns.
 
 `--retrieve-only` skips generation and prints ranked chunks. That is the same path MCP `semantic_search` will call so an agent can reason without a nested LLM. `--srd` filters retrieved chunks to SRD entities; book and adventure document chunks are excluded. Default retrieve also skips adventure documents so module prose does not ground a rules question, until a module is named or detected. The embedding cache still covers the full corpus.
 
@@ -216,7 +216,7 @@ Naming a module does not restrict the answer to it: a question asked while runni
 
 An ongoing conversation over the same retrieval `ask` uses. `5e chat` with no question opens a REPL; `5e chat "question"` takes one turn and returns. Either way the transcript is saved and the next run continues it.
 
-A session holds three things: the transcript, the notes the user recorded, and an optional adventure scope. That scope *adds* the module's prose to the rules corpus; `--adventure-only` or `/adventure <id> only` is the narrower reading, and it is stored on the session because a conversation that excludes the rulebooks should keep excluding them. Retrieval knobs (`--kind`, `--source`, `--limit`) are per invocation, so a saved conversation never carries a filter from a previous run.
+A session holds three things: the transcript, the notes the user recorded, and an optional adventure scope. That scope *adds* the module's prose to the rules corpus; `--adventure-only` or `/adventure <id> only` is the narrower reading, and it is stored on the session because a conversation that excludes the rulebooks should keep excluding them. Retrieval knobs (`--edition`, `--kind`, `--source`, `--limit`) are per invocation, so a saved conversation never carries a filter from a previous run.
 
 **Sessions are conversation state, not a campaign model.** They store what was asked, what was answered, and facts the user wrote down. They do not model characters, initiative, inventory, or scheduling — that is still the campaign app's job, and this remains its data plane.
 
@@ -267,7 +267,7 @@ Unresolved tags stay in the edge table with a null target; ingest should not fai
 
 **Fluff.** Mechanical files and `fluff-*` files share `(name, source)`. Join at ingest. Search both. `get` shows mechanics first, lore second.
 
-**2014 vs 2024.** Treat `XPHB` / `XMM` / `XDMG` as distinct sources. `--edition` / `FIVE_E_EDITION` (`2014` | `2024` | `all`, default `2024`) only affects default `get` disambiguation and default search ranking, not what is ingested.
+**2014 vs 2024.** Treat `XPHB` / `XMM` / `XDMG` as distinct sources. `--edition` / `FIVE_E_EDITION` (`2014` | `2024` | `all`, default `2024`) affects default `get` disambiguation, search ranking, and ask/chat retrieval, not what is ingested. Adventure sources remain available when they are explicitly or automatically in scope.
 
 **SRD.** `--srd` is a query filter, not a second ingest. An entity is SRD when ingest saw a truthy `srd`, `srd52`, or `basicRules` field. Book and adventure sections are never SRD.
 

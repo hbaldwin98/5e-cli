@@ -99,6 +99,36 @@ func TestChat_replCarriesNotesAndHistoryIntoLaterTurns(t *testing.T) {
 	}
 }
 
+func TestChat_appliesEditionPreferenceToRetrieval(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	for _, args := range [][]string{
+		{"--edition", "2014", "--session", "classic"},
+		{"--edition", "2024", "--session", "modern"},
+	} {
+		command := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+		command = append(command, args...)
+		command = append(command, "what does fireball do")
+		if _, err := runCLI(command...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	msgs := api.messages()
+	if len(msgs) != 2 {
+		t.Fatalf("chat calls = %d, want 2", len(msgs))
+	}
+	classic, modern := msgs[0][len(msgs[0])-1].Content, msgs[1][len(msgs[1])-1].Content
+	if !strings.Contains(classic, "spell Fireball (PHB)") || strings.Contains(classic, "spell Fireball (XPHB)") {
+		t.Fatalf("classic chat prompt used the wrong edition:\n%s", classic)
+	}
+	if !strings.Contains(modern, "spell Fireball (XPHB)") || strings.Contains(modern, "spell Fireball (PHB)") {
+		t.Fatalf("modern chat prompt used the wrong edition:\n%s", modern)
+	}
+}
+
 func TestChat_replSurvivesAFailedTurn(t *testing.T) {
 	index, api := chatFixture(t)
 	api.fail(true)
@@ -273,6 +303,7 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 	index = filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "chat", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "spell", Name: "Fireball", Source: "XPHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
 		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
 	}, []parse.Document{

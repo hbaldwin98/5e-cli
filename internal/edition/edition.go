@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Pref is a 5e rules-edition preference for get/search.
+// Pref is a 5e rules-edition preference for lookup and retrieval.
 type Pref string
 
 const (
