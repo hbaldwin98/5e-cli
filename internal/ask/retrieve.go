@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -70,7 +71,16 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err := ensureCache(ctx, st, cfg); err != nil {
 		return nil, err
 	}
-	vecs, err := loadVectors(cfg.CachePath, vectorScope{Kind: q.Kind, Sources: q.Sources, Adventure: q.Adventure})
+	adventures, restrict, err := adventureScope(st, q)
+	if err != nil {
+		return nil, err
+	}
+	vecs, err := loadVectors(cfg.CachePath, vectorScope{
+		Kind:       q.Kind,
+		Sources:    q.Sources,
+		Adventures: adventures,
+		Restrict:   restrict,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +97,7 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err != nil {
 		return nil, err
 	}
-	ranked := rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK))
+	ranked := rankVectors(vecs, query, q, chunkFilter(q, sourceSet(q.Sources), srdOK, adventures, restrict))
 	if err := attachText(cfg.CachePath, ranked); err != nil {
 		return nil, err
 	}
@@ -117,7 +127,8 @@ func chunkKey(kind, name, source string) string {
 	return strings.ToLower(kind) + "\x00" + strings.ToLower(name) + "\x00" + strings.ToLower(source)
 }
 
-func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source string) bool) func(vector) bool {
+func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source string) bool, adventures []string, restrict bool) func(vector) bool {
+	advOK := sourceSet(adventures)
 	return func(v vector) bool {
 		if q.Kind != "" && !strings.EqualFold(v.Kind, q.Kind) {
 			return false
@@ -126,13 +137,75 @@ func chunkFilter(q Query, srcOK func(string) bool, srdOK func(kind, name, source
 			return false
 		}
 		if store.AdventureDoc(v.Kind) {
-			return q.Adventure != "" && strings.EqualFold(v.Source, q.Adventure) && srdOK(v.Kind, v.Name, v.Source)
+			return len(adventures) > 0 && advOK(v.Source) && srdOK(v.Kind, v.Name, v.Source)
 		}
-		if q.Adventure != "" && !strings.EqualFold(v.Source, q.Adventure) {
+		if restrict && !advOK(v.Source) {
 			return false
 		}
 		return srdOK(v.Kind, v.Name, v.Source)
 	}
+}
+
+// adventureScope decides which adventures the query may see. An explicit
+// Adventure restricts the answer to that module. Otherwise the question is
+// checked for names that occur only inside adventures, which lets "who is
+// Gundren Rockseeker" reach LMoP without the caller knowing it is an LMoP
+// NPC; those modules are added to the corpus rather than replacing it.
+func adventureScope(st *store.Store, q Query) (adventures []string, restrict bool, err error) {
+	if q.Adventure != "" {
+		return []string{q.Adventure}, true, nil
+	}
+	named, err := namedAdventures(st, q.Text)
+	return named, false, err
+}
+
+func namedAdventures(st *store.Store, text string) ([]string, error) {
+	refs, err := st.AdventureNames()
+	if err != nil {
+		return nil, err
+	}
+	haystack := normalizeWords(text)
+	if strings.TrimSpace(haystack) == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, ref := range refs {
+		// normalizeWords pads both sides, so plain containment is already the
+		// whole-word test.
+		needle := normalizeWords(ref.Name)
+		if strings.TrimSpace(needle) == "" || !strings.Contains(haystack, needle) {
+			continue
+		}
+		if key := strings.ToLower(ref.Source); !seen[key] {
+			seen[key] = true
+			out = append(out, ref.Source)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// normalizeWords lowercases and space-pads a phrase so containment is a
+// whole-word test: "sun" must not match "Sunless Citadel".
+func normalizeWords(s string) string {
+	var b strings.Builder
+	b.WriteByte(' ')
+	prevSpace := true
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'':
+			b.WriteRune(r)
+			prevSpace = false
+		case !prevSpace:
+			b.WriteByte(' ')
+			prevSpace = true
+		}
+	}
+	if !prevSpace {
+		b.WriteByte(' ')
+	}
+	return b.String()
 }
 
 func rankVectors(vecs []vector, query []float32, q Query, keep func(vector) bool) []scoredChunk {

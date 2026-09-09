@@ -162,10 +162,13 @@ func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 	index := filepath.Join(t.TempDir(), "index.sqlite")
 	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
 		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Fireball"}`), Text: "A bright streak flashes and explodes in a bloom of fire and flame."},
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+		{Kind: "monster", Name: "Gundren Rockseeker", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "Gundren Rockseeker\nCommoner\nMountain Dwarf"},
 		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{"name":"Longsword"}`), Text: "A martial melee weapon with a steel blade that deals slashing damage."},
 	}, []parse.Document{
 		{Kind: "bookSection", ParentID: "PHB", Section: "Holding Breath", JSON: json.RawMessage(`{}`), Text: "A creature can hold its breath underwater before it starts suffocating."},
 		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "Goblins nest in the Cragmaw hideout in the hills."},
+		{Kind: "adventureLocation", ParentID: "LMoP", Section: "Overview", JSON: json.RawMessage(`{}`), Text: "Gundren Rockseeker, a dwarf prospector, hired the party to escort supplies to Phandalin."},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +244,7 @@ func (f *fakeAPI) handler() http.Handler {
 
 func keywordEmbed(text string) []float32 {
 	t := strings.ToLower(text)
-	v := []float32{0.05, 0.05, 0.05, 0.05}
+	v := []float32{0.05, 0.05, 0.05, 0.05, 0.05}
 	add := func(i int, words ...string) {
 		for _, w := range words {
 			if strings.Contains(t, w) {
@@ -253,6 +256,7 @@ func keywordEmbed(text string) []float32 {
 	add(1, "sword", "blade", "slash", "steel")
 	add(2, "breath", "suffocat", "underwater")
 	add(3, "goblin", "hideout", "cragmaw")
+	add(4, "gundren", "rockseeker", "dwarf", "prospector")
 	return v
 }
 
@@ -414,12 +418,23 @@ func TestVectorScope_excludesAdventureDocsByDefault(t *testing.T) {
 	}
 }
 
-func TestVectorScope_adventureNarrowsToThatSource(t *testing.T) {
-	where, args := vectorScope{Adventure: "LMoP"}.where()
+func TestVectorScope_explicitAdventureRestrictsToThatSource(t *testing.T) {
+	where, args := vectorScope{Adventures: []string{"LMoP"}, Restrict: true}.where()
 	if strings.Contains(where, "NOT IN") {
 		t.Fatalf("an adventure query must not exclude module prose: %q", where)
 	}
 	if len(args) != 1 || args[0] != "LMoP" {
+		t.Fatalf("args %v", args)
+	}
+}
+
+func TestVectorScope_detectedAdventureAddsProseWithoutRestricting(t *testing.T) {
+	where, args := vectorScope{Adventures: []string{"LMoP", "PaBTSO"}}.where()
+	// Rulebook chunks must survive, so this is a union rather than a filter.
+	if !strings.Contains(where, "OR source") || !strings.Contains(where, "NOT IN") {
+		t.Fatalf("want a union of the normal corpus and the module prose: %q", where)
+	}
+	if len(args) != 2 {
 		t.Fatalf("args %v", args)
 	}
 }
@@ -459,5 +474,104 @@ func TestRetrieve_adventureScopeReachesModuleProse(t *testing.T) {
 	}
 	if hits[0].Snippet == "" {
 		t.Fatal("snippet is empty; text was not attached after ranking")
+	}
+}
+
+func TestNormalizeWords_isAWholeWordTest(t *testing.T) {
+	h := normalizeWords("Who is Gundren Rockseeker?")
+	if !strings.Contains(h, " gundren rockseeker ") {
+		t.Fatalf("normalized %q", h)
+	}
+	// A bare word must not match inside a longer one.
+	if strings.Contains(normalizeWords("The Sunless Citadel"), " sun ") {
+		t.Fatal("sun matched inside sunless")
+	}
+	if got := normalizeWords("  "); got != " " {
+		t.Fatalf("blank input %q", got)
+	}
+}
+
+func TestNamedAdventures_detectsModuleFromTheQuestion(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+	_ = cfg
+
+	got, err := namedAdventures(st, "who is Gundren Rockseeker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "LMoP" {
+		t.Fatalf("want LMoP, got %v", got)
+	}
+
+	// A rules question must not pull in module prose.
+	got, err = namedAdventures(st, "how much damage does fireball do")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("rules question scoped to %v", got)
+	}
+}
+
+func TestAdventureScope_explicitRestrictsAndDetectedDoesNot(t *testing.T) {
+	st, _, _ := harness(t)
+	defer st.Close()
+
+	advs, restrict, err := adventureScope(st, Query{Text: "anything", Adventure: "LMoP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restrict || len(advs) != 1 {
+		t.Fatalf("explicit scope should restrict: %v %v", advs, restrict)
+	}
+
+	advs, restrict, err = adventureScope(st, Query{Text: "who is Gundren Rockseeker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restrict {
+		t.Fatal("a detected adventure must not restrict the corpus")
+	}
+	if len(advs) != 1 || advs[0] != "LMoP" {
+		t.Fatalf("detected %v", advs)
+	}
+}
+
+func TestRetrieve_detectedAdventureReachesProseAndKeepsRulebooks(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "who is Gundren Rockseeker", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawProse, sawRulebook bool
+	for _, h := range hits {
+		if h.Kind == "adventureSection" || h.Kind == "adventureLocation" {
+			sawProse = true
+		}
+		if h.Source == "PHB" {
+			sawRulebook = true
+		}
+	}
+	if !sawProse {
+		t.Fatalf("detection did not reach module prose: %+v", hits)
+	}
+	if !sawRulebook {
+		t.Fatalf("detection should widen the corpus, not replace it: %+v", hits)
+	}
+}
+
+func TestNamedAdventures_matchesAnAdventureTitle(t *testing.T) {
+	st, _, _ := harness(t)
+	defer st.Close()
+
+	got, err := namedAdventures(st, "what happens in the Lost Mine of Testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "LMoP" {
+		t.Fatalf("want LMoP from the title, got %v", got)
 	}
 }

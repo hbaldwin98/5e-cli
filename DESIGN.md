@@ -193,7 +193,9 @@ Provider is any OpenAI-compatible host:
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
 
-**Adventure scope.** `Query.Adventure` is what lets retrieval see module prose. Reachable from `5e ask --adventure` and MCP `semantic_search`'s `adventure` argument; without it an adventure-only NPC has no retrievable text beyond a name-and-race entity row.
+**Adventure scope.** Module prose is reachable two ways. `5e ask --adventure` and MCP `semantic_search`'s `adventure` argument *restrict* the answer to one module. Otherwise the question is matched against `adventure_names`, a table of names that occur only inside adventures, and any module it names has its prose *added* to the normal corpus — a union, so the rulebooks still rank. On a full corpus that costs about 950 extra vectors rather than all 29,626.
+
+`adventure_names` is derived at ingest, not queried live: the equivalent correlated query costs ~2.8s. Two guards keep it conservative — a name that also appears outside adventures is dropped (removing reprints like `Commoner` and `Spy`), as is any name under seven characters (removing `Gem`, `Monk`, `Sun`). Adventure titles are included so "what happens in Curse of Strahd" scopes too. The guards cost some real NPCs, notably `Strahd von Zarovich`, whose name also appears in a book-classified source; `--adventure` covers those.
 
 **Vector scope.** The kind, source, and adventure filters run in sqlite before rows are read, and chunk text is fetched only for the chunks that rank. A default ask reads 22k vectors rather than the full 52k, since module prose is excluded anyway.
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,14 @@ CREATE TABLE appearances (
   location  TEXT NOT NULL DEFAULT '',
   UNIQUE (adventure, role, kind, name, source, chapter, location)
 );
+
+CREATE TABLE adventure_names (
+  name      TEXT NOT NULL,
+  adventure TEXT NOT NULL,
+  UNIQUE (name, adventure)
+);
+
+CREATE INDEX adventure_names_name ON adventure_names (name COLLATE NOCASE);
 
 CREATE INDEX edges_from        ON edges (from_id);
 CREATE INDEX edges_to          ON edges (to_kind, to_name);
@@ -209,7 +218,112 @@ func insertRows(tx *sql.Tx, entities []parse.Entity, docs []parse.Document, appe
 	if err := insertDocuments(tx, docs); err != nil {
 		return err
 	}
+	if err := insertAdventureNames(tx, entities); err != nil {
+		return err
+	}
 	return insertAppearances(tx, appearances)
+}
+
+func insertAdventureNames(tx *sql.Tx, entities []parse.Entity) error {
+	ins, err := tx.Prepare(`INSERT OR IGNORE INTO adventure_names (name, adventure) VALUES (?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer ins.Close()
+	for _, ref := range AdventureExclusiveNames(entities) {
+		if _, err := ins.Exec(ref.Name, ref.Source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AdventureExclusiveNames lists entity names that occur only inside adventure
+// sources, paired with the adventure they belong to. It backs the lookup that
+// scopes a question like "who is Gundren Rockseeker" to the right module.
+//
+// Two guards keep the list from dragging module prose into rules answers. A
+// name that also exists outside adventures is dropped, which removes reprints
+// like Spy or Commoner. A name that is neither multi-word nor reasonably long
+// is dropped too, which removes bare words such as Gem, Monk, Sun, and Star
+// that would otherwise match an ordinary rules question.
+func AdventureExclusiveNames(entities []parse.Entity) []EntityRef {
+	adventures := map[string]bool{}
+	for _, e := range entities {
+		if e.Kind == "adventure" {
+			adventures[strings.ToLower(e.Source)] = true
+		}
+	}
+	inAdventure := map[string]map[string]bool{}
+	names := map[string]string{}
+	outside := map[string]bool{}
+	for _, e := range entities {
+		if e.Kind == "adventure" || !distinctiveName(e.Name) {
+			continue
+		}
+		key := strings.ToLower(e.Name)
+		if !adventures[strings.ToLower(e.Source)] {
+			outside[key] = true
+			continue
+		}
+		if inAdventure[key] == nil {
+			inAdventure[key] = map[string]bool{}
+		}
+		inAdventure[key][e.Source] = true
+		names[key] = e.Name
+	}
+	var out []EntityRef
+	for key, sources := range inAdventure {
+		if outside[key] {
+			continue
+		}
+		for source := range sources {
+			out = append(out, EntityRef{Name: names[key], Source: source})
+		}
+	}
+	// An adventure's own title names it as surely as one of its NPCs does, so
+	// "what happens in Curse of Strahd" scopes the same way.
+	for _, e := range entities {
+		if e.Kind == "adventure" && distinctiveName(e.Name) {
+			out = append(out, EntityRef{Name: e.Name, Source: e.Source})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Source < out[j].Source
+	})
+	return out
+}
+
+// minDistinctiveName is the shortest name treated as evidence that a question
+// is about a particular module. Gem, Key, Monk, Spy, Sun, and Star all sit
+// below it; Gundren Rockseeker and Nezznar sit above.
+const minDistinctiveName = 7
+
+// distinctiveName reports whether a name is specific enough that seeing it in
+// a question is real evidence the question is about that module.
+func distinctiveName(name string) bool {
+	return len([]rune(strings.TrimSpace(name))) >= minDistinctiveName
+}
+
+// AdventureNames returns the precomputed adventure-exclusive names.
+func (s *Store) AdventureNames() ([]EntityRef, error) {
+	rows, err := s.DB.Query(`SELECT name, adventure FROM adventure_names`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EntityRef
+	for rows.Next() {
+		var ref EntityRef
+		if err := rows.Scan(&ref.Name, &ref.Source); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
 }
 
 func insertEntities(tx *sql.Tx, entities []parse.Entity) error {

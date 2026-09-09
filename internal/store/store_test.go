@@ -371,3 +371,40 @@ func TestFilteredNames_narrowsInSQL(t *testing.T) {
 		}
 	}
 }
+
+func TestAdventureExclusiveNames_guardsAgainstGenericNames(t *testing.T) {
+	ents := []parse.Entity{
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP"},
+		{Kind: "adventure", Name: "CoT", Source: "CoT"},
+		{Kind: "monster", Name: "Gundren Rockseeker", Source: "LMoP"},
+		{Kind: "monster", Name: "Gundren Rockseeker", Source: "PaBTSO"},
+		{Kind: "adventure", Name: "Peril at Phandalin", Source: "PaBTSO"},
+		// Reprinted from a rulebook, so seeing it in a question means nothing.
+		{Kind: "monster", Name: "Commoner", Source: "LMoP"},
+		{Kind: "monster", Name: "Commoner", Source: "MM"},
+		// Too short to be evidence of anything.
+		{Kind: "item", Name: "Gem", Source: "LMoP"},
+		{Kind: "monster", Name: "Klarg", Source: "LMoP"},
+	}
+	got := AdventureExclusiveNames(ents)
+	index := map[string][]string{}
+	for _, ref := range got {
+		index[ref.Name] = append(index[ref.Name], ref.Source)
+	}
+
+	if len(index["Gundren Rockseeker"]) != 2 {
+		t.Fatalf("want Gundren in both modules, got %v", index["Gundren Rockseeker"])
+	}
+	if _, ok := index["Commoner"]; ok {
+		t.Fatal("a rulebook reprint must not scope a question to a module")
+	}
+	for _, short := range []string{"Gem", "Klarg", "CoT"} {
+		if _, ok := index[short]; ok {
+			t.Fatalf("%q is too short to be distinctive", short)
+		}
+	}
+	// An adventure's own title should name it.
+	if len(index["Lost Mine of Testing"]) != 1 || index["Lost Mine of Testing"][0] != "LMoP" {
+		t.Fatalf("adventure title missing: %v", index["Lost Mine of Testing"])
+	}
+}

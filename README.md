@@ -166,9 +166,23 @@ chat model:
 ```
 
 Adventure prose is excluded by default so module text does not ground a rules
-question. That also puts adventure-only NPCs and locations out of reach:
-`--adventure` scopes the answer to one module and is what makes questions
-about its characters answerable.
+question. When the question names something that only exists inside an
+adventure — an NPC like Gundren Rockseeker, or an adventure's own title — that
+module's prose is added to the corpus automatically, so `5e ask "who is
+Gundren Rockseeker"` works without naming LMoP.
+
+Detection is deliberately conservative. A name is only treated as evidence
+when it is seven characters or longer and does not also appear outside
+adventures, so ordinary rules vocabulary (`Commoner`, `Spy`, `Monk`, `Gem`)
+never drags module text into a rules answer. Short or reprinted names, and
+anything detection misses, still need `--adventure`:
+
+```sh
+5e ask --adventure CoS "who is Strahd von Zarovich"
+```
+
+`--adventure` also *restricts* the answer to that module, where detection only
+widens the corpus.
 
 The first run embeds the whole corpus into a sidecar cache next to the index.
 The cache is keyed by data fingerprint, base URL, embed model, and token

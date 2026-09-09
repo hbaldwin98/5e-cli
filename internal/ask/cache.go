@@ -93,11 +93,19 @@ type vector struct {
 
 // vectorScope is the part of a query that sqlite can apply before a row is
 // read. SRD status lives in the entity index, not here, so it stays in Go.
+//
+// Adventures behaves differently depending on Restrict. An explicit
+// --adventure restricts the whole answer to that module. An auto-detected
+// adventure only adds that module's prose to the normal corpus, so a question
+// mentioning a module NPC can still cite the rulebooks.
 type vectorScope struct {
-	Kind      string
-	Sources   []string
-	Adventure string
+	Kind       string
+	Sources    []string
+	Adventures []string
+	Restrict   bool
 }
+
+const adventureDocKinds = `('adventureSection', 'adventureLocation')`
 
 // where builds the prefilter. With no adventure in scope, adventure document
 // kinds are excluded outright — on a full corpus that is more than half the
@@ -110,24 +118,36 @@ func (v vectorScope) where() (string, []any) {
 		args = append(args, v.Kind)
 	}
 	if len(v.Sources) > 0 {
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(v.Sources)), ",")
-		clauses = append(clauses, `source COLLATE NOCASE IN (`+ph+`)`)
+		clauses = append(clauses, `source COLLATE NOCASE IN (`+placeholders(len(v.Sources))+`)`)
 		for _, src := range v.Sources {
 			args = append(args, src)
 		}
 	}
-	if v.Adventure == "" {
-		clauses = append(clauses, `kind NOT IN ('adventureSection', 'adventureLocation')`)
-	} else {
+	switch {
+	case len(v.Adventures) == 0:
+		clauses = append(clauses, `kind NOT IN `+adventureDocKinds)
+	case v.Restrict:
 		// Every kept row must belong to the adventure: its documents by the
 		// document branch, its entities by the source branch.
-		clauses = append(clauses, `source = ? COLLATE NOCASE`)
-		args = append(args, v.Adventure)
+		clauses = append(clauses, `source COLLATE NOCASE IN (`+placeholders(len(v.Adventures))+`)`)
+		for _, adv := range v.Adventures {
+			args = append(args, adv)
+		}
+	default:
+		clauses = append(clauses, `(kind NOT IN `+adventureDocKinds+
+			` OR source COLLATE NOCASE IN (`+placeholders(len(v.Adventures))+`))`)
+		for _, adv := range v.Adventures {
+			args = append(args, adv)
+		}
 	}
 	if len(clauses) == 0 {
 		return "", nil
 	}
 	return ` WHERE ` + strings.Join(clauses, ` AND `), args
+}
+
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 func ensureCache(ctx context.Context, st *store.Store, cfg Config) error {
