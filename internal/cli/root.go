@@ -182,7 +182,7 @@ func getCmd(opt *options) *cobra.Command {
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)
 			}
-			return writeEntity(cmd, opt.JSON, ents[0])
+			return writeEntity(cmd, st, opt.JSON, ents[0])
 		},
 	}
 	cmd.Flags().StringVar(&source, "source", "", "disambiguate by 5etools source id (PHB, XPHB, MM, …)")
@@ -912,7 +912,7 @@ func runAdventureGet(cmd *cobra.Command, opt *options, st *store.Store, adv stor
 	if len(ents) > 1 {
 		return writeAmbiguous(cmd, opt.JSON, ents)
 	}
-	return writeEntity(cmd, opt.JSON, ents[0])
+	return writeEntity(cmd, st, opt.JSON, ents[0])
 }
 
 func mcpCmd(opt *options) *cobra.Command {
@@ -1208,7 +1208,7 @@ func splitSources(in []string) []string {
 	return out
 }
 
-func writeEntity(cmd *cobra.Command, asJSON bool, e store.Entity) error {
+func writeEntity(cmd *cobra.Command, st *store.Store, asJSON bool, e store.Entity) error {
 	if asJSON {
 		out := map[string]any{
 			"kind":   e.Kind,
@@ -1221,7 +1221,7 @@ func writeEntity(cmd *cobra.Command, asJSON bool, e store.Entity) error {
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	return writeHumanEntity(cmd.OutOrStdout(), e)
+	return writeHumanEntity(cmd.OutOrStdout(), st, e)
 }
 
 func writeAmbiguous(cmd *cobra.Command, asJSON bool, ents []store.Entity) error {

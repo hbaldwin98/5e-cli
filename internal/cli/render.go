@@ -29,20 +29,112 @@ const statblockCardWidth = 96
 // piped output. Both paths share internal/statblock's field extraction, so
 // neither can drift from what a chat model sees through the get/encounter
 // tools.
-func writeHumanEntity(w io.Writer, e store.Entity) error {
+func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity) error {
 	obj, err := statblock.Decode(e.JSON)
 	if err != nil {
 		return fmt.Errorf("decode %s %q: %w", e.Kind, e.Name, err)
 	}
 	if stylingEnabled(w) {
-		_, err := io.WriteString(w, statblock.RenderCard(e.Kind, e.Name, e.Source, obj, statblockCardWidth)+"\n")
-		return err
+		if _, err := io.WriteString(w, statblock.RenderCard(e.Kind, e.Name, e.Source, obj, statblockCardWidth)+"\n"); err != nil {
+			return err
+		}
+	} else {
+		var markdown bytes.Buffer
+		fmt.Fprintf(&markdown, "# %s\n\n*%s | %s*\n\n", e.Name, e.Kind, e.Source)
+		statblock.Render(&markdown, e.Kind, obj)
+		if err := renderMarkdown(w, markdown.String()); err != nil {
+			return err
+		}
 	}
+	return writeClassFeatureDetail(w, st, e.Kind, obj)
+}
 
-	var markdown bytes.Buffer
-	fmt.Fprintf(&markdown, "# %s\n\n*%s | %s*\n\n", e.Name, e.Kind, e.Source)
-	statblock.Render(&markdown, e.Kind, obj)
-	return renderMarkdown(w, markdown.String())
+// writeClassFeatureDetail appends a class's or subclass's referenced
+// features' actual rules text below the base card/block, and — for a class
+// — the subclasses that exist for it. classFeatures/subclassFeatures in an
+// entity's own JSON carry only name/level references
+// (statblock.ClassFeatureRefs); the rules text lives in separate
+// classFeature/subclassFeature entities that only a store lookup can
+// resolve, which is why this isn't part of statblock.Render itself.
+func writeClassFeatureDetail(w io.Writer, st *store.Store, kind string, obj map[string]any) error {
+	if st == nil || (kind != "class" && kind != "subclass") {
+		return nil
+	}
+	refsKey := "classFeatures"
+	if kind == "subclass" {
+		refsKey = "subclassFeatures"
+	}
+	if refs := statblock.ClassFeatureRefs(obj[refsKey]); len(refs) > 0 {
+		var b bytes.Buffer
+		b.WriteString("\n## Feature Details\n")
+		statblock.RenderFeatureDetails(&b, refs, classFeatureLookup(st))
+		if err := renderMarkdown(w, b.String()); err != nil {
+			return err
+		}
+	}
+	if kind != "class" {
+		return nil
+	}
+	className, _ := obj["name"].(string)
+	subclasses := classSubclasses(st, className)
+	if len(subclasses) == 0 {
+		return nil
+	}
+	var b bytes.Buffer
+	b.WriteString("\n## Subclasses\n\n")
+	for _, sc := range subclasses {
+		fmt.Fprintf(&b, "- %s (%s) — `5e get subclass \"%s\" --source %s` for its full features\n", sc.Name, sc.Source, sc.Name, sc.Source)
+	}
+	return renderMarkdown(w, b.String())
+}
+
+// classFeatureLookup adapts st.Lookup to statblock.FeatureLookup so
+// RenderFeatureDetails can resolve a classFeature/subclassFeature
+// reference's own entity without internal/statblock importing store
+// directly — it stays a pure JSON transform shared by the CLI and the chat
+// tool-calling layer.
+func classFeatureLookup(st *store.Store) statblock.FeatureLookup {
+	return func(kind, name, source string) (map[string]any, bool) {
+		ents, err := st.Lookup(kind, name, source)
+		if err != nil || len(ents) == 0 {
+			return nil, false
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			return nil, false
+		}
+		return obj, true
+	}
+}
+
+// classSubclasses finds every subclass entity for a class by name. subclass
+// rows carry no dedicated store filter for their parent class (only
+// FilteredNames' generic kind/source/SRD filter), so the only way to find
+// them is to check each subclass candidate's own className field.
+func classSubclasses(st *store.Store, className string) []store.Entity {
+	if className == "" {
+		return nil
+	}
+	names, err := st.FilteredNames(store.NameFilter{Kind: "subclass"})
+	if err != nil {
+		return nil
+	}
+	var out []store.Entity
+	for _, n := range names {
+		ents, err := st.Lookup("subclass", n.Name, n.Source)
+		if err != nil || len(ents) == 0 {
+			continue
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			continue
+		}
+		cn, _ := obj["className"].(string)
+		if strings.EqualFold(cn, className) {
+			out = append(out, ents[0])
+		}
+	}
+	return out
 }
 
 func writeSearchResults(w io.Writer, hits []search.Hit) error {

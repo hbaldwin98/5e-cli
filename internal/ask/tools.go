@@ -174,8 +174,78 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 		if text := statblock.RenderString(e.Kind, obj); strings.TrimSpace(text) != "" {
 			result["statblock"] = text
 		}
+		// A class/subclass's own JSON only names its features
+		// ("Fighting Style|Fighter|XPHB|1"), not their rules text — that
+		// lives in separate classFeature/subclassFeature entities. Resolve
+		// and attach it (and, for a class, its subclasses) the same way
+		// `5e get` does, so the model reads the actual mechanics instead of
+		// a bare feature-name list.
+		if e.Kind == "class" || e.Kind == "subclass" {
+			result["featureDetails"] = classFeatureDetailText(st, e.Kind, obj)
+			if e.Kind == "class" {
+				if name, _ := obj["name"].(string); name != "" {
+					result["subclasses"] = classSubclassNames(st, name)
+				}
+			}
+		}
 	}
 	return toJSON(result)
+}
+
+// classFeatureDetailText renders a class's or subclass's referenced
+// features' actual rules text via a store lookup — see writeClassFeatureDetail
+// in internal/cli/render.go, which does the same resolution for the CLI's
+// human output; both exist because the text lives outside the class's own
+// JSON and statblock stays store-agnostic.
+func classFeatureDetailText(st *store.Store, kind string, obj map[string]any) string {
+	refsKey := "classFeatures"
+	if kind == "subclass" {
+		refsKey = "subclassFeatures"
+	}
+	refs := statblock.ClassFeatureRefs(obj[refsKey])
+	if len(refs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	statblock.RenderFeatureDetails(&b, refs, func(kind, name, source string) (map[string]any, bool) {
+		ents, err := st.Lookup(kind, name, source)
+		if err != nil || len(ents) == 0 {
+			return nil, false
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			return nil, false
+		}
+		return obj, true
+	})
+	return b.String()
+}
+
+// classSubclassNames finds every subclass name for a class the same way
+// writeClassFeatureDetail's classSubclasses does — subclass rows carry no
+// dedicated store filter for their parent class, so each candidate's own
+// className field has to be checked.
+func classSubclassNames(st *store.Store, className string) []string {
+	names, err := st.FilteredNames(store.NameFilter{Kind: "subclass"})
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, n := range names {
+		ents, err := st.Lookup("subclass", n.Name, n.Source)
+		if err != nil || len(ents) == 0 {
+			continue
+		}
+		obj, err := statblock.Decode(ents[0].JSON)
+		if err != nil {
+			continue
+		}
+		cn, _ := obj["className"].(string)
+		if strings.EqualFold(cn, className) {
+			out = append(out, fmt.Sprintf("%s (%s)", n.Name, n.Source))
+		}
+	}
+	return out
 }
 
 type toolSearchArgs struct {

@@ -150,14 +150,24 @@ func renderRace(w io.Writer, obj map[string]any) {
 	writeField(w, "Ability Scores", raceAbilities(obj["ability"]))
 }
 
-// renderClass writes a class's mechanical summary — hit die, primary
-// ability, saving throws, starting proficiencies — followed by its starting
-// equipment and its full feature progression. classFeatures/startingEquipment
-// live outside obj["entries"] (5etools links class features by id rather
-// than embedding their text), so unlike every other kind, class gets nothing
-// from Render's generic entries walk unless this writes it explicitly.
+// renderClass writes a class's (or, called with a subclass's own obj and
+// obj["subclassFeatures"], a subclass's) mechanical summary — hit die,
+// primary ability, saving throws, starting proficiencies, hit points at
+// 1st/higher level, proficiency bonus, spellcasting — followed by its
+// starting equipment, its spell-slot/cantrip tables if it casts, and its
+// full feature-name progression. classFeatures/startingEquipment/
+// classTableGroups live outside obj["entries"] (5etools links class
+// features by id rather than embedding their text, and per-level resource
+// tables are their own field), so unlike every other kind, class gets
+// nothing from Render's generic entries walk unless this writes it
+// explicitly. The referenced features' own rules text is not embedded here
+// — see ClassFeatureRefs and RenderFeatureDetails, which need a store
+// lookup this package doesn't have.
 func renderClass(w io.Writer, obj map[string]any) {
 	writeField(w, "Hit Die", classHitDie(obj["hd"]))
+	writeField(w, "Hit Points at 1st Level", classHitPointsFirst(obj))
+	writeField(w, "Hit Points at Higher Levels", classHitPointsHigher(obj))
+	writeField(w, "Proficiency Bonus", proficiencyBonusByLevel)
 	writeField(w, "Primary Ability", abilityEitherList(obj["primaryAbility"]))
 	writeField(w, "Saving Throws", abilityAbbrevList(obj["proficiency"]))
 	if sp, ok := obj["startingProficiencies"].(map[string]any); ok {
@@ -166,13 +176,124 @@ func renderClass(w io.Writer, obj map[string]any) {
 		writeField(w, "Tools", profList(sp["tools"]))
 		writeField(w, "Skills", profList(sp["skills"]))
 	}
+	writeField(w, "Spellcasting Ability", abilityFullNameFromAbbrev(obj["spellcastingAbility"]))
+	writeField(w, "Spellcasting", castingProgressionLabel(obj["casterProgression"]))
 	writeField(w, "Subclass", stringValue(obj["subclassTitle"]))
 	if text := classEquipmentText(obj); text != "" {
 		fmt.Fprintf(w, "\n## Starting Equipment\n\n%s\n", text)
 	}
+	for _, table := range classTableGroupsMarkdown(obj["classTableGroups"]) {
+		fmt.Fprintf(w, "\n%s", table)
+	}
 	if table := classLevelTable(obj["classFeatures"]); table != "" {
 		fmt.Fprintf(w, "\n## Features by Level\n\n%s\n", table)
 	}
+	if table := classLevelTable(obj["subclassFeatures"]); table != "" {
+		fmt.Fprintf(w, "\n## Subclass Features by Level\n\n%s\n", table)
+	}
+}
+
+// proficiencyBonusByLevel is the same universal table for every class (5e
+// ties proficiency bonus to character level, not class), so it never
+// appears in any class's own JSON.
+const proficiencyBonusByLevel = "+2 (levels 1-4), +3 (5-8), +4 (9-12), +5 (13-16), +6 (17-20)"
+
+// classHitPointsFirst and classHitPointsHigher are the SRD's standard HP
+// formulas derived from the class's hit die — 5etools doesn't store these
+// as text since they follow mechanically from hd alone.
+func classHitPointsFirst(obj map[string]any) string {
+	faces := integer(mapValue(obj["hd"])["faces"])
+	if faces == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d + your Constitution modifier", faces)
+}
+
+func classHitPointsHigher(obj map[string]any) string {
+	faces := integer(mapValue(obj["hd"])["faces"])
+	if faces == 0 {
+		return ""
+	}
+	name := stringValue(obj["name"])
+	if name == "" {
+		name = "class"
+	}
+	avg := faces/2 + 1
+	return fmt.Sprintf("1d%d (or %d) + your Constitution modifier per %s level after 1st", faces, avg, name)
+}
+
+func mapValue(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+// castingProgressionLabel renders casterProgression ("full", "1/2", "1/3",
+// "pact") as a readable label; empty for a non-caster (the field is simply
+// absent).
+func castingProgressionLabel(v any) string {
+	switch stringValue(v) {
+	case "full":
+		return "Full caster"
+	case "1/2":
+		return "Half caster"
+	case "1/3":
+		return "Third caster"
+	case "pact":
+		return "Pact magic"
+	case "":
+		return ""
+	default:
+		return title(stringValue(v))
+	}
+}
+
+func abilityFullNameFromAbbrev(v any) string {
+	if s := stringValue(v); s != "" {
+		return abilityFullName(s)
+	}
+	return ""
+}
+
+// classTableGroupsMarkdown renders classTableGroups (a class's per-level
+// resource tables — spell slots per spell level, cantrips known, a
+// class-specific resource like Fighter's Weapon Mastery count) as Markdown
+// tables, prefixed with a Level column since 5etools' own rows omit it.
+// Column labels routinely carry a {@filter Label|...} tag (5etools' own
+// cross-reference into its spell list UI); renderString strips it to the
+// plain label.
+func classTableGroupsMarkdown(v any) []string {
+	groups, _ := v.([]any)
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		group := mapValue(g)
+		if group == nil {
+			continue
+		}
+		rows, ok := group["rows"].([]any)
+		if !ok {
+			rows, ok = group["rowsSpellProgression"].([]any)
+		}
+		if !ok || len(rows) == 0 {
+			continue
+		}
+		labels, _ := group["colLabels"].([]any)
+		table := map[string]any{
+			"caption":   stringValue(group["title"]),
+			"colLabels": append([]any{"Level"}, labels...),
+		}
+		leveled := make([]any, len(rows))
+		for i, row := range rows {
+			cells, _ := row.([]any)
+			leveled[i] = append([]any{strconv.Itoa(i + 1)}, cells...)
+		}
+		table["rows"] = leveled
+		var b strings.Builder
+		renderTable(&b, table, 0)
+		out = append(out, b.String())
+	}
+	return out
 }
 
 func classEquipmentText(obj map[string]any) string {
@@ -257,7 +378,16 @@ func profList(v any) string {
 	for _, value := range values {
 		switch val := value.(type) {
 		case string:
-			out = append(out, title(val))
+			// A proficiency string is plain ("light", "martial") or carries
+			// a {@item}/{@filter} tag ("{@item Thieves' Tools|XPHB}", a
+			// martial-weapon subset) — renderString handles both, title()
+			// alone would print the former fine but mangle the latter's raw
+			// tag syntax.
+			if rendered := strings.TrimSpace(renderString(val)); rendered != val {
+				out = append(out, rendered)
+			} else {
+				out = append(out, title(val))
+			}
 		case map[string]any:
 			choose, ok := val["choose"].(map[string]any)
 			if !ok {
@@ -278,36 +408,20 @@ func profList(v any) string {
 	return strings.Join(out, "; ")
 }
 
-// classLevelTable groups classFeatures by level ("Level 3: Fighter
-// Subclass, Ability Score Improvement") so the whole level-1-through-20
-// progression is visible at once instead of only the raw
-// "Name|Class|Source|Level" reference strings 5etools stores. A plain
-// {classFeature: ref} entry (a subclass-gated feature) is unwrapped to the
-// same ref string as an ordinary entry.
+// classLevelTable groups classFeatures or subclassFeatures by level ("Level
+// 3: Fighter Subclass, Ability Score Improvement") so the whole
+// level-1-through-20 progression is visible at once instead of only the raw
+// reference strings 5etools stores. See ClassFeatureRefs for the parse this
+// shares.
 func classLevelTable(v any) string {
-	values, _ := v.([]any)
+	refs := ClassFeatureRefs(v)
 	byLevel := map[int][]string{}
 	var levels []int
-	for _, value := range values {
-		var ref string
-		switch val := value.(type) {
-		case string:
-			ref = val
-		case map[string]any:
-			ref = stringValue(val["classFeature"])
+	for _, r := range refs {
+		if _, ok := byLevel[r.Level]; !ok {
+			levels = append(levels, r.Level)
 		}
-		parts := strings.Split(ref, "|")
-		if len(parts) < 4 || parts[0] == "" {
-			continue
-		}
-		level, err := strconv.Atoi(parts[3])
-		if err != nil {
-			continue
-		}
-		if _, ok := byLevel[level]; !ok {
-			levels = append(levels, level)
-		}
-		byLevel[level] = append(byLevel[level], parts[0])
+		byLevel[r.Level] = append(byLevel[r.Level], r.Name)
 	}
 	sort.Ints(levels)
 	var b strings.Builder
@@ -315,6 +429,108 @@ func classLevelTable(v any) string {
 		fmt.Fprintf(&b, "Level %d: %s\n", level, strings.Join(byLevel[level], ", "))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// FeatureRef is one parsed classFeatures or subclassFeatures entry: enough
+// to group by level (Name, Level) and enough to look up the entity that
+// holds its actual rules text (LookupName, matching the "Name (Class
+// Level)" / "Name (Class Subclass Level)" convention parse.disambiguateName
+// builds at ingest for kind classFeature / subclassFeature respectively).
+type FeatureRef struct {
+	Kind           string // "classFeature" or "subclassFeature"
+	Name           string
+	Class          string
+	ClassSource    string
+	Subclass       string
+	SubclassSource string
+	Level          int
+}
+
+// LookupName is the entity name a FeatureRef resolves to via
+// st.Lookup(ref.Kind, ref.LookupName(), ref.ClassSource-or-SubclassSource).
+func (r FeatureRef) LookupName() string {
+	if r.Kind == "subclassFeature" {
+		return fmt.Sprintf("%s (%s %s %d)", r.Name, r.Class, r.Subclass, r.Level)
+	}
+	return fmt.Sprintf("%s (%s %d)", r.Name, r.Class, r.Level)
+}
+
+// Source is the source id to disambiguate LookupName with, if more than one
+// entity shares it.
+func (r FeatureRef) Source() string {
+	if r.Kind == "subclassFeature" {
+		return r.SubclassSource
+	}
+	return r.ClassSource
+}
+
+// ClassFeatureRefs parses a class's classFeatures or a subclass's
+// subclassFeatures list — each entry either a plain
+// "Name|Class|ClassSource|Level" reference (4 parts) or a
+// "Name|Class|ClassSource|Subclass|SubclassSource|Level" one (6 parts, a
+// subclass feature referenced from the parent class's own list), or a
+// {classFeature: ref} / {subclassFeature: ref} wrapper (a feature gated
+// behind choosing a subclass) — into structured refs, in declaration order.
+// Level is always the last pipe segment in either shape.
+func ClassFeatureRefs(v any) []FeatureRef {
+	values, _ := v.([]any)
+	refs := make([]FeatureRef, 0, len(values))
+	for _, value := range values {
+		var ref string
+		switch val := value.(type) {
+		case string:
+			ref = val
+		case map[string]any:
+			if s := stringValue(val["classFeature"]); s != "" {
+				ref = s
+			} else {
+				ref = stringValue(val["subclassFeature"])
+			}
+		}
+		parts := strings.Split(ref, "|")
+		if len(parts) < 4 || parts[0] == "" {
+			continue
+		}
+		level, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil {
+			continue
+		}
+		fr := FeatureRef{Name: parts[0], Class: parts[1], ClassSource: parts[2], Level: level}
+		if len(parts) >= 6 {
+			fr.Kind = "subclassFeature"
+			fr.Subclass = parts[3]
+			fr.SubclassSource = parts[4]
+		} else {
+			fr.Kind = "classFeature"
+		}
+		refs = append(refs, fr)
+	}
+	return refs
+}
+
+// FeatureLookup resolves one classFeature/subclassFeature entity's decoded
+// JSON object by kind/name/source, or ok=false when nothing matches — the
+// shape a *store.Store lookup naturally satisfies without this package
+// importing store directly (statblock stays a pure JSON transform, shared
+// by both the CLI and the chat tool-calling layer without either pulling in
+// the other's dependencies).
+type FeatureLookup func(kind, name, source string) (obj map[string]any, ok bool)
+
+// RenderFeatureDetails renders each ref's actual rules text (fetched via
+// lookup, since classFeatures/subclassFeatures only carry name/level
+// references, not the feature's own mechanics) in the order
+// ClassFeatureRefs returned them. A lookup miss is skipped silently rather
+// than erroring the whole block — a DM reading full text for nineteen of
+// twenty features beats losing all of it over one bad reference.
+func RenderFeatureDetails(w io.Writer, refs []FeatureRef, lookup FeatureLookup) {
+	for _, r := range refs {
+		obj, ok := lookup(r.Kind, r.LookupName(), r.Source())
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(w, "\n### Level %d: %s\n\n", r.Level, r.Name)
+		Render(w, r.Kind, obj)
+	}
 }
 
 type entrySection struct {
@@ -481,6 +697,8 @@ func scalar(v any) string {
 		return value.String()
 	case float64:
 		return strconv.FormatFloat(value, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(value)
 	case bool:
 		return strconv.FormatBool(value)
 	case map[string]any:

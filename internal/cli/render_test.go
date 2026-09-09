@@ -23,7 +23,7 @@ func TestWriteHumanEntity_spell(t *testing.T) {
 	}`)
 
 	var out bytes.Buffer
-	if err := writeHumanEntity(&out, e); err != nil {
+	if err := writeHumanEntity(&out, nil, e); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -61,7 +61,7 @@ func TestWriteHumanEntity_monster(t *testing.T) {
 	}`)
 
 	var out bytes.Buffer
-	if err := writeHumanEntity(&out, e); err != nil {
+	if err := writeHumanEntity(&out, nil, e); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -89,7 +89,7 @@ func TestWriteHumanEntity_itemAndTable(t *testing.T) {
 	}`)
 
 	var out bytes.Buffer
-	if err := writeHumanEntity(&out, e); err != nil {
+	if err := writeHumanEntity(&out, nil, e); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -114,7 +114,7 @@ func TestWriteHumanEntity_raceMechanics(t *testing.T) {
 	}`)
 
 	var out bytes.Buffer
-	if err := writeHumanEntity(&out, e); err != nil {
+	if err := writeHumanEntity(&out, nil, e); err != nil {
 		t.Fatal(err)
 	}
 	for _, text := range []string{
@@ -157,7 +157,7 @@ func TestWriteSearchResults_singleLineAligned(t *testing.T) {
 func TestWriteHumanEntity_rawMarkdownForNonTTY(t *testing.T) {
 	e := entity("spell", "Light", "PHB", `{"level":0,"school":"V","entries":["Bright light."]}`)
 	var out bytes.Buffer
-	if err := writeHumanEntity(&out, e); err != nil {
+	if err := writeHumanEntity(&out, nil, e); err != nil {
 		t.Fatal(err)
 	}
 	want := "# Light\n\n*spell | PHB*\n\nEvocation cantrip\nBright light.\n"
@@ -225,7 +225,7 @@ func TestWriteEntity_JSONRemainsMachineReadable(t *testing.T) {
 	var out bytes.Buffer
 	cmd := rootCmd()
 	cmd.SetOut(&out)
-	if err := writeEntity(cmd, true, e); err != nil {
+	if err := writeEntity(cmd, nil, true, e); err != nil {
 		t.Fatal(err)
 	}
 	var got map[string]any

@@ -128,6 +128,9 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Ability Scores", raceAbilities(obj["ability"]))
 	case "class":
 		add("Hit Die", classHitDie(obj["hd"]))
+		add("Hit Points at 1st Level", classHitPointsFirst(obj))
+		add("Hit Points at Higher Levels", classHitPointsHigher(obj))
+		add("Proficiency Bonus", proficiencyBonusByLevel)
 		add("Primary Ability", abilityEitherList(obj["primaryAbility"]))
 		add("Saving Throws", abilityAbbrevList(obj["proficiency"]))
 		if sp, ok := obj["startingProficiencies"].(map[string]any); ok {
@@ -136,6 +139,8 @@ func Fields(kind string, obj map[string]any) []Field {
 			add("Tools", profList(sp["tools"]))
 			add("Skills", profList(sp["skills"]))
 		}
+		add("Spellcasting Ability", abilityFullNameFromAbbrev(obj["spellcastingAbility"]))
+		add("Spellcasting", castingProgressionLabel(obj["casterProgression"]))
 		add("Subclass", stringValue(obj["subclassTitle"]))
 	}
 	return f
@@ -170,8 +175,14 @@ func Sections(kind string, obj map[string]any) []Section {
 		if text := classEquipmentText(obj); text != "" {
 			out = append(out, Section{Heading: "Starting Equipment", Text: text})
 		}
+		for _, table := range classTableGroupsMarkdown(obj["classTableGroups"]) {
+			out = append(out, Section{Heading: "Level Progression", Text: strings.TrimRight(table, "\n")})
+		}
 		if table := classLevelTable(obj["classFeatures"]); table != "" {
 			out = append(out, Section{Heading: "Features by Level", Text: table})
+		}
+		if table := classLevelTable(obj["subclassFeatures"]); table != "" {
+			out = append(out, Section{Heading: "Subclass Features by Level", Text: table})
 		}
 		return out
 	}
