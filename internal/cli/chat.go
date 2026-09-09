@@ -450,6 +450,9 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	if len(args) > 0 {
 		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts)
 	}
+	if chatWorkspaceAvailable(cmd, opt.JSON) {
+		return runChatWorkspace(cmd, st, cs, sess, cfg, opts)
+	}
 	return chatREPL(cmd, opt, st, cs, cfg, sess, opts)
 }
 

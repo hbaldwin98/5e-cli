@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -320,6 +321,7 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			var req struct {
 				Messages []chatMessage `json:"messages"`
+				Stream   bool          `json:"stream"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			api.mu.Lock()
@@ -332,11 +334,27 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 				http.Error(w, "rate limited", http.StatusTooManyRequests)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"choices": []map[string]any{
-					{"message": map[string]any{"content": "Fireball explodes in fire (spell, Fireball, PHB)."}},
-				},
-			})
+			const answer = "Fireball explodes in fire (spell, Fireball, PHB)."
+			if !req.Stream {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{
+						{"message": map[string]any{"content": answer}},
+					},
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			for _, word := range strings.Fields(answer) {
+				chunk, _ := json.Marshal(map[string]any{
+					"choices": []map[string]any{{"delta": map[string]any{"content": word + " "}}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
 		var req struct {

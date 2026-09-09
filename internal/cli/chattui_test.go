@@ -1,0 +1,260 @@
+package cli
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/spf13/cobra"
+
+	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/chat"
+	"github.com/hbaldwin98/5e-cli/internal/edition"
+	"github.com/hbaldwin98/5e-cli/internal/store"
+)
+
+// newTestChatModel builds a chatModel against chatFixture's index and a
+// fresh session, wired to chatFixture's fake streaming server the same way
+// runChat wires a real Config.
+func newTestChatModel(t *testing.T) (*chatModel, *chatAPI) {
+	t.Helper()
+	index, api := chatFixture(t)
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cs, err := chat.OpenStore(filepath.Join(t.TempDir(), "chats"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := cs.Load("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ask.ConfigFromEnv()
+	cfg.CachePath = filepath.Join(t.TempDir(), "embeddings.sqlite")
+
+	// chatFixture's canned streamed answer cites (spell, Fireball, PHB);
+	// the classic edition keeps PHB instead of preferring XPHB, so that
+	// citation actually matches what was retrieved.
+	m := newChatModel(&cobra.Command{}, st, cs, sess, cfg, chat.Options{Limit: 3, Edition: edition.Classic})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return m, api
+}
+
+// drive runs cmd (and every tea.Cmd it and its follow-ups produce) to
+// completion against m, the same loop tea.Program's runtime performs, minus
+// the terminal. It is how these tests exercise chatModel's real streaming
+// and slash-command concurrency without a real terminal or tea.Program.
+func drive(t *testing.T, m *chatModel, cmd tea.Cmd) {
+	t.Helper()
+	queue := []tea.Cmd{cmd}
+	for steps := 0; len(queue) > 0; steps++ {
+		if steps > 10000 {
+			t.Fatal("drive: too many messages, likely an infinite Cmd loop")
+		}
+		cmd, queue = queue[0], queue[1:]
+		if cmd == nil {
+			continue
+		}
+		msg := cmd()
+		if msg == nil {
+			continue
+		}
+		// tea.Batch's Cmd returns a BatchMsg (a slice of Cmds) for the real
+		// runtime to fan out and run concurrently; replicate that here by
+		// queuing each sub-command instead of feeding the BatchMsg itself
+		// into Update, which has no case for it.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		_, next := m.Update(msg)
+		queue = append(queue, next)
+	}
+}
+
+func TestChatModel_submitsQuestionAndStreamsAnswer(t *testing.T) {
+	m, api := newTestChatModel(t)
+
+	m.input.SetValue("what does fireball do")
+	_, cmd := m.submit()
+	drive(t, m, cmd)
+
+	if m.streaming {
+		t.Fatal("the turn should have finished")
+	}
+	transcript := m.transcript.String()
+	if !strings.Contains(transcript, "> what does fireball do") {
+		t.Fatalf("want the question echoed, got:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, "Fireball explodes in fire") {
+		t.Fatalf("want the streamed answer in the transcript, got:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, "Sources:") {
+		t.Fatalf("want a citation block, got:\n%s", transcript)
+	}
+	if len(m.sess.Turns) != 1 {
+		t.Fatalf("want the turn persisted to the session, got %+v", m.sess.Turns)
+	}
+	if len(api.messages()) != 1 {
+		t.Fatalf("want exactly one chat request, got %d", len(api.messages()))
+	}
+
+	// The saved session should be reloadable with the turn intact.
+	again, err := m.cs.Load("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Turns) != 1 || again.Turns[0].Answer == "" {
+		t.Fatalf("the turn should have been saved to disk: %+v", again.Turns)
+	}
+}
+
+func TestChatModel_showsAThinkingIndicatorBeforeTheFirstToken(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("what does fireball do")
+	m.submit()
+	if !strings.Contains(m.viewport.View(), "thinking") {
+		t.Fatalf("want a thinking indicator while no tokens have arrived yet, got:\n%s", m.viewport.View())
+	}
+}
+
+func TestChatModel_ignoresSubmitWhileATurnIsInFlight(t *testing.T) {
+	m, api := newTestChatModel(t)
+
+	m.input.SetValue("what does fireball do")
+	_, cmd := m.submit()
+	if !m.streaming {
+		t.Fatal("want the model to be streaming immediately after submit")
+	}
+
+	// A second submit while busy must be a no-op: no second history entry,
+	// no second request.
+	m.input.SetValue("another question")
+	_, second := m.submit()
+	if second != nil {
+		t.Fatal("submit while streaming should return no command")
+	}
+	if len(m.history) != 1 {
+		t.Fatalf("a submit while streaming should not be recorded in history: %+v", m.history)
+	}
+
+	drive(t, m, cmd)
+	if len(api.messages()) != 1 {
+		t.Fatalf("want exactly one chat request, got %d", len(api.messages()))
+	}
+}
+
+func TestChatModel_slashCommandRunsSynchronouslyAndDoesNotStream(t *testing.T) {
+	m, api := newTestChatModel(t)
+
+	m.input.SetValue("/note the party sold the Sunsword")
+	_, cmd := m.submit()
+	if cmd != nil {
+		t.Fatal("a slash command should complete synchronously, with no follow-up command")
+	}
+	if m.streaming {
+		t.Fatal("a slash command must never set streaming")
+	}
+	if !strings.Contains(m.transcript.String(), "noted (1") {
+		t.Fatalf("want the note confirmation in the transcript, got:\n%s", m.transcript.String())
+	}
+	if len(m.sess.Notes) != 1 {
+		t.Fatalf("want the note recorded on the session, got %+v", m.sess.Notes)
+	}
+	if len(api.messages()) != 0 {
+		t.Fatal("a slash command must never reach the chat API")
+	}
+}
+
+func TestChatModel_slashExitQuits(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("/exit")
+	_, cmd := m.submit()
+	if !m.quitting {
+		t.Fatal("/exit should set quitting")
+	}
+	if cmd == nil {
+		t.Fatal("/exit should return tea.Quit")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("want tea.QuitMsg, got %T", msg)
+	}
+}
+
+func TestChatModel_ctrlCCancelsAnInFlightTurnWithoutQuitting(t *testing.T) {
+	m, _ := newTestChatModel(t)
+
+	m.input.SetValue("what does fireball do")
+	_, cmd := m.submit()
+	if !m.streaming {
+		t.Fatal("want the model streaming")
+	}
+
+	// Cancel via the same path Ctrl-C takes.
+	m.cancel()
+	drive(t, m, cmd)
+
+	if m.quitting {
+		t.Fatal("cancelling a turn must not quit the workspace")
+	}
+	if m.streaming {
+		t.Fatal("want the turn to have finished (cancelled)")
+	}
+	if !strings.Contains(m.transcript.String(), "cancelled") {
+		t.Fatalf("want a cancellation notice in the transcript, got:\n%s", m.transcript.String())
+	}
+	if len(m.sess.Turns) != 0 {
+		t.Fatalf("a cancelled turn must not be persisted: %+v", m.sess.Turns)
+	}
+}
+
+func TestChatModel_historyRecallCyclesSubmittedLines(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("/note first")
+	m.submit()
+	m.input.SetValue("/note second")
+	m.submit()
+
+	m.recallHistory(-1)
+	if m.input.Value() != "/note second" {
+		t.Fatalf("want the most recent line first, got %q", m.input.Value())
+	}
+	m.recallHistory(-1)
+	if m.input.Value() != "/note first" {
+		t.Fatalf("want the older line next, got %q", m.input.Value())
+	}
+	m.recallHistory(-1) // already at the oldest; must not go further back or panic
+	if m.input.Value() != "/note first" {
+		t.Fatalf("recalling past the oldest entry should stay put, got %q", m.input.Value())
+	}
+	m.recallHistory(1)
+	m.recallHistory(1)
+	if m.input.Value() != "" {
+		t.Fatalf("cycling back past the newest entry should return to the empty draft, got %q", m.input.Value())
+	}
+}
+
+func TestChatWorkspaceAvailable_falseWithoutATTY(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out strings.Builder
+	cmd.SetOut(&out)
+	if chatWorkspaceAvailable(cmd, false) {
+		t.Fatal("a non-TTY stdout must never get the workspace")
+	}
+}
+
+func TestChatWorkspaceAvailable_falseInJSONMode(t *testing.T) {
+	// Even a hypothetical TTY writer must not activate the workspace in
+	// --json mode; there is no TTY writer available in a unit test, so this
+	// only exercises the asJSON short-circuit, which chatWorkspaceAvailable
+	// evaluates before ever looking at isTTY.
+	cmd := &cobra.Command{}
+	if chatWorkspaceAvailable(cmd, true) {
+		t.Fatal("--json must never get the workspace")
+	}
+}

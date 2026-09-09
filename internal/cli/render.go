@@ -601,11 +601,25 @@ func markdownCell(s string) string {
 // Glamour rendering are all gated on this — none of them belong in --json
 // output, a script's captured stdout, or a CI log.
 func isTTY(w io.Writer) bool {
-	file, ok := w.(*os.File)
-	if !ok || os.Getenv("TERM") == "dumb" {
+	f, ok := w.(*os.File)
+	return ok && isTTYFile(f)
+}
+
+// isTTYReader is isTTY for an input source: whether r is an interactive
+// terminal's stdin, as opposed to scripted or piped input. The chat
+// workspace (#44) needs this in addition to isTTY(stdout) — a TUI reading
+// its "keystrokes" from a script's piped stdin would hang or misbehave, so
+// both ends of the terminal must be interactive before it activates.
+func isTTYReader(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	return ok && isTTYFile(f)
+}
+
+func isTTYFile(f *os.File) bool {
+	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	info, err := file.Stat()
+	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
