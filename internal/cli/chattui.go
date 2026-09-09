@@ -18,6 +18,7 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/chat"
+	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -633,11 +634,26 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 	// Displays come before the model's own prose: a DM asking "show me a
 	// goblin" wants the actual stat block the get tool fetched, not only
 	// the model's paraphrase of it, and a roll result should be the tool's
-	// own number, not the model's retelling of it.
-	if !displays.empty() {
-		var buf bytes.Buffer
-		writeTurnDisplays(&buf, displays, cardWidth(m.viewport.Width()))
-		m.writeRendered(strings.TrimRight(buf.String(), "\n"))
+	// own number, not the model's retelling of it. Each goes through
+	// m.renderAnswer (or RenderCard directly, already ANSI) rather than
+	// writeTurnDisplays' own writers: those decide Markdown rendering from
+	// isTTY(w), which is false for the bytes.Buffer this used to render
+	// into, so a rolled table or an encounter list came out as literal
+	// unrendered Markdown instead of a table — this renders each at the
+	// viewport's own width, the same policy every other answer here uses.
+	for _, e := range displays.Entities {
+		m.writeRendered(statblock.RenderCard(e.Kind, e.Name, e.Source, e.Obj, cardWidth(m.viewport.Width())))
+	}
+	for _, r := range displays.Rolls {
+		m.writeRendered(m.renderAnswer(randomTableMarkdown(r)))
+	}
+	if len(displays.DiceRolls) > 0 {
+		m.writeRendered(strings.TrimRight(diceReportsText(displays.DiceRolls), "\n"))
+	}
+	for _, hits := range displays.Encounters {
+		if md := encounterResultsMarkdown(hits); md != "" {
+			m.writeRendered(m.renderAnswer(md))
+		}
 	}
 	m.writeRendered(m.renderAnswer(msg.res.Answer))
 	msg.res.Citations = mergeCitations(msg.res.Citations, displays.Entities)

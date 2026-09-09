@@ -3,9 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/dice"
+	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 )
 
@@ -100,3 +103,70 @@ type notFoundErr struct{}
 func (notFoundErr) Error() string { return "not found" }
 
 var errNotFound = notFoundErr{}
+
+// TestChatModel_rollDisplayIsRenderedNotLiteralMarkdown guards against a
+// roll (or encounter, or dice) tool result reaching the workspace
+// transcript as raw, unrendered Markdown. finishTurn used to build these
+// with writeTurnDisplays writing into a bytes.Buffer, but writeRandomTable
+// (and encounterResultsMarkdown's caller) decide whether to render via
+// isTTY(w) — false for a buffer — so the "| Roll |" table syntax showed up
+// literally instead of as a rendered table.
+func TestChatModel_rollDisplayIsRenderedNotLiteralMarkdown(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	report := randomtable.Report{
+		Kind: "table", Name: "Weather", Source: "PHB",
+		Headers: []string{"Result"},
+		Rolls:   []randomtable.Roll{{Roll: 1, Values: []string{"Sunny"}}},
+	}
+	m.drainShown = func() turnDisplays {
+		return turnDisplays{Rolls: []randomtable.Report{report}}
+	}
+	m.streaming = true
+	m.finishTurn(turnDoneMsg{res: ask.Result{Answer: "Rolled the weather table."}})
+
+	transcript := m.transcriptText()
+	if strings.Contains(transcript, "| Roll |") || strings.Contains(transcript, "| ---: |") {
+		t.Fatalf("roll table reached the transcript as literal Markdown:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, "Weather") || !strings.Contains(transcript, "Sunny") {
+		t.Fatalf("roll table content missing from the transcript:\n%s", transcript)
+	}
+}
+
+// TestChatModel_encounterDisplayIsRenderedNotLiteralMarkdown is the same
+// regression guard as the roll test above, for an encounter (monster
+// search) tool result's Markdown table.
+func TestChatModel_encounterDisplayIsRenderedNotLiteralMarkdown(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.drainShown = func() turnDisplays {
+		return turnDisplays{Encounters: [][]encounter.Hit{{{Kind: "monster", Name: "Goblin", Source: "MM", CR: "1/4", Type: "humanoid", Size: "Small", Score: 1}}}}
+	}
+	m.streaming = true
+	m.finishTurn(turnDoneMsg{res: ask.Result{Answer: "Found a goblin."}})
+
+	transcript := m.transcriptText()
+	if strings.Contains(transcript, "| Name | CR |") || strings.Contains(transcript, "| --- | --- |") {
+		t.Fatalf("encounter table reached the transcript as literal Markdown:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, "Goblin") {
+		t.Fatalf("encounter hit missing from the transcript:\n%s", transcript)
+	}
+}
+
+// TestChatModel_diceDisplayReachesTheTranscript checks the dice tool's
+// result (plain text, no Markdown involved) still shows up — the
+// regression above was specific to Markdown-rendered displays, but this
+// path changed too and deserves its own coverage.
+func TestChatModel_diceDisplayReachesTheTranscript(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.drainShown = func() turnDisplays {
+		return turnDisplays{DiceRolls: []dice.Report{{Expression: "2d6+3", Total: 9}}}
+	}
+	m.streaming = true
+	m.finishTurn(turnDoneMsg{res: ask.Result{Answer: "Rolled it."}})
+
+	transcript := m.transcriptText()
+	if !strings.Contains(transcript, "2d6+3 = 9") {
+		t.Fatalf("dice result missing from the transcript:\n%s", transcript)
+	}
+}

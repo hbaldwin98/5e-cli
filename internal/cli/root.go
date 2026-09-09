@@ -460,9 +460,15 @@ scores). ` + "`adv`" + ` and ` + "`dis`" + ` are shorthand for 2d20kh1 and 2d20k
 	return cmd
 }
 
-func writeDiceReports(w io.Writer, reports []dice.Report) error {
+// diceReportsText is writeDiceReports' output as a string. Dice rolls have
+// no Markdown in them (no headers, no tables), so this needs no rendering
+// decision the way randomTableMarkdown/encounterResultsMarkdown do — it
+// exists purely so a caller building a larger block (the chat workspace)
+// doesn't have to stand up an io.Writer just to capture this.
+func diceReportsText(reports []dice.Report) string {
+	var b strings.Builder
 	for _, r := range reports {
-		fmt.Fprintf(w, "%s = %d", r.Expression, r.Total)
+		fmt.Fprintf(&b, "%s = %d", r.Expression, r.Total)
 		parts := make([]string, 0, len(r.Terms))
 		for _, t := range r.Terms {
 			if t.IsFlat {
@@ -475,11 +481,16 @@ func writeDiceReports(w io.Writer, reports []dice.Report) error {
 			parts = append(parts, piece)
 		}
 		if len(parts) > 0 {
-			fmt.Fprintf(w, "  (%s)", strings.Join(parts, ", "))
+			fmt.Fprintf(&b, "  (%s)", strings.Join(parts, ", "))
 		}
-		fmt.Fprintln(w)
+		fmt.Fprintln(&b)
 	}
-	return nil
+	return b.String()
+}
+
+func writeDiceReports(w io.Writer, reports []dice.Report) error {
+	_, err := io.WriteString(w, diceReportsText(reports))
+	return err
 }
 
 func comparisonEdition(opt *options) (edition.Pref, error) {
@@ -994,10 +1005,12 @@ func writeComparison(w io.Writer, result compare.Result) error {
 	return renderMarkdown(w, markdown.String())
 }
 
-func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
+// encounterResultsMarkdown is encounter search hits as Markdown, or "" when
+// there are none — see randomTableMarkdown for why building the text is
+// kept separate from deciding how to render it.
+func encounterResultsMarkdown(hits []encounter.Hit) string {
 	if len(hits) == 0 {
-		fmt.Fprintln(w, "no encounter matches")
-		return nil
+		return ""
 	}
 	var markdown bytes.Buffer
 	fmt.Fprintln(&markdown, "| Name | CR | Type | Size | Source | Match |")
@@ -1006,10 +1019,24 @@ func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
 		fmt.Fprintf(&markdown, "| %s | %s | %s | %s | %s | %.2f |\n",
 			markdownCell(hit.Name), markdownCell(hit.CR), markdownCell(hit.Type), markdownCell(hit.Size), markdownCell(hit.Source), hit.Score)
 	}
-	return renderMarkdown(w, markdown.String())
+	return markdown.String()
 }
 
-func writeRandomTable(w io.Writer, report randomtable.Report) error {
+func writeEncounterResults(w io.Writer, hits []encounter.Hit) error {
+	if len(hits) == 0 {
+		fmt.Fprintln(w, "no encounter matches")
+		return nil
+	}
+	return renderMarkdown(w, encounterResultsMarkdown(hits))
+}
+
+// randomTableMarkdown builds a rolled table's Markdown without deciding how
+// (or whether) to render it — that decision belongs to the caller, since a
+// plain writer (the single `5e roll` command), a chat turn writing straight
+// to a real terminal, and the Bubble Tea workspace writing into an
+// in-memory transcript block each need a different rendering policy, and
+// only writeRandomTable's own isTTY(w) check is right for the first two.
+func randomTableMarkdown(report randomtable.Report) string {
 	var markdown bytes.Buffer
 	fmt.Fprintf(&markdown, "# %s\n\n*table | %s*\n\n", report.Name, report.Source)
 	headers := report.Headers
@@ -1033,7 +1060,11 @@ func writeRandomTable(w io.Writer, report randomtable.Report) error {
 		}
 		fmt.Fprintln(&markdown)
 	}
-	return renderMarkdown(w, markdown.String())
+	return markdown.String()
+}
+
+func writeRandomTable(w io.Writer, report randomtable.Report) error {
+	return renderMarkdown(w, randomTableMarkdown(report))
 }
 
 func comparisonValue(value compare.Value) string {
