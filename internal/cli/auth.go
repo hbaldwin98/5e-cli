@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,56 @@ func applyProviderOverride(cfg *ask.Config, opt *options) error {
 		cfg.AskModel = opt.Model
 	}
 	return nil
+}
+
+// effectiveProviderName reports which stored provider (if any) a session's
+// credentials actually came from, so /model in chat knows where a
+// persisted change belongs. An explicit --provider wins; otherwise an
+// explicit OPENAI_API_KEY env var means no stored provider is in play at
+// all (ConfigFromEnv never consults the store in that case); otherwise
+// FIVE_E_PROVIDER or the store's active provider, if either names one that
+// is actually configured.
+func effectiveProviderName(opt *options) string {
+	if opt.Provider != "" {
+		return opt.Provider
+	}
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		return ""
+	}
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return ""
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return ""
+	}
+	name, _, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER"))
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+// saveProviderModel persists name as the given provider's stored chat
+// model, so a /model change in chat survives past the session — the whole
+// point of /model persisting instead of being session-scoped like --model.
+func saveProviderModel(providerName, model string) error {
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return err
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return err
+	}
+	cred, ok := store.Get(providerName)
+	if !ok {
+		return fmt.Errorf("%s is not configured; run `5e auth login %s`", providerName, providerName)
+	}
+	cred.ChatModel = model
+	store.Set(providerName, cred)
+	return store.Save()
 }
 
 // loadProviderCredential looks up one configured provider's credential by

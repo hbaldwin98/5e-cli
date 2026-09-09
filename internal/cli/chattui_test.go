@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,8 +41,23 @@ func newTestChatModel(t *testing.T) (*chatModel, *chatAPI) {
 	// chatFixture's canned streamed answer cites (spell, Fireball, PHB);
 	// the classic edition keeps PHB instead of preferring XPHB, so that
 	// citation actually matches what was retrieved.
-	m := newChatModel(&cobra.Command{}, st, cs, sess, cfg, chat.Options{Limit: 3, Edition: edition.Classic})
+	m := newChatModel(&cobra.Command{}, st, cs, sess, cfg, chat.Options{Limit: 3, Edition: edition.Classic}, "")
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return m, api
+}
+
+// newTestChatModelWithProvider is newTestChatModel plus an isolated,
+// stored "openai" provider so a test can exercise /model's persistence
+// path. The stored credential is unrelated to the fake streaming server
+// chatFixture wires up (chat requests still hit that fixture via cfg,
+// exactly as in newTestChatModel) — it exists only so saveProviderModel
+// has somewhere to write.
+func newTestChatModelWithProvider(t *testing.T) (*chatModel, *chatAPI) {
+	t.Helper()
+	withIsolatedConfigDir(t)
+	runAuth(t, "", "login", "openai", "--api-key", "sk-test-0123456789")
+	m, api := newTestChatModel(t)
+	m.providerName = "openai"
 	return m, api
 }
 
@@ -114,6 +130,38 @@ func TestChatModel_submitsQuestionAndStreamsAnswer(t *testing.T) {
 	}
 }
 
+func TestChatModel_rendersTheFinishedAnswerAsMarkdown(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	rendered := m.renderAnswer("**bold** text")
+	if strings.Contains(rendered, "**") {
+		t.Fatalf("want markdown syntax rendered away, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "bold") {
+		t.Fatalf("want the text itself preserved, got: %q", rendered)
+	}
+}
+
+func TestChatModel_scrollKeysMoveTheViewportWithoutTouchingHistory(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
+	for i := 0; i < 30; i++ {
+		m.writeLine(fmt.Sprintf("line %d", i))
+	}
+	m.refreshViewport()
+	m.viewport.GotoBottom()
+	if m.viewport.AtTop() {
+		t.Fatal("test setup: want the viewport scrolled away from the top")
+	}
+
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.viewport.AtBottom() {
+		t.Fatal("want PgUp to have scrolled the viewport up")
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("scrolling must not touch the input, got %q", m.input.Value())
+	}
+}
+
 func TestChatModel_wrapsLongLinesToTheViewportWidth(t *testing.T) {
 	m, _ := newTestChatModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
@@ -142,16 +190,20 @@ func TestChatModel_showsAThinkingIndicatorBeforeTheFirstToken(t *testing.T) {
 	}
 }
 
-func TestChatModel_slashModelOverridesTheModelUsedForTheNextTurn(t *testing.T) {
-	m, api := newTestChatModel(t)
+func TestChatModel_slashModelOverridesAndPersistsTheModel(t *testing.T) {
+	m, api := newTestChatModelWithProvider(t)
 
 	m.input.SetValue("/model gpt-x")
 	m.submit()
-	if !strings.Contains(m.transcript.String(), "model gpt-x") {
-		t.Fatalf("want the switch confirmed in the transcript, got:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcript.String(), "model gpt-x (saved to openai)") {
+		t.Fatalf("want the switch confirmed as saved in the transcript, got:\n%s", m.transcript.String())
 	}
 	if m.cfg.AskModel != "gpt-x" {
 		t.Fatalf("want the model applied to the workspace's config, got %q", m.cfg.AskModel)
+	}
+	cred, ok := providerCredentialForTest(t, "openai")
+	if !ok || cred.ChatModel != "gpt-x" {
+		t.Fatalf("want the model persisted to the stored provider, got %+v ok=%v", cred, ok)
 	}
 
 	m.input.SetValue("what does fireball do")
@@ -159,6 +211,15 @@ func TestChatModel_slashModelOverridesTheModelUsedForTheNextTurn(t *testing.T) {
 	drive(t, m, cmd)
 	if got := api.models(); len(got) != 1 || got[0] != "gpt-x" {
 		t.Fatalf("want the turn sent with the overridden model, got %v", got)
+	}
+}
+
+func TestChatModel_slashModelErrorsWithoutAnActiveProviderToSaveTo(t *testing.T) {
+	m, _ := newTestChatModel(t) // providerName is "" here, same as an env-var-only setup
+	m.input.SetValue("/model gpt-x")
+	m.submit()
+	if !strings.Contains(m.transcript.String(), "no active stored provider") {
+		t.Fatalf("want an error explaining there's nowhere to persist the model, got:\n%s", m.transcript.String())
 	}
 }
 

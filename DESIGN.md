@@ -178,8 +178,18 @@ The same switch is available mid-conversation in `chat` (both the REPL and
 the Bubble Tea workspace, since both route slash commands through the same
 `chatCommand`): `/provider <name>` swaps to a configured provider's
 credentials and stored model for the rest of the session, `/provider`
-alone shows the model/base URL in use, and `/model [name]` overrides or
-shows just the chat model, the same way `--model` does for a whole run.
+alone shows the model/base URL in use, and `/model [name]` changes the
+chat model — unlike `--model`, which is session-scoped, `/model` persists
+the change to whichever provider is currently active (via
+`saveProviderModel`), the same as running `5e auth set-model`. Both REPL
+paths track which stored provider (if any) is currently in effect
+(`effectiveProviderName`: an explicit `--provider` wins, an explicit
+`OPENAI_API_KEY` means no stored provider is in play at all, otherwise
+`FIVE_E_PROVIDER` or the store's active provider) so `/model` knows where
+to save; with no active provider (a bare env-var setup) `/model` still
+applies for the session but returns an error explaining there's nowhere to
+persist it, rather than silently discarding the "make this permanent"
+half of the request.
 
 A future OpenAI Codex provider will add a distinct `5e auth login codex`
 OAuth flow (browser or headless) to this same store — but Codex's ChatGPT
@@ -318,6 +328,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 **The interactive workspace.** `internal/cli/chattui.go` replaces the line-oriented REPL with a Bubble Tea/Bubbles v2 program (`chatWorkspaceAvailable`) whenever both stdin and stdout are a real interactive terminal and it's not `--json` — scripted stdin, a redirected/piped destination, and `--json` all still get `chatREPL`'s plain line-and-event stream, since a script needs parseable output, not a terminal UI. The workspace is alternate-screen (`View`'s returned `tea.View.AltScreen = true`), unlike every one-shot command's normal-screen output.
 
 It does not reimplement chat's domain logic: every slash command runs through the same `chatCommand` the plain REPL uses (its stdout/stderr captured into a scratch `*cobra.Command` and folded into the transcript, so behavior — including which turns get persisted — stays identical between the two REPL paths), and every question runs through `chat.AskStream`, streamed the same way the plain TTY path streams. A textarea takes multiline input (Enter sends; Ctrl-J/Alt-Enter inserts a literal newline), a viewport holds the scrollback, and Up/Down recall submitted lines (questions and slash commands alike) the way shell history does, gated on the input having no newline of its own so it doesn't fight cursor movement inside a multiline draft. `WithoutSignalHandler` is set deliberately: Ctrl-C is handled entirely through the normal raw-mode key-event path, cancelling only the in-flight turn's context (leaving the session and transcript alone) when one is running, or quitting when idle — Bubble Tea's own SIGINT handler would otherwise force-quit the program on the same keystroke before that contextual choice is made. A Bubbles v2 spinner shows "thinking" while a turn has been submitted but no token has arrived yet, ticking only while `streaming` is true so it stops on its own once the first delta (or an error, or a cancellation) arrives. The transcript is word-wrapped to the viewport's width (`wrapToWidth`, via a `lipgloss.NewStyle().Width(...)` render) before every `SetContent`, since Bubbles v2's viewport only scrolls — it never wraps a long line on its own — so an answer wider than the terminal would otherwise run off the right edge instead of flowing to the next line.
+
+A finished answer is rendered as Markdown (`renderAnswer`, via a width-bound `glamour.TermRenderer`) before it joins the transcript — the source text routinely carries bold/italics/tables/headers, and without this it showed up as literal `**`/`#`/table-pipe syntax. Streamed deltas are deliberately left raw while a turn is in flight (a partial Markdown document renders unpredictably mid-stream); only the complete answer gets rendered, once, in `finishTurn`. Scrolling the transcript is PgUp/PgDn/ctrl+b/ctrl+f (`ScrollUp`/`ScrollDown` in `chatKeyMap`, calling the viewport's own `PageUp`/`PageDown`) or the mouse wheel (`tea.View.MouseMode = tea.MouseModeCellMotion`, since v2 turns mouse reporting on per-View rather than as a `tea.NewProgram` option) — Up/Down are already claimed by history recall, so scrolling needed its own bindings.
 
 **Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.
 

@@ -15,6 +15,21 @@ import (
 // withIsolatedConfigDir points os.UserConfigDir (via XDG_CONFIG_HOME) at a
 // scratch directory so these tests never touch the real machine's stored
 // credentials.
+// providerCredentialForTest reads one provider's stored credential straight
+// off disk, for asserting a slash command actually persisted a change.
+func providerCredentialForTest(t *testing.T, name string) (provider.Credential, bool) {
+	t.Helper()
+	path, err := provider.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.Get(name)
+}
+
 func withIsolatedConfigDir(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

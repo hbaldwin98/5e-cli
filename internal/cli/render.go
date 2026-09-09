@@ -628,19 +628,30 @@ func renderMarkdown(w io.Writer, markdown string) error {
 		_, err := io.WriteString(w, markdown)
 		return err
 	}
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
-		glamour.WithWordWrap(100),
-	)
-	if err != nil {
-		return err
-	}
-	out, err := renderer.Render(markdown)
+	out, err := renderMarkdownToString(markdown, 100)
 	if err != nil {
 		return err
 	}
 	_, err = io.WriteString(w, out)
 	return err
+}
+
+// renderMarkdownToString renders markdown to ANSI-styled text at width,
+// unconditionally — unlike renderMarkdown, it has no writer to run isTTY
+// against, so the caller (the chat TUI, which is only ever running on a
+// real terminal in the first place) decides whether rendering makes sense.
+func renderMarkdownToString(markdown string, width int) (string, error) {
+	if width <= 0 {
+		width = 100
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylePath("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return "", err
+	}
+	return renderer.Render(markdown)
 }
 
 func abilityModifier(score int) int {

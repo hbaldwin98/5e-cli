@@ -449,14 +449,15 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	}
 	cfg.OnProgress = embedProgressRenderer(cfg.Progress)
 	opts := chat.Options{Kind: copt.Kind, Sources: splitSources(copt.Sources), Limit: copt.Limit, Edition: ed, SRD: opt.SRD}
+	providerName := effectiveProviderName(opt)
 
 	if len(args) > 0 {
 		return chatTurn(cmd, opt.JSON, st, cs, cfg, sess, strings.Join(args, " "), opts)
 	}
 	if chatWorkspaceAvailable(cmd, opt.JSON) {
-		return runChatWorkspace(cmd, st, cs, sess, cfg, opts)
+		return runChatWorkspace(cmd, st, cs, sess, cfg, opts, providerName)
 	}
-	return chatREPL(cmd, opt, st, cs, cfg, sess, opts)
+	return chatREPL(cmd, opt, st, cs, cfg, sess, opts, providerName)
 }
 
 // scopeSummary is every retrieval filter in effect for a session's next
@@ -646,12 +647,14 @@ const chatHelp = `Commands:
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
   /provider [name]    switch to a configured provider (see 5e auth list), or show the current model/base url
-  /model [name]       override the chat model for the rest of this session, or show the current one
+  /model [name]       change and persist that provider's chat model, or show the current one
   /help               this list
   /exit               leave (Ctrl-D also works)
+In the interactive workspace: PgUp/PgDn (or the mouse wheel) scroll the
+transcript; Ctrl-G toggles the key reference.
 Anything else is a question.`
 
-func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, opts chat.Options) error {
+func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, opts chat.Options, providerName string) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 	// In --json mode the loop is a stream of turn objects, so the banner and
@@ -681,7 +684,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			quit, event, err := chatCommand(cmd, st, cs, sess, &cfg, &opts, line, opt.JSON)
+			quit, event, err := chatCommand(cmd, st, cs, sess, &cfg, &opts, &providerName, line, opt.JSON)
 			if err != nil {
 				if opt.JSON {
 					if writeErr := writeChatError(out, sess, event.Command, "", err); writeErr != nil {
@@ -742,7 +745,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 // chatCommand runs one slash command, reporting whether the session should
 // end. Anything it changes is saved immediately, since the REPL is the thing
 // people leave open and then close the terminal on.
-func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg *ask.Config, opts *chat.Options, line string, asJSON bool) (bool, chatCommandResult, error) {
+func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg *ask.Config, opts *chat.Options, providerName *string, line string, asJSON bool) (bool, chatCommandResult, error) {
 	out := cmd.OutOrStdout()
 	name, rest, _ := strings.Cut(line, " ")
 	rest = strings.TrimSpace(rest)
@@ -957,11 +960,13 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			}
 			break
 		}
-		cred, err := loadProviderCredential(strings.ToLower(rest))
+		name := strings.ToLower(rest)
+		cred, err := loadProviderCredential(name)
 		if err != nil {
 			return false, event, err
 		}
 		applyCredential(cfg, cred)
+		*providerName = name
 		event.Data = map[string]any{"provider": rest, "model": cfg.AskModel, "embed_model": cfg.EmbedModel}
 		if !asJSON {
 			fmt.Fprintf(out, "provider %s (model %s, embed %s)\n", rest, cfg.AskModel, cfg.EmbedModel)
@@ -976,8 +981,17 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		}
 		cfg.AskModel = rest
 		event.Data = map[string]any{"model": cfg.AskModel}
+		// /model persists, unlike --model/one-shot session state: the whole
+		// point of a slash command over the flag is "change this and keep
+		// it changed" without a separate `5e auth set-model` step.
+		if *providerName == "" {
+			return false, event, fmt.Errorf("model %s applied for this session, but there is no active stored provider to save it to; run `5e auth login <provider>` or set FIVE_E_ASK_MODEL to persist a choice", rest)
+		}
+		if err := saveProviderModel(*providerName, rest); err != nil {
+			return false, event, fmt.Errorf("model %s applied for this session, but saving it failed: %w", rest, err)
+		}
 		if !asJSON {
-			fmt.Fprintf(out, "model %s\n", cfg.AskModel)
+			fmt.Fprintf(out, "model %s (saved to %s)\n", rest, *providerName)
 		}
 	default:
 		return false, event, fmt.Errorf("unknown command %s; /help for the list", name)

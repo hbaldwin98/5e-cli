@@ -37,8 +37,8 @@ func chatWorkspaceAvailable(cmd *cobra.Command, asJSON bool) bool {
 // question — the same domain logic chatREPL uses — so behavior (including
 // which turns get persisted) stays identical between the two REPL paths;
 // only presentation differs.
-func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options) error {
-	m := newChatModel(cmd, st, cs, sess, cfg, opts)
+func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string) error {
+	m := newChatModel(cmd, st, cs, sess, cfg, opts, providerName)
 	p := tea.NewProgram(m,
 		tea.WithContext(cmd.Context()),
 		tea.WithInput(cmd.InOrStdin()),
@@ -54,29 +54,33 @@ func runChatWorkspace(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess 
 }
 
 type chatKeyMap struct {
-	Submit  key.Binding
-	Newline key.Binding
-	Up      key.Binding
-	Down    key.Binding
-	Cancel  key.Binding
-	Quit    key.Binding
-	Help    key.Binding
+	Submit     key.Binding
+	Newline    key.Binding
+	Up         key.Binding
+	Down       key.Binding
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+	Cancel     key.Binding
+	Quit       key.Binding
+	Help       key.Binding
 }
 
 func defaultChatKeyMap() chatKeyMap {
 	return chatKeyMap{
-		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
-		Newline: key.NewBinding(key.WithKeys("ctrl+j", "alt+enter"), key.WithHelp("ctrl+j", "newline")),
-		Up:      key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "history")),
-		Down:    key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "history")),
-		Cancel:  key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
-		Quit:    key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
-		Help:    key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
+		Submit:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+		Newline:    key.NewBinding(key.WithKeys("ctrl+j", "alt+enter"), key.WithHelp("ctrl+j", "newline")),
+		Up:         key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "history")),
+		Down:       key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "history")),
+		ScrollUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "scroll up")),
+		ScrollDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "scroll down")),
+		Cancel:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
+		Quit:       key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
+		Help:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
 	}
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Newline, k.Up, k.Cancel, k.Quit, k.Help}
+	return []key.Binding{k.Submit, k.Newline, k.Up, k.ScrollUp, k.Cancel, k.Quit, k.Help}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
@@ -94,12 +98,13 @@ type turnDoneMsg struct {
 }
 
 type chatModel struct {
-	cmd  *cobra.Command
-	st   *store.Store
-	cs   *chat.Store
-	sess *chat.Session
-	cfg  ask.Config
-	opts chat.Options
+	cmd          *cobra.Command
+	st           *store.Store
+	cs           *chat.Store
+	sess         *chat.Session
+	cfg          ask.Config
+	opts         chat.Options
+	providerName string
 
 	keys chatKeyMap
 	help help.Model
@@ -133,24 +138,25 @@ type chatModel struct {
 	quitting      bool
 }
 
-func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options) *chatModel {
+func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg ask.Config, opts chat.Options, providerName string) *chatModel {
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question, or /help for commands"
 	ta.ShowLineNumbers = false
 	ta.Focus()
 
 	m := &chatModel{
-		cmd:      cmd,
-		st:       st,
-		cs:       cs,
-		sess:     sess,
-		cfg:      cfg,
-		opts:     opts,
-		keys:     defaultChatKeyMap(),
-		help:     help.New(),
-		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		viewport: viewport.New(),
-		input:    ta,
+		cmd:          cmd,
+		st:           st,
+		cs:           cs,
+		sess:         sess,
+		cfg:          cfg,
+		opts:         opts,
+		providerName: providerName,
+		keys:         defaultChatKeyMap(),
+		help:         help.New(),
+		spin:         spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		viewport:     viewport.New(),
+		input:        ta,
 	}
 	m.writeLine(sessionBanner(sess, opts))
 	return m
@@ -290,6 +296,14 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.recallHistory(1)
 			return m, nil
 		}
+
+	case key.Matches(msg, m.keys.ScrollUp):
+		m.viewport.PageUp()
+		return m, nil
+
+	case key.Matches(msg, m.keys.ScrollDown):
+		m.viewport.PageDown()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -350,7 +364,7 @@ func (m *chatModel) runSlashCommand(line string) (tea.Model, tea.Cmd) {
 	var buf bytes.Buffer
 	captured.SetOut(&buf)
 	captured.SetErr(&buf)
-	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.cfg, &m.opts, line, false)
+	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.cfg, &m.opts, &m.providerName, line, false)
 	if out := strings.TrimSpace(buf.String()); out != "" {
 		m.writeLine(out)
 	}
@@ -427,7 +441,7 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 		return
 	}
 
-	m.writeLine(strings.TrimSpace(msg.res.Answer))
+	m.writeLine(m.renderAnswer(msg.res.Answer))
 	if len(msg.res.Citations) > 0 {
 		var buf bytes.Buffer
 		buf.WriteString("Sources:\n")
@@ -438,6 +452,22 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 	if err := m.cs.Save(m.sess); err != nil {
 		m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(err.Error()))
 	}
+}
+
+// renderAnswer renders a finished answer as Markdown (source text routinely
+// carries bold/italics/tables/headers), falling back to the raw trimmed
+// text if glamour fails to render it for any reason — an unrendered but
+// correct answer beats losing it. Streamed deltas are never rendered this
+// way: a partial Markdown document mid-stream renders unpredictably, so raw
+// text is shown while a turn is in flight and only the final, complete
+// answer gets this treatment.
+func (m *chatModel) renderAnswer(answer string) string {
+	answer = strings.TrimSpace(answer)
+	rendered, err := renderMarkdownToString(answer, m.viewport.Width())
+	if err != nil {
+		return answer
+	}
+	return strings.TrimSpace(rendered)
 }
 
 func (m *chatModel) resize() {
@@ -460,6 +490,10 @@ func (m *chatModel) resize() {
 func (m *chatModel) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
+	// Lets the mouse wheel scroll the viewport (its Update already handles
+	// tea.MouseWheelMsg); PgUp/PgDn/ctrl+b/ctrl+f are the keyboard path for
+	// the same thing, for terminals or setups without mouse reporting.
+	v.MouseMode = tea.MouseModeCellMotion
 	if !m.ready {
 		v.SetContent("")
 		return v
