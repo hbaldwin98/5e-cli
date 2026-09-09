@@ -52,10 +52,6 @@ func Converse(ctx context.Context, st *store.Store, cfg Config, t Turn) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	citations := make([]Hit, len(ranked))
-	for i, r := range ranked {
-		citations[i] = r.hit()
-	}
 
 	total := promptRunes(cfg.AskMaxTokens)
 	notes := notesBlock(t.Notes, total/5)
@@ -77,7 +73,8 @@ func Converse(ctx context.Context, st *store.Store, cfg Config, t Turn) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Answer: strings.TrimSpace(answer), Citations: citations}, nil
+	answer = strings.TrimSpace(answer)
+	return Result{Answer: answer, Citations: validatedCitations(answer, ranked)}, nil
 }
 
 // conversePromptBody is the final user message: the notes, the sources this

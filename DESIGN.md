@@ -197,6 +197,7 @@ Provider is any OpenAI-compatible host:
 | `FIVE_E_EMBEDDINGS` | sidecar next to `--index` |
 | `FIVE_E_EMBED_MAX_TOKENS` | `8192` |
 | `FIVE_E_ASK_MAX_TOKENS` | `12000` |
+| `FIVE_E_MIN_SCORE` | `0.15` |
 
 Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxies work. The embedding cache is keyed by corpus fingerprint, base URL, embed model, and the token limit. Do not store the API key.
 
@@ -210,7 +211,13 @@ Naming a module does not restrict the answer to it: a question asked while runni
 
 **Grounding.** `ask` sends the chat model the retrieved chunks' source text, budgeted by `FIVE_E_ASK_MAX_TOKENS` and shared so short sources are never clipped and their unused share goes to long ones. `Hit.Snippet` is a display preview only and must not be what an answer is built from.
 
-**Chunk windows.** A record longer than the embedding model's per-input limit is split into overlapping windows rather than truncated, and the windows of one record collapse to their best-scoring part at retrieval. Set `FIVE_E_EMBED_MAX_TOKENS` when the backend caps lower than OpenAI does; many local embedding servers stop at 512.
+**Citations.** `Result.Citations` is not the retrieval list; it is the `(kind, name, source)` triples the model actually wrote in its answer, each checked against the chunks that were really retrieved. A triple that does not match a retrieved chunk (a plausible-looking name the model invented, a typo, a source it wasn't given) is dropped rather than surfaced as if it were grounded. A question with no citable answer legitimately returns no citations, even when retrieval found chunks.
+
+**Chunk windows.** A record longer than the embedding model's per-input limit is split into overlapping windows rather than truncated. At retrieval, up to two of a record's windows can both make the result list when both independently clear the relevance gate — a broad question can genuinely be answered by two different passages of one long section, and collapsing to a single best-scoring window would silently drop the second one. Set `FIVE_E_EMBED_MAX_TOKENS` when the backend caps lower than OpenAI does; many local embedding servers stop at 512.
+
+**Relevance gate.** Query and corpus vectors are both L2-normalized, so a chunk's score is already cosine similarity. Any chunk scoring below `FIVE_E_MIN_SCORE` is rejected before ranking rather than padding the result list: an off-topic question should retrieve nothing and get "no matching sources," not a citation to whatever scored highest among unrelated chunks. Set `FIVE_E_MIN_SCORE` to a negative value to disable the gate for a differently calibrated embedding model.
+
+**Lexical rescue.** Retrieval also runs the question through FTS5 (entity and document indexes, terms ORed rather than ANDed since a full question rarely repeats its own wording verbatim). A chunk that clears the score gate on its own is ranked purely by cosine similarity — a strong semantic match is never displaced by an unrelated chunk that happens to share one common word with the question. A chunk that does *not* clear the gate is otherwise dropped, but a lexical hit on it is treated as independent evidence of relevance and rescues it, appended after the confident tier in FTS rank order. This mainly recovers exact names and numbers a paraphrased embedding can miss.
 
 ### `chat`
 

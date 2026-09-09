@@ -103,11 +103,74 @@ func retrieveChunks(ctx context.Context, st *store.Store, cfg Config, q Query) (
 	if err != nil {
 		return nil, err
 	}
-	ranked := rankVectors(vecs, query, q, adventures, chunkFilter(q, sourceSet(q.Sources), srdOK, adventures, restrict))
+	keep := chunkFilter(q, sourceSet(q.Sources), srdOK, adventures, restrict)
+	lex, err := lexicalRank(st, q, keep)
+	if err != nil {
+		return nil, err
+	}
+	ranked := rankVectors(vecs, query, q, adventures, keep, cfg.MinScore, lex)
 	if err := attachText(cfg.CachePath, ranked); err != nil {
 		return nil, err
 	}
 	return ranked, nil
+}
+
+// lexicalRank runs the query through FTS5 across entities and documents and
+// returns each matching chunk's position in the combined relevance order,
+// best match first. It lets an exact term match rank a chunk the embedding
+// scored weakly, and lets rankVectors admit a lexically-justified chunk past
+// the score gate that a pure vector match would otherwise need to clear.
+func lexicalRank(st *store.Store, q Query, keep func(vector) bool) (map[string]int, error) {
+	match := lexicalQuery(q.Text)
+	if match == "" {
+		return nil, nil
+	}
+	limit := q.Limit * 8
+	entHits, err := st.FTSEntities(match, "", nil, false, limit)
+	if err != nil {
+		return nil, err
+	}
+	docHits, err := st.FTSDocuments(match, "", nil, limit)
+	if err != nil {
+		return nil, err
+	}
+	hits := append(entHits, docHits...)
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Rank < hits[j].Rank })
+
+	rank := make(map[string]int, len(hits))
+	for _, h := range hits {
+		if !keep((vector{chunk: chunk{Kind: h.Kind, Name: h.Name, Source: h.Source}})) {
+			continue
+		}
+		key := chunkKey(h.Kind, h.Name, h.Source)
+		if _, ok := rank[key]; ok {
+			continue
+		}
+		rank[key] = len(rank)
+	}
+	return rank, nil
+}
+
+// lexicalQuery turns a natural-language question into an FTS5 MATCH
+// expression. Unlike search.FTSQuery, terms are ORed rather than ANDed: a
+// full question rarely reuses every one of its own words verbatim in a
+// matching passage, and this query only widens recall for reranking, so a
+// partial term overlap is exactly the signal it should catch.
+func lexicalQuery(q string) string {
+	var parts []string
+	for _, f := range strings.Fields(q) {
+		var b strings.Builder
+		for _, r := range f {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				b.WriteRune(r)
+			}
+		}
+		if b.Len() == 0 {
+			continue
+		}
+		parts = append(parts, b.String()+"*")
+	}
+	return strings.Join(parts, " OR ")
 }
 
 func srdAllow(st *store.Store, only bool) (func(kind, name, source string) bool, error) {
@@ -219,33 +282,85 @@ func normalizeWords(s string) string {
 	return b.String()
 }
 
-func rankVectors(vecs []vector, query []float32, q Query, adventures []string, keep func(vector) bool) []scoredChunk {
-	// A long section is embedded as several parts; collapse them so one
-	// section cannot fill the result list with its own windows.
-	best := map[string]int{}
-	var ranked []scoredChunk
+// rrfK is the Reciprocal Rank Fusion constant: it flattens the influence of
+// rank 1 versus rank 2 so one retrieval method cannot dominate just because
+// its top hit is a hair better than its second.
+// maxPartsPerRecord bounds how many windows of one long record can appear in
+// a single result list. A long section is embedded as several overlapping
+// parts, and a broad question can genuinely be answered by more than one of
+// them (e.g. a class feature described early in a section and expanded on
+// several paragraphs later); collapsing to a single best-scoring window would
+// silently drop the second passage. The cap keeps one long record from
+// filling the whole result list on its own.
+const maxPartsPerRecord = 2
+
+func rankVectors(vecs []vector, query []float32, q Query, adventures []string, keep func(vector) bool, minScore float64, lexRank map[string]int) []scoredChunk {
+	groups := map[string][]scoredChunk{}
 	for _, v := range vecs {
 		if !keep(v) {
 			continue
 		}
 		s := scoredChunk{chunk: v.chunk, id: v.id, score: dot(query, v.vec)}
 		key := chunkKey(v.Kind, v.Name, v.Source)
-		if at, ok := best[key]; ok {
-			if s.score > ranked[at].score {
-				ranked[at] = s
+		groups[key] = append(groups[key], s)
+	}
+	var scored []scoredChunk
+	for _, g := range groups {
+		sort.Slice(g, func(i, j int) bool {
+			if g[i].score != g[j].score {
+				return g[i].score > g[j].score
 			}
+			return g[i].Part < g[j].Part
+		})
+		if len(g) > maxPartsPerRecord {
+			g = g[:maxPartsPerRecord]
+		}
+		scored = append(scored, g...)
+	}
+
+	// Two tiers, not one fused score: a chunk that clears the calibrated
+	// score gate on its own is ranked purely by that score, so a strong
+	// semantic match is never displaced by a coincidental keyword overlap
+	// (e.g. a "damage" in a follow-up question matching an unrelated item's
+	// flavor text). A chunk below the gate is dropped unless a lexical hit
+	// justifies it, and those rescued chunks are appended after the
+	// confident tier, ordered by how well they matched lexically.
+	var confident, rescued []scoredChunk
+	for _, s := range scored {
+		key := chunkKey(s.Kind, s.Name, s.Source)
+		if s.score >= minScore {
+			confident = append(confident, s)
 			continue
 		}
-		best[key] = len(ranked)
-		ranked = append(ranked, s)
-	}
-	ranked = editionChunks(ranked, q.Edition, adventures)
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
+		if _, lexical := lexRank[key]; lexical {
+			rescued = append(rescued, s)
 		}
-		return ranked[i].Name < ranked[j].Name
+	}
+	confident = editionChunks(confident, q.Edition, adventures)
+	rescued = editionChunks(rescued, q.Edition, adventures)
+
+	sort.Slice(confident, func(i, j int) bool {
+		if confident[i].score != confident[j].score {
+			return confident[i].score > confident[j].score
+		}
+		if confident[i].Name != confident[j].Name {
+			return confident[i].Name < confident[j].Name
+		}
+		return confident[i].Part < confident[j].Part
 	})
+	sort.Slice(rescued, func(i, j int) bool {
+		ri := lexRank[chunkKey(rescued[i].Kind, rescued[i].Name, rescued[i].Source)]
+		rj := lexRank[chunkKey(rescued[j].Kind, rescued[j].Name, rescued[j].Source)]
+		if ri != rj {
+			return ri < rj
+		}
+		if rescued[i].Name != rescued[j].Name {
+			return rescued[i].Name < rescued[j].Name
+		}
+		return rescued[i].Part < rescued[j].Part
+	})
+
+	ranked := append(confident, rescued...)
 	if len(ranked) > q.Limit {
 		ranked = ranked[:q.Limit]
 	}

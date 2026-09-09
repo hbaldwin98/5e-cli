@@ -27,19 +27,16 @@ func Ask(ctx context.Context, st *store.Store, cfg Config, q Query) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	citations := make([]Hit, len(ranked))
-	for i, r := range ranked {
-		citations[i] = r.hit()
-	}
 	if len(ranked) == 0 {
-		return Result{Answer: "No matching sources in the local index.", Citations: citations}, nil
+		return Result{Answer: "No matching sources in the local index."}, nil
 	}
 	cli := newClient(cfg)
 	answer, err := cli.Chat(ctx, systemPrompt, userPrompt(q.Text, ranked, promptRunes(cfg.AskMaxTokens)))
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Answer: strings.TrimSpace(answer), Citations: citations}, nil
+	answer = strings.TrimSpace(answer)
+	return Result{Answer: answer, Citations: validatedCitations(answer, ranked)}, nil
 }
 
 // userPrompt grounds the model in the retrieved source text. It deliberately

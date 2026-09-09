@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,6 +53,10 @@ func TestRetrieve_ranksKeywordNeighbors(t *testing.T) {
 func TestRetrieve_appliesEditionPreference(t *testing.T) {
 	st, cfg, _ := harness(t)
 	defer st.Close()
+	// The fallback fixture (Longsword) is topically unrelated to the query;
+	// disable the relevance gate so this test stays focused on edition
+	// preference rather than on the score it happens to embed at.
+	cfg.MinScore = -1
 
 	tests := []struct {
 		name   string
@@ -285,8 +290,8 @@ func (f *fakeAPI) handler() http.Handler {
 		}
 		f.lastMessages.Store(msgs)
 		answer := "I don't know."
-		if strings.Contains(user, "Fireball") {
-			answer = "Fireball explodes in fire (spell, Fireball, PHB)."
+		if kind, name, source, ok := firstRetrievedSource(user); ok {
+			answer = fmt.Sprintf("%s says so (%s, %s, %s).", name, kind, name, source)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
@@ -295,6 +300,18 @@ func (f *fakeAPI) handler() http.Handler {
 		})
 	})
 	return mux
+}
+
+// firstRetrievedSource reads the top-ranked "N. kind Name (Source)" line out
+// of the prompt's Sources block, so the fake model cites whatever real
+// retrieval actually surfaced first rather than a source hardcoded
+// independently of which edition or ranking the test's Config produces.
+func firstRetrievedSource(prompt string) (kind, name, source string, ok bool) {
+	m := regexp.MustCompile(`(?m)^\d+\.\s+(\S+)\s+(.+?)\s+\(([^)]+)\)\s*$`).FindStringSubmatch(prompt)
+	if m == nil {
+		return "", "", "", false
+	}
+	return m[1], m[2], m[3], true
 }
 
 func keywordEmbed(text string) []float32 {
@@ -399,6 +416,80 @@ func TestChunkID_distinguishesParts(t *testing.T) {
 	b := chunk{Kind: "bookSection", Name: "Combat", Source: "PHB", Part: 1}
 	if a.id() == b.id() {
 		t.Fatalf("parts share id %q, which would collide on the vectors primary key", a.id())
+	}
+}
+
+func TestValidatedCitations_dropsCitationsNotInRetrieval(t *testing.T) {
+	ranked := []scoredChunk{
+		{chunk: chunk{Kind: "spell", Name: "Fireball", Source: "PHB", Text: "boom"}, score: 0.9},
+	}
+	answer := "Fireball deals fire damage (spell, Fireball, PHB), and it counters (spell, Fire Shield, PHB) too."
+
+	got := validatedCitations(answer, ranked)
+	if len(got) != 1 || got[0].Name != "Fireball" {
+		t.Fatalf("want only the retrieved Fireball citation, got %+v", got)
+	}
+}
+
+func TestValidatedCitations_dedupesRepeatedCitations(t *testing.T) {
+	ranked := []scoredChunk{
+		{chunk: chunk{Kind: "spell", Name: "Fireball", Source: "PHB", Text: "boom"}, score: 0.9},
+	}
+	answer := "(spell, Fireball, PHB) ... and again (spell, Fireball, PHB)."
+
+	got := validatedCitations(answer, ranked)
+	if len(got) != 1 {
+		t.Fatalf("want the repeated citation deduplicated, got %+v", got)
+	}
+}
+
+func TestRetrieve_surfacesMultiplePartsOfOneLongRecord(t *testing.T) {
+	api := &fakeAPI{}
+	srv := httptest.NewServer(api.handler())
+	t.Cleanup(srv.Close)
+
+	// A single long section with two independently relevant halves, padded
+	// well past a small embedding window so it is split into separate parts.
+	text := "fire explosion bloom. " + strings.Repeat("filler word. ", 30) +
+		"goblin hideout cragmaw. " + strings.Repeat("more filler text. ", 30)
+
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, nil, []parse.Document{
+		{Kind: "bookSection", ParentID: "PHB", Section: "Long Section", JSON: json.RawMessage(`{}`), Text: text},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := Config{
+		APIKey:         "test-key",
+		BaseURL:        srv.URL,
+		EmbedModel:     "fake-embed",
+		AskModel:       "fake-ask",
+		EmbedMaxTokens: 40, // small window forces the section to split into parts
+		MinScore:       -1,
+		CachePath:      filepath.Join(t.TempDir(), "embeddings.sqlite"),
+		HTTPClient:     srv.Client(),
+		Progress:       io.Discard,
+	}
+
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion goblin hideout cragmaw", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parts int
+	for _, h := range hits {
+		if h.Name == "Long Section" {
+			parts++
+		}
+	}
+	if parts < 2 {
+		t.Fatalf("want both relevant windows of the long section, got %d matching hits: %+v", parts, hits)
 	}
 }
 
@@ -607,6 +698,9 @@ func TestAdventureScope_onlyRestrictsAndNamingDoesNot(t *testing.T) {
 func TestRetrieve_detectedAdventureReachesProseAndKeepsRulebooks(t *testing.T) {
 	st, cfg, _ := harness(t)
 	defer st.Close()
+	// The rulebook fixtures are topically unrelated to this query; disable
+	// the relevance gate so this test stays focused on scope, not score.
+	cfg.MinScore = -1
 
 	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "who is Gundren Rockseeker", Limit: 8})
 	if err != nil {
@@ -664,6 +758,81 @@ func TestRetrieve_namedAdventureKeepsTheRulebooks(t *testing.T) {
 	}
 	if len(hits) == 0 || hits[0].Name != "Cragmaw Hideout" {
 		t.Fatalf("module prose is not reachable: %+v", hits)
+	}
+}
+
+func TestRetrieve_gatesOutIrrelevantResults(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	// keywordEmbed's topics are disjoint five-dimensional buckets; a fire
+	// query only coincides with the sword-topic Longsword through their
+	// shared uniform baseline, which the default gate rejects as noise.
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Name == "Longsword" {
+			t.Fatalf("expected the relevance gate to reject the unrelated Longsword, got %+v", hits)
+		}
+	}
+
+	cfg.MinScore = -1
+	hits, err = Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLongsword bool
+	for _, h := range hits {
+		if h.Name == "Longsword" {
+			sawLongsword = true
+		}
+	}
+	if !sawLongsword {
+		t.Fatalf("disabling the gate should let the same query return its weak match, got %+v", hits)
+	}
+}
+
+func TestRetrieve_lexicalMatchRescuesAWeakSemanticScore(t *testing.T) {
+	st, cfg, _ := harness(t)
+	defer st.Close()
+
+	// "melee" does not touch any of keywordEmbed's topic buckets, so it does
+	// not change Longsword's semantic score against a fire query: it stays
+	// below the gate exactly as in TestRetrieve_gatesOutIrrelevantResults.
+	// But "melee" is literally in Longsword's indexed text, so FTS finds it.
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire explosion melee", Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLongsword bool
+	for _, h := range hits {
+		if h.Name == "Longsword" {
+			sawLongsword = true
+		}
+	}
+	if !sawLongsword {
+		t.Fatalf("expected the lexical match on melee to rescue Longsword past the score gate, got %+v", hits)
+	}
+}
+
+func TestRankVectors_rejectsScoresBelowTheMinimum(t *testing.T) {
+	vecs := []vector{
+		{chunk: chunk{Kind: "spell", Name: "Strong", Source: "PHB"}, id: "a", vec: []float32{1, 0}},
+		{chunk: chunk{Kind: "spell", Name: "Weak", Source: "PHB"}, id: "b", vec: []float32{0, 1}},
+	}
+	query := []float32{1, 0}
+	keep := func(vector) bool { return true }
+
+	ranked := rankVectors(vecs, query, Query{Limit: 8}, nil, keep, 0.5, nil)
+	if len(ranked) != 1 || ranked[0].Name != "Strong" {
+		t.Fatalf("want only the on-axis match above the gate, got %+v", ranked)
+	}
+
+	ranked = rankVectors(vecs, query, Query{Limit: 8}, nil, keep, -1, nil)
+	if len(ranked) != 2 {
+		t.Fatalf("a negative minimum should disable the gate, got %+v", ranked)
 	}
 }
 
