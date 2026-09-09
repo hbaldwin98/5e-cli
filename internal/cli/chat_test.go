@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hbaldwin98/5e-cli/internal/chat"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -657,6 +658,61 @@ func TestChat_slashAdventureOnlyWithAMultiwordTitle(t *testing.T) {
 	}
 	if !strings.Contains(out, "scoped to LMoP only\n") {
 		t.Fatalf("multiword title with only was not parsed correctly:\n%s", out)
+	}
+}
+
+func TestChat_slashScopeShowsAdventureAndFilters(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{
+		"--index", index, "--data", data, "chat", "--chat-dir", dir,
+		"--kind", "spell", "--source", "PHB", "--limit", "5",
+	}
+
+	out, err := runCLIStdin("/adventure LMoP only\n/scope\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"adventure: LMoP only",
+		"kind: spell",
+		"sources: PHB",
+		"limit: 5",
+		"edition: 2024",
+		"srd: false",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestChat_slashScopeJSONReportsStructuredFields(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "--json", "chat", "--chat-dir", dir, "--kind", "spell"}
+
+	out, err := runCLIStdin("/scope\n/exit\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var event struct {
+		Type string `json:"type"`
+		Data struct {
+			Scope struct {
+				Kind  string `json:"kind"`
+				Limit int    `json:"limit"`
+			} `json:"scope"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &event); err != nil {
+		t.Fatalf("bad json: %v\n%s", err, lines[0])
+	}
+	if event.Type != "command" || event.Data.Scope.Kind != "spell" || event.Data.Scope.Limit != chat.DefaultLimit {
+		t.Fatalf("got %+v", event)
 	}
 }
 

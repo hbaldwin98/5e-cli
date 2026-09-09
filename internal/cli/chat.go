@@ -372,6 +372,58 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 	return chatREPL(cmd, opt, st, cs, cfg, sess, opts)
 }
 
+// scopeSummary is every retrieval filter in effect for a session's next
+// question: the adventure scope, which is saved with the session, and the
+// per-invocation knobs (--kind, --source, --limit, --edition, --srd), which
+// are not. Grouping them is what makes them all visible together in one
+// place instead of only at REPL startup (adventure scope) or only after
+// changing them (/limit's own confirmation).
+type scopeSummary struct {
+	Adventure     string   `json:"adventure,omitempty"`
+	AdventureOnly bool     `json:"adventureOnly,omitempty"`
+	Kind          string   `json:"kind,omitempty"`
+	Sources       []string `json:"sources,omitempty"`
+	Limit         int      `json:"limit"`
+	Edition       string   `json:"edition"`
+	SRD           bool     `json:"srd,omitempty"`
+}
+
+func scopeFields(sess *chat.Session, opts *chat.Options) scopeSummary {
+	return scopeSummary{
+		Adventure:     sess.Adventure,
+		AdventureOnly: sess.AdventureOnly,
+		Kind:          opts.Kind,
+		Sources:       opts.Sources,
+		Limit:         opts.Limit,
+		Edition:       string(opts.Edition),
+		SRD:           opts.SRD,
+	}
+}
+
+func writeScopeFields(w io.Writer, s scopeSummary) {
+	adventure := "none"
+	if s.Adventure != "" {
+		adventure = s.Adventure
+		if s.AdventureOnly {
+			adventure += " only"
+		}
+	}
+	kind := s.Kind
+	if kind == "" {
+		kind = "any"
+	}
+	sources := "any"
+	if len(s.Sources) > 0 {
+		sources = strings.Join(s.Sources, ", ")
+	}
+	fmt.Fprintf(w, "adventure: %s\n", adventure)
+	fmt.Fprintf(w, "kind: %s\n", kind)
+	fmt.Fprintf(w, "sources: %s\n", sources)
+	fmt.Fprintf(w, "limit: %d\n", s.Limit)
+	fmt.Fprintf(w, "edition: %s\n", s.Edition)
+	fmt.Fprintf(w, "srd: %v\n", s.SRD)
+}
+
 // scopeAdventure sets or clears the session's adventure scope. The scope is
 // stored with the session rather than passed per question, since a
 // conversation about one module is about it for every follow-up.
@@ -491,6 +543,7 @@ const chatHelp = `Commands:
   /sources            citations for the last answer
   /adventure <id-or-title>   add an adventure's prose (append " only" to
                       drop the rulebooks, or use "none" to clear the scope)
+  /scope              show the active adventure scope and retrieval filters
   /limit <n>          retrieved chunks per question
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
@@ -507,6 +560,9 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 		fmt.Fprintf(out, "session %s (%s, %s)", sess.Name, plural(len(sess.Turns), "turn"), plural(len(sess.Notes), "note"))
 		if scope := sess.Scope(); scope != "" {
 			fmt.Fprintf(out, " scoped to %s", scope)
+		}
+		if opts.Kind != "" || len(opts.Sources) > 0 || opts.SRD {
+			fmt.Fprint(out, "; /scope for active filters")
 		}
 		fmt.Fprintf(out, "\n/help for commands, /exit to leave\n\n")
 	}
@@ -678,6 +734,12 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			if !asJSON {
 				fmt.Fprintf(out, "scoped to %s\n", scope)
 			}
+		}
+	case "/scope":
+		fields := scopeFields(sess, opts)
+		event.Data = map[string]any{"scope": fields}
+		if !asJSON {
+			writeScopeFields(out, fields)
 		}
 	case "/limit":
 		n, err := parseChatLimit(rest)
