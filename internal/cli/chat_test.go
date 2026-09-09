@@ -434,6 +434,31 @@ func TestChat_clearDropsHistoryAndKeepsNotes(t *testing.T) {
 	}
 }
 
+func TestChat_showAndClearRefuseAnUnknownSession(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	if _, err := runCLI(append(base, "show", "never-created")...); err == nil {
+		t.Fatal("show on an unknown session should error, not silently create one")
+	}
+	if _, err := runCLI(append(base, "clear", "never-created")...); err == nil {
+		t.Fatal("clear on an unknown session should error, not silently create one")
+	}
+	out, err := runCLI("--index", index, "--data", data, "--json", "chat", "--chat-dir", dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("show/clear must not create a session as a side effect: %s", out)
+	}
+}
+
 func TestChat_renameExportImport(t *testing.T) {
 	index, _ := chatFixture(t)
 	dir := filepath.Join(t.TempDir(), "chats")
@@ -454,8 +479,8 @@ func TestChat_renameExportImport(t *testing.T) {
 	if !strings.Contains(out, `renamed "curse-of-strahd" to "cos-campaign"`) {
 		t.Fatalf("rename: %s", out)
 	}
-	if _, err := runCLI(append(base, "show", "curse-of-strahd")...); err != nil {
-		t.Fatal(err) // Load creates a fresh, empty session under a free name.
+	if _, err := runCLI(append(base, "show", "curse-of-strahd")...); err == nil {
+		t.Fatal("the old name should be gone, not silently re-created by show")
 	}
 
 	exportFile := filepath.Join(t.TempDir(), "exported.json")

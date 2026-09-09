@@ -105,6 +105,23 @@ func (s *Store) Load(name string) (*Session, error) {
 	return &sess, nil
 }
 
+// LoadExisting is Load, but refuses to silently create a session: a command
+// that reads or edits an already-recorded conversation (show, clear) should
+// report a typo'd or unknown session name rather than succeed against a
+// fresh empty session nobody asked for. Commands where naming a session is
+// how you create it (asking a question, adding a note) should keep using
+// Load.
+func (s *Store) LoadExisting(name string) (*Session, error) {
+	had, err := s.exists(name)
+	if err != nil {
+		return nil, err
+	}
+	if !had {
+		return nil, fmt.Errorf("no session named %q", strings.TrimSpace(name))
+	}
+	return s.Load(name)
+}
+
 func newSession(name string) *Session {
 	name = strings.TrimSpace(name)
 	return &Session{Name: name, Created: now(), Updated: now()}
@@ -212,14 +229,28 @@ func (s *Store) Delete(name string) error {
 	return nil
 }
 
-// exists reports whether a session file is actually on disk, as opposed to
-// Load's habit of returning a new empty session for a name that isn't there.
+// exists reports whether a session file is actually on disk under either its
+// current identity-hashed path or its pre-migration legacy path, as opposed
+// to Load's habit of returning a new empty session for a name that isn't
+// there under either.
 func (s *Store) exists(name string) (bool, error) {
 	path, err := s.Path(name)
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	legacyPath, err := s.legacyPath(name)
+	if err != nil {
+		return false, err
+	}
+	if legacyPath == path {
+		return false, nil
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}

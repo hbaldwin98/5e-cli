@@ -320,6 +320,28 @@ func TestStore_clearedSessionStaysListed(t *testing.T) {
 	}
 }
 
+func TestStore_loadExistingRefusesAnUnknownSession(t *testing.T) {
+	cs := testStore(t)
+	if _, err := cs.LoadExisting("nope"); err == nil {
+		t.Fatal("want an error for a session that was never created")
+	}
+
+	sess, err := cs.Load("real session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	found, err := cs.LoadExisting("real session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Name != "real session" {
+		t.Fatalf("got %+v", found)
+	}
+}
+
 func TestStore_renamePreservesTranscriptAndFreesTheOldName(t *testing.T) {
 	cs := testStore(t)
 

@@ -240,6 +240,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 
 **Clearing.** `5e chat clear` (or `/clear`) empties the transcript and keeps the session, its notes, and its adventure scope: dropping the history is how you change subject without losing what you wrote down. `--notes` (or `/clear all`) drops the notes too. Deleting the session is `5e chat rm`.
 
+**Not-found behavior.** Asking a question or adding a note names a session into existence, per the comment on `Store.Load`. `chat show` and `chat clear` name a session whose content they read or act on, not create; they use `Store.LoadExisting` and error on an unknown name instead of silently creating and reporting success on a fresh empty session nobody asked for. `chat rm` stays idempotent: deleting an already-gone session is not an error.
+
 **Rename, export, import.** `5e chat rename <session> <new-name>` keeps the transcript and notes and refuses to overwrite an existing session, the same collision protection given a session created by `chat`. `5e chat export <session>` writes the session as the same JSON `Save` persists, to stdout or `--out FILE`, so it is both a backup format and a valid `chat import` input. `5e chat import <file>` refuses to overwrite an existing session unless `--force` is given; `--name` imports under a different name than the one recorded in the file, so an export can be shared or restored without editing it first.
 
 **Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.

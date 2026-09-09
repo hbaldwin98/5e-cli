@@ -110,7 +110,7 @@ func chatShowCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := cs.Load(sessionName(copt, args))
+			sess, err := cs.LoadExisting(sessionName(copt, args))
 			if err != nil {
 				return err
 			}
@@ -165,7 +165,7 @@ func chatClearCmd(opt *options, copt *chatOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := cs.Load(sessionName(copt, args))
+			sess, err := cs.LoadExisting(sessionName(copt, args))
 			if err != nil {
 				return err
 			}
