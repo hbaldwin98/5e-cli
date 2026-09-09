@@ -148,29 +148,70 @@ func notesBlock(notes []string, budget int) string {
 	return b.String()
 }
 
-// trimHistory keeps the most recent turns that fit the budget and drops the
-// older ones whole, so the model never sees half an exchange. A single turn
-// longer than the budget is clipped to its tail.
+// trimHistory keeps the most recent complete exchanges that fit the budget.
+// A trailing user message without an answer is safe to keep on its own, but an
+// assistant message is never retained without its corresponding question. A
+// standalone user message longer than the budget is clipped to its tail.
 func trimHistory(history []Message, budget int) []Message {
+	if budget <= 0 || len(history) == 0 {
+		return nil
+	}
+
+	// A trailing user message can represent an unfinished question supplied by
+	// a caller. Keep it before older exchanges, but never do the equivalent for
+	// an assistant message: that would expose an answer without its question.
+	end := len(history)
 	kept := make([]Message, 0, len(history))
 	remaining := budget
-	for i := len(history) - 1; i >= 0; i-- {
-		m := history[i]
+	if history[end-1].Role == "user" {
+		m := history[end-1]
 		n := utf8.RuneCountInString(m.Content)
 		if n > remaining {
-			if len(kept) == 0 && remaining > 0 {
-				m.Content = clipTail(m.Content, remaining)
-				kept = append(kept, m)
-			}
+			m.Content = clipTail(m.Content, remaining)
+		} else {
+			remaining -= n
+		}
+		if m.Content != "" {
+			kept = append(kept, m)
+		}
+		end--
+	}
+
+	// Find complete user/assistant exchanges first. This also makes malformed
+	// history harmless: unrelated messages are ignored rather than paired by
+	// position and accidentally presented as conversation context.
+	type exchange struct {
+		user      Message
+		assistant Message
+	}
+	exchanges := make([]exchange, 0, end/2)
+	for i := 0; i+1 < end; {
+		if history[i].Role == "user" && history[i+1].Role == "assistant" {
+			exchanges = append(exchanges, exchange{user: history[i], assistant: history[i+1]})
+			i += 2
+			continue
+		}
+		i++
+	}
+
+	selected := make([]exchange, 0, len(exchanges))
+	for i := len(exchanges) - 1; i >= 0; i-- {
+		pair := exchanges[i]
+		n := utf8.RuneCountInString(pair.user.Content) + utf8.RuneCountInString(pair.assistant.Content)
+		if n > remaining {
 			break
 		}
 		remaining -= n
-		kept = append(kept, m)
+		selected = append(selected, pair)
 	}
-	out := make([]Message, 0, len(kept))
-	for i := len(kept) - 1; i >= 0; i-- {
-		out = append(out, kept[i])
+
+	// The selected exchanges were collected newest-first. Add them before the
+	// optional trailing user so the returned history remains chronological.
+	out := make([]Message, 0, len(selected)*2+len(kept))
+	for i := len(selected) - 1; i >= 0; i-- {
+		out = append(out, selected[i].user, selected[i].assistant)
 	}
+	out = append(out, kept...)
 	return out
 }
 

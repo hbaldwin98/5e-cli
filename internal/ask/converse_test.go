@@ -119,10 +119,22 @@ func TestTrimHistory_dropsOldestWholeTurns(t *testing.T) {
 		{Role: "user", Content: strings.Repeat("a", 60)},
 		{Role: "assistant", Content: strings.Repeat("b", 60)},
 		{Role: "user", Content: strings.Repeat("c", 60)},
+		{Role: "assistant", Content: strings.Repeat("d", 60)},
 	}
 	got := trimHistory(history, 130)
-	if len(got) != 2 || got[0].Content[0] != 'b' || got[1].Content[0] != 'c' {
-		t.Fatalf("want the two most recent turns whole, got %d: %+v", len(got), got)
+	if len(got) != 2 || got[0].Content[0] != 'c' || got[1].Content[0] != 'd' {
+		t.Fatalf("want the most recent complete exchange, got %d: %+v", len(got), got)
+	}
+
+	// A trailing question may be retained while it has no answer yet, but an
+	// answer must never survive without the question it belongs to.
+	got = trimHistory(history[:3], 130)
+	if len(got) != 1 || got[0].Role != "user" || got[0].Content[0] != 'c' {
+		t.Fatalf("want only the unfinished latest question, got %+v", got)
+	}
+	got = trimHistory(history[:2], 60)
+	if len(got) != 0 {
+		t.Fatalf("an oversized exchange must be dropped whole, got %+v", got)
 	}
 
 	long := []Message{{Role: "user", Content: strings.Repeat("x", 500) + "tail"}}
