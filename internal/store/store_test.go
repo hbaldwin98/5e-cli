@@ -408,3 +408,27 @@ func TestAdventureExclusiveNames_guardsAgainstGenericNames(t *testing.T) {
 		t.Fatalf("adventure title missing: %v", index["Lost Mine of Testing"])
 	}
 }
+
+func TestAdventureNames_toleratesAnOlderIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	if err := Create(path, Meta{SHA: "t", DataRoot: t.TempDir(), IngestedAt: Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Testbolt", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "a"},
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB.Exec(`DROP TABLE adventure_names`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.AdventureNames()
+	if err != nil {
+		t.Fatalf("an index without the table must not error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v", got)
+	}
+}

@@ -308,8 +308,20 @@ func distinctiveName(name string) bool {
 	return len([]rune(strings.TrimSpace(name))) >= minDistinctiveName
 }
 
-// AdventureNames returns the precomputed adventure-exclusive names.
+// AdventureNames returns the precomputed adventure-exclusive names. An index
+// built before the table existed returns none rather than an error: the data
+// fingerprint is unchanged by an ingest-code change, so `doctor` cannot flag
+// such an index as stale, and failing here would break every ask.
 func (s *Store) AdventureNames() ([]EntityRef, error) {
+	var present int
+	if err := s.DB.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'adventure_names'`,
+	).Scan(&present); err != nil {
+		return nil, err
+	}
+	if present == 0 {
+		return nil, nil
+	}
 	rows, err := s.DB.Query(`SELECT name, adventure FROM adventure_names`)
 	if err != nil {
 		return nil, err
