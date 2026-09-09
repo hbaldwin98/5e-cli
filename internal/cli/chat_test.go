@@ -15,6 +15,7 @@ import (
 
 	"github.com/hbaldwin98/5e-cli/internal/chat"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
+	"github.com/hbaldwin98/5e-cli/internal/provider"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
@@ -284,9 +285,10 @@ type chatMessage struct {
 // chatAPI is an OpenAI-compatible stand-in that records every chat request, so
 // a test can assert what the conversation actually sent.
 type chatAPI struct {
-	mu       sync.Mutex
-	requests [][]chatMessage
-	broken   bool
+	mu        sync.Mutex
+	requests  [][]chatMessage
+	reqModels []string
+	broken    bool
 }
 
 func (a *chatAPI) messages() [][]chatMessage {
@@ -295,46 +297,47 @@ func (a *chatAPI) messages() [][]chatMessage {
 	return append([][]chatMessage(nil), a.requests...)
 }
 
+// models returns the "model" field sent with each chat/completions
+// request, in the same order as messages(), so a test can assert a
+// /model or /provider switch actually changed what a later turn sent.
+func (a *chatAPI) models() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.reqModels...)
+}
+
 func (a *chatAPI) fail(v bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.broken = v
 }
 
-func chatFixture(t *testing.T) (index string, api *chatAPI) {
+// chatCompletionsFixtureServer is chatFixture's fake OpenAI-compatible
+// backend (chat completions, streamed or not, plus embeddings), factored
+// out so a test that needs a second, independent provider to switch to can
+// stand one up without duplicating the whole handler. It returns the
+// server's base URL.
+func chatCompletionsFixtureServer(t *testing.T, api *chatAPI, answer string) string {
 	t.Helper()
-	index = filepath.Join(t.TempDir(), "index.sqlite")
-	err := store.Create(index, store.Meta{SHA: "chat", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
-		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
-		{Kind: "spell", Name: "Fireball", Source: "XPHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
-		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
-		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
-	}, []parse.Document{
-		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "Goblins nest in the Cragmaw hideout in the hills."},
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	api = &chatAPI{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			var req struct {
 				Messages []chatMessage `json:"messages"`
 				Stream   bool          `json:"stream"`
+				Model    string        `json:"model"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			api.mu.Lock()
 			broken := api.broken
 			if !broken {
 				api.requests = append(api.requests, req.Messages)
+				api.reqModels = append(api.reqModels, req.Model)
 			}
 			api.mu.Unlock()
 			if broken {
 				http.Error(w, "rate limited", http.StatusTooManyRequests)
 				return
 			}
-			const answer = "Fireball explodes in fire (spell, Fireball, PHB)."
 			if !req.Stream {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"choices": []map[string]any{
@@ -383,8 +386,28 @@ func chatFixture(t *testing.T) (index string, api *chatAPI) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))
 	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func chatFixture(t *testing.T) (index string, api *chatAPI) {
+	t.Helper()
+	index = filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "chat", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "spell", Name: "Fireball", Source: "XPHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
+		{Kind: "adventure", Name: "Lost Mine of Testing", Source: "LMoP", JSON: json.RawMessage(`{}`), Text: "phandelver"},
+	}, []parse.Document{
+		{Kind: "adventureSection", ParentID: "LMoP", Section: "Cragmaw Hideout", JSON: json.RawMessage(`{}`), Text: "Goblins nest in the Cragmaw hideout in the hills."},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	api = &chatAPI{}
+	srv := chatCompletionsFixtureServer(t, api, "Fireball explodes in fire (spell, Fireball, PHB).")
 	t.Setenv("OPENAI_API_KEY", "test")
-	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_BASE_URL", srv)
 	t.Setenv("FIVE_E_EMBED_MODEL", "fake-embed")
 	t.Setenv("FIVE_E_ASK_MODEL", "fake-ask")
 	t.Setenv("FIVE_E_EMBEDDINGS", filepath.Join(t.TempDir(), "embeddings.sqlite"))
@@ -788,6 +811,103 @@ func TestChat_slashKindSourceSrdControlRetrieval(t *testing.T) {
 	}
 	if strings.Contains(prompt, "(XPHB)") {
 		t.Fatalf("/source PHB should exclude Fireball/XPHB:\n%s", prompt)
+	}
+}
+
+func TestChat_slashModelOverridesTheChatModelForLaterTurns(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin(strings.Join([]string{
+		"/model",
+		"/model gpt-x",
+		"/model",
+		"what does fireball do",
+		"/exit",
+	}, "\n")+"\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "model fake-ask\n") {
+		t.Fatalf("want the starting model reported, got:\n%s", out)
+	}
+	if !strings.Contains(out, "model gpt-x\n") {
+		t.Fatalf("want the overridden model reported, got:\n%s", out)
+	}
+
+	msgs := api.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("want one chat call, got %d", len(msgs))
+	}
+	if got := api.models(); len(got) != 1 || got[0] != "gpt-x" {
+		t.Fatalf("want the turn sent with the overridden model, got %v", got)
+	}
+}
+
+func TestChat_slashProviderSwitchesCredentialsAndModel(t *testing.T) {
+	index, api := chatFixture(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// A second fake server stands in for a distinct provider so switching
+	// really does change which backend the next turn hits.
+	other := &chatAPI{}
+	srv2 := chatCompletionsFixtureServer(t, other, "switched answer.")
+	runAuth(t, "", "login", "openrouter", "--api-key", "or-key-0123456789", "--chat-model", "or-model")
+	path, err := provider.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, _ := store.Get("openrouter")
+	cred.BaseURL = srv2
+	store.Set("openrouter", cred)
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin(strings.Join([]string{
+		"/provider openrouter",
+		"what does fireball do",
+		"/exit",
+	}, "\n")+"\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "provider openrouter (model or-model") {
+		t.Fatalf("want the switch confirmed, got:\n%s", out)
+	}
+	if len(api.messages()) != 0 {
+		t.Fatal("the original provider must not see the turn after switching")
+	}
+	if len(other.messages()) != 1 {
+		t.Fatalf("want the turn sent to the switched-to provider, got %d", len(other.messages()))
+	}
+}
+
+func TestChat_slashProviderErrorsForAnUnconfiguredProvider(t *testing.T) {
+	index, _ := chatFixture(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+	base := []string{"--index", index, "--data", data, "chat", "--chat-dir", dir}
+
+	out, err := runCLIStdin(strings.Join([]string{
+		"/provider openai",
+		"/exit",
+	}, "\n")+"\n", base...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "not configured") {
+		t.Fatalf("want an error about the unconfigured provider, got:\n%s", out)
 	}
 }
 

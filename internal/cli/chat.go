@@ -645,6 +645,8 @@ const chatHelp = `Commands:
   /srd [on|off]       show or set whether retrieval is SRD-only
   /history            print the transcript
   /clear [all]        drop the transcript, or "all" to drop the notes too
+  /provider [name]    switch to a configured provider (see 5e auth list), or show the current model/base url
+  /model [name]       override the chat model for the rest of this session, or show the current one
   /help               this list
   /exit               leave (Ctrl-D also works)
 Anything else is a question.`
@@ -679,7 +681,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 			continue
 		}
 		if strings.HasPrefix(line, "/") {
-			quit, event, err := chatCommand(cmd, st, cs, sess, &opts, line, opt.JSON)
+			quit, event, err := chatCommand(cmd, st, cs, sess, &cfg, &opts, line, opt.JSON)
 			if err != nil {
 				if opt.JSON {
 					if writeErr := writeChatError(out, sess, event.Command, "", err); writeErr != nil {
@@ -740,7 +742,7 @@ func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store,
 // chatCommand runs one slash command, reporting whether the session should
 // end. Anything it changes is saved immediately, since the REPL is the thing
 // people leave open and then close the terminal on.
-func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, opts *chat.Options, line string, asJSON bool) (bool, chatCommandResult, error) {
+func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat.Session, cfg *ask.Config, opts *chat.Options, line string, asJSON bool) (bool, chatCommandResult, error) {
 	out := cmd.OutOrStdout()
 	name, rest, _ := strings.Cut(line, " ")
 	rest = strings.TrimSpace(rest)
@@ -946,6 +948,36 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			if err := writeChatSession(out, sess); err != nil {
 				return false, event, err
 			}
+		}
+	case "/provider":
+		if rest == "" {
+			event.Data = map[string]any{"model": cfg.AskModel, "embed_model": cfg.EmbedModel, "base_url": cfg.BaseURL}
+			if !asJSON {
+				fmt.Fprintf(out, "model %s (embed %s)\nbase url %s\n", cfg.AskModel, cfg.EmbedModel, cfg.BaseURL)
+			}
+			break
+		}
+		cred, err := loadProviderCredential(strings.ToLower(rest))
+		if err != nil {
+			return false, event, err
+		}
+		applyCredential(cfg, cred)
+		event.Data = map[string]any{"provider": rest, "model": cfg.AskModel, "embed_model": cfg.EmbedModel}
+		if !asJSON {
+			fmt.Fprintf(out, "provider %s (model %s, embed %s)\n", rest, cfg.AskModel, cfg.EmbedModel)
+		}
+	case "/model":
+		if rest == "" {
+			event.Data = map[string]any{"model": cfg.AskModel}
+			if !asJSON {
+				fmt.Fprintf(out, "model %s\n", cfg.AskModel)
+			}
+			break
+		}
+		cfg.AskModel = rest
+		event.Data = map[string]any{"model": cfg.AskModel}
+		if !asJSON {
+			fmt.Fprintf(out, "model %s\n", cfg.AskModel)
 		}
 	default:
 		return false, event, fmt.Errorf("unknown command %s; /help for the list", name)

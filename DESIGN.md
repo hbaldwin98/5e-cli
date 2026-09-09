@@ -174,6 +174,13 @@ model — swapping embedding models mid-run would invalidate the on-disk
 embedding cache, which a chat-model override has no business doing as a
 side effect.
 
+The same switch is available mid-conversation in `chat` (both the REPL and
+the Bubble Tea workspace, since both route slash commands through the same
+`chatCommand`): `/provider <name>` swaps to a configured provider's
+credentials and stored model for the rest of the session, `/provider`
+alone shows the model/base URL in use, and `/model [name]` overrides or
+shows just the chat model, the same way `--model` does for a whole run.
+
 A future OpenAI Codex provider will add a distinct `5e auth login codex`
 OAuth flow (browser or headless) to this same store — but Codex's ChatGPT
 subscription auth only scopes to the chat/completion endpoints Codex

@@ -338,7 +338,7 @@ func (m *chatModel) runSlashCommand(line string) (tea.Model, tea.Cmd) {
 	var buf bytes.Buffer
 	captured.SetOut(&buf)
 	captured.SetErr(&buf)
-	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.opts, line, false)
+	quit, _, err := chatCommand(captured, m.st, m.cs, m.sess, &m.cfg, &m.opts, line, false)
 	if out := strings.TrimSpace(buf.String()); out != "" {
 		m.writeLine(out)
 	}

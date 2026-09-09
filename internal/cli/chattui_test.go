@@ -122,6 +122,26 @@ func TestChatModel_showsAThinkingIndicatorBeforeTheFirstToken(t *testing.T) {
 	}
 }
 
+func TestChatModel_slashModelOverridesTheModelUsedForTheNextTurn(t *testing.T) {
+	m, api := newTestChatModel(t)
+
+	m.input.SetValue("/model gpt-x")
+	m.submit()
+	if !strings.Contains(m.transcript.String(), "model gpt-x") {
+		t.Fatalf("want the switch confirmed in the transcript, got:\n%s", m.transcript.String())
+	}
+	if m.cfg.AskModel != "gpt-x" {
+		t.Fatalf("want the model applied to the workspace's config, got %q", m.cfg.AskModel)
+	}
+
+	m.input.SetValue("what does fireball do")
+	_, cmd := m.submit()
+	drive(t, m, cmd)
+	if got := api.models(); len(got) != 1 || got[0] != "gpt-x" {
+		t.Fatalf("want the turn sent with the overridden model, got %v", got)
+	}
+}
+
 func TestChatModel_ignoresSubmitWhileATurnIsInFlight(t *testing.T) {
 	m, api := newTestChatModel(t)
 

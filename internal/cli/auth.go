@@ -21,35 +21,51 @@ import (
 // model override should do as a side effect.
 func applyProviderOverride(cfg *ask.Config, opt *options) error {
 	if opt.Provider != "" {
-		path, err := provider.DefaultPath()
+		cred, err := loadProviderCredential(opt.Provider)
 		if err != nil {
 			return err
 		}
-		store, err := provider.Load(path)
-		if err != nil {
-			return err
-		}
-		cred, ok := store.Get(opt.Provider)
-		if !ok {
-			return fmt.Errorf("%s is not configured; run `5e auth login %s`", opt.Provider, opt.Provider)
-		}
-		cfg.APIKey = cred.APIKey
-		// cfg was already defaulted by ConfigFromEnv; an empty cred.BaseURL
-		// (plain "openai") means "use that default", not "clear it".
-		if cred.BaseURL != "" {
-			cfg.BaseURL = cred.BaseURL
-		}
-		if cred.ChatModel != "" {
-			cfg.AskModel = cred.ChatModel
-		}
-		if cred.EmbedModel != "" {
-			cfg.EmbedModel = cred.EmbedModel
-		}
+		applyCredential(cfg, cred)
 	}
 	if opt.Model != "" {
 		cfg.AskModel = opt.Model
 	}
 	return nil
+}
+
+// loadProviderCredential looks up one configured provider's credential by
+// name, shared by --provider and the /provider chat command.
+func loadProviderCredential(name string) (provider.Credential, error) {
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return provider.Credential{}, err
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return provider.Credential{}, err
+	}
+	cred, ok := store.Get(name)
+	if !ok {
+		return provider.Credential{}, fmt.Errorf("%s is not configured; run `5e auth login %s`", name, name)
+	}
+	return cred, nil
+}
+
+// applyCredential layers a resolved credential onto cfg, which was already
+// defaulted by ask.ConfigFromEnv: an empty cred.BaseURL (plain "openai")
+// means "use that existing default", not "clear it", and an empty model
+// leaves whatever cfg already had.
+func applyCredential(cfg *ask.Config, cred provider.Credential) {
+	cfg.APIKey = cred.APIKey
+	if cred.BaseURL != "" {
+		cfg.BaseURL = cred.BaseURL
+	}
+	if cred.ChatModel != "" {
+		cfg.AskModel = cred.ChatModel
+	}
+	if cred.EmbedModel != "" {
+		cfg.EmbedModel = cred.EmbedModel
+	}
 }
 
 // knownProviders lists the API-key providers `5e auth login` accepts today.
