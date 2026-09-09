@@ -98,6 +98,41 @@ func truthy(v any) bool {
 	}
 }
 
+// MergeSpellClasses injects a "classes" field into a spell entity's JSON,
+// shaped like 5etools' own (now-retired) per-spell classes field —
+// {"fromClassList": [{"class": {"name": ...}}, ...]} — so
+// internal/statblock's spellClasses/SpellGrantedToClass can read it exactly
+// as it would that older format. Newer 5etools data dropped per-spell class
+// tagging in favor of a separately generated lookup keyed by spell name
+// (gendata-spell-source-lookup.json), so ingest must reattach it.
+func MergeSpellClasses(e Entity, classNames []string) Entity {
+	if len(classNames) == 0 {
+		return e
+	}
+	dec := json.NewDecoder(strings.NewReader(string(e.JSON)))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		return e
+	}
+	list := make([]map[string]any, len(classNames))
+	for i, name := range classNames {
+		list[i] = map[string]any{"class": map[string]any{"name": name}}
+	}
+	obj["classes"] = map[string]any{"fromClassList": list}
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return e
+	}
+	e.JSON = raw
+	if e.Text != "" {
+		e.Text = e.Text + "\n\n" + strings.Join(classNames, ", ")
+	} else {
+		e.Text = strings.Join(classNames, ", ")
+	}
+	return e
+}
+
 // MergeFluff appends fluff plaintext and edges onto an entity.
 func MergeFluff(e Entity, fluff map[string]any) Entity {
 	ft, fe := Flatten(fluff)

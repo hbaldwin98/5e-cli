@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/parse"
@@ -72,6 +73,9 @@ func writeIndex(dataDir, index, sha string) (Result, error) {
 			entities[k] = parse.MergeFluff(e, f)
 		}
 	}
+	if err := mergeSpellClasses(dataDir, entities); err != nil {
+		return Result{}, err
+	}
 	docs, apps, inline, err := loadDocuments(dataDir)
 	if err != nil {
 		return Result{}, err
@@ -98,6 +102,64 @@ func writeIndex(dataDir, index, sha string) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Entities: len(list), Documents: len(docs), Index: index, SHA: sha}, nil
+}
+
+// mergeSpellClasses attaches each spell's granted-to classes, read from
+// 5etools' generated spell/class lookup (generated/gendata-spell-source-lookup.json,
+// keyed by lowercased spell name), onto the matching spell entities. Newer
+// 5etools spell records carry no "classes" field of their own — the
+// association only exists in this separately generated file — so without
+// this step "list spell --class" and a spell's Classes field would always
+// be empty. The lookup file is optional: test fixtures and older data trees
+// without it simply leave spells without a Classes field, same as before
+// this feature existed.
+func mergeSpellClasses(dataDir string, entities map[string]parse.Entity) error {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "generated", "gendata-spell-source-lookup.json"))
+	if err != nil {
+		return nil
+	}
+	// Keyed by lowercased source book id (e.g. "phb", "xphb"), then by
+	// lowercased spell name, then a class field shaped source->className->bool
+	// — a spell reprinted across books can grant different classes per book,
+	// so every source group must be unioned to get the full class list.
+	type spellEntry struct {
+		Class map[string]map[string]any `json:"class"`
+	}
+	var bySource map[string]map[string]spellEntry
+	if err := json.Unmarshal(raw, &bySource); err != nil {
+		return fmt.Errorf("parse spell source lookup: %w", err)
+	}
+	classesByName := map[string]map[string]bool{}
+	for _, spells := range bySource {
+		for name, entry := range spells {
+			set := classesByName[name]
+			if set == nil {
+				set = map[string]bool{}
+				classesByName[name] = set
+			}
+			for _, classes := range entry.Class {
+				for className := range classes {
+					set[className] = true
+				}
+			}
+		}
+	}
+	for key, e := range entities {
+		if e.Kind != "spell" {
+			continue
+		}
+		set, ok := classesByName[strings.ToLower(e.Name)]
+		if !ok {
+			continue
+		}
+		names := make([]string, 0, len(set))
+		for name := range set {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		entities[key] = parse.MergeSpellClasses(e, names)
+	}
+	return nil
 }
 
 // collector accumulates everything one pass over the data tree produces.

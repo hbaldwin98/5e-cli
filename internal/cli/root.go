@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hbaldwin98/5e-cli/internal/adventure"
@@ -19,6 +21,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/mcpserver"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
 	"github.com/hbaldwin98/5e-cli/internal/search"
+	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 	"github.com/spf13/cobra"
@@ -342,6 +345,7 @@ func listCmd(opt *options) *cobra.Command {
 	var query string
 	var sources []string
 	var limit int
+	var class string
 	cmd := &cobra.Command{
 		Use:   "list [kind]",
 		Short: "List indexed names for a kind (table, encounter, monster, ...), or the kinds themselves if none is given",
@@ -386,6 +390,9 @@ func listCmd(opt *options) *cobra.Command {
 			if len(sources) == 0 {
 				ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, ed)
 			}
+			if kind == "spell" && class != "" {
+				return listSpellsForClass(cmd, st, ents, class, opt.JSON)
+			}
 			if query != "" {
 				q := strings.ToLower(query)
 				filtered := ents[:0]
@@ -424,7 +431,59 @@ func listCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringVar(&query, "query", "", "filter names by substring")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 100, "maximum names to print, 0 for unlimited")
+	cmd.Flags().StringVar(&class, "class", "", "with kind spell, list only spells on this class's list, grouped by level")
 	return cmd
+}
+
+// listSpellsForClass filters ents (already kind=spell) down to the spells
+// granted to class (from each spell's classes field, populated at ingest
+// time from 5etools' generated spell/class lookup) and prints them grouped
+// by level — the shape a DM prepping a caster actually wants, not a flat
+// alphabetical dump.
+func listSpellsForClass(cmd *cobra.Command, st *store.Store, ents []store.Entity, class string, asJSON bool) error {
+	type row struct {
+		Level  int
+		Name   string
+		Source string
+	}
+	var rows []row
+	for _, e := range ents {
+		found, err := st.Lookup("spell", e.Name, e.Source)
+		if err != nil || len(found) == 0 {
+			continue
+		}
+		obj, err := statblock.Decode(found[0].JSON)
+		if err != nil {
+			continue
+		}
+		if !statblock.SpellGrantedToClass(obj, class) {
+			continue
+		}
+		rows = append(rows, row{Level: statblock.SpellLevel(obj), Name: e.Name, Source: e.Source})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Level != rows[j].Level {
+			return rows[i].Level < rows[j].Level
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	if asJSON {
+		return writeJSON(cmd.OutOrStdout(), map[string]any{"class": class, "spells": rows})
+	}
+	if len(rows) == 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "no spells found for class %q\n", class)
+		return nil
+	}
+	tableRows := make([][]string, len(rows))
+	for i, r := range rows {
+		level := "Cantrip"
+		if r.Level > 0 {
+			level = strconv.Itoa(r.Level)
+		}
+		tableRows[i] = []string{level, r.Name, r.Source}
+	}
+	cols := []tableColumn{{Header: "Level", Width: 8}, {Header: "Name", Width: 30}, {Header: "Source", Width: 8}}
+	return writeTable(cmd.OutOrStdout(), cols, tableRows)
 }
 
 func rollCmd(opt *options) *cobra.Command {

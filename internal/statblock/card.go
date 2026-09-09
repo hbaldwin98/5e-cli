@@ -100,10 +100,15 @@ func Fields(kind string, obj map[string]any) []Field {
 	}
 	switch kind {
 	case "spell":
-		add("Casting Time", spellTimes(obj["time"]))
+		castingTime := spellTimes(obj["time"])
+		if spellIsRitual(obj) {
+			castingTime += " (ritual)"
+		}
+		add("Casting Time", castingTime)
 		add("Range", spellRange(obj["range"]))
 		add("Components", spellComponents(obj["components"]))
 		add("Duration", spellDurations(obj["duration"]))
+		add("Classes", spellClasses(obj["classes"]))
 	case "monster":
 		add("Armor Class", armorClass(obj["ac"]))
 		add("Hit Points", hitPoints(obj["hp"]))

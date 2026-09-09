@@ -76,10 +76,70 @@ func renderSpell(w io.Writer, obj map[string]any) {
 	} else {
 		fmt.Fprintf(w, "%s-level %s\n", ordinal(level), school)
 	}
-	writeField(w, "Casting Time", spellTimes(obj["time"]))
+	castingTime := spellTimes(obj["time"])
+	if spellIsRitual(obj) {
+		castingTime += " (ritual)"
+	}
+	writeField(w, "Casting Time", castingTime)
 	writeField(w, "Range", spellRange(obj["range"]))
 	writeField(w, "Components", spellComponents(obj["components"]))
 	writeField(w, "Duration", spellDurations(obj["duration"]))
+	writeField(w, "Classes", spellClasses(obj["classes"]))
+}
+
+// SpellLevel is a spell's level (0 for a cantrip), exported for a caller
+// (the list command's --class grouping) that wants it without duplicating
+// the integer() decode.
+func SpellLevel(obj map[string]any) int {
+	return integer(obj["level"])
+}
+
+// SpellGrantedToClass reports whether class appears among the classes a
+// spell is granted to, case-insensitively — the same classes field
+// spellClasses renders, populated at ingest time from 5etools' generated
+// spell/class lookup since individual spell records no longer embed it.
+func SpellGrantedToClass(obj map[string]any, class string) bool {
+	for _, name := range strings.Split(spellClasses(obj["classes"]), ", ") {
+		if strings.EqualFold(name, class) {
+			return true
+		}
+	}
+	return false
+}
+
+func spellIsRitual(obj map[string]any) bool {
+	meta, _ := obj["meta"].(map[string]any)
+	return meta["ritual"] == true
+}
+
+// spellClasses lists the classes a spell is granted to, from the classes
+// field's fromClassList (classes with this spell on their own list) and
+// fromSubclass (subclasses that grant it beyond their base class), since a
+// DM checking who can cast a spell needs both.
+func spellClasses(v any) string {
+	obj, _ := v.(map[string]any)
+	seen := map[string]bool{}
+	var names []string
+	addFrom := func(key string) {
+		list, _ := obj[key].([]any)
+		for _, item := range list {
+			entry, _ := item.(map[string]any)
+			cls, _ := entry["class"].(map[string]any)
+			name := stringValue(cls["name"])
+			if name == "" {
+				name = stringValue(entry["name"])
+			}
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	addFrom("fromClassList")
+	addFrom("fromSubclass")
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func renderMonster(w io.Writer, obj map[string]any) {
@@ -807,6 +867,15 @@ func spellComponents(v any) string {
 			text = renderString(value)
 		case map[string]any:
 			text = renderString(stringValue(value["text"]))
+			if cost := integer(value["cost"]); cost > 0 {
+				text = strings.TrimSpace(text + fmt.Sprintf(" (worth %d gp", cost))
+				if value["consume"] == true {
+					text += ", consumed"
+				}
+				text += ")"
+			} else if value["consume"] == true {
+				text = strings.TrimSpace(text + " (consumed)")
+			}
 		}
 		if text != "" {
 			parts = append(parts, "M ("+text+")")
