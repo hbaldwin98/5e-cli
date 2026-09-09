@@ -95,6 +95,7 @@ Not allowed: copied 5etools files, a committed SQLite/embedding database, golden
 | Source JSON | `--data` / `FIVE_E_DATA`, else `third_party/5etools-src/data` relative to the repo |
 | Derived index | `$XDG_CACHE_HOME/5e-cli/index.sqlite` (fallback `~/.cache/5e-cli/`) |
 | Embeddings | `$XDG_CACHE_HOME/5e-cli/embeddings.sqlite` (same directory as `--index`) |
+| Chat sessions | `$XDG_DATA_HOME/5e-cli/chats/` (fallback `~/.local/share/5e-cli/chats/`), or `FIVE_E_CHAT_DIR` / `--chat-dir` |
 | Config (later) | `$XDG_CONFIG_HOME/5e-cli/config.toml` |
 
 The cache is gitignored local state. It is keyed by the submodule commit SHA (or a hash of `--data`). If the SHA changes, `ingest` rebuilds. `get` / `search` refuse to run against a stale index.
@@ -118,6 +119,11 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e refs <kind> <name> [--source PHB] [--direction outgoing|incoming|both] [--tag spell] [--json]
 
 5e ask <query> [--retrieve-only] [--limit 8] [--json]
+5e chat [question] [--session NAME] [--adventure ID] [--kind spell] [--source PHB] [--limit 8] [--json]
+5e chat list [--json]
+5e chat show [session] [--json]
+5e chat note <text>
+5e chat rm <session>
 5e adventure <id-or-name> search <query> [--kind npc|location|item] [--json] [--limit 10]
 5e adventure <id-or-name> get <role> <name> [--json]
 5e adventure <id-or-name> list [--kind npc|location|item] [--chapter NAME] [--location NAME] [--json]
@@ -202,6 +208,26 @@ Use `/v1/embeddings` and `/v1/chat/completions` so OpenRouter and similar proxie
 **Grounding.** `ask` sends the chat model the retrieved chunks' source text, budgeted by `FIVE_E_ASK_MAX_TOKENS` and shared so short sources are never clipped and their unused share goes to long ones. `Hit.Snippet` is a display preview only and must not be what an answer is built from.
 
 **Chunk windows.** A record longer than the embedding model's per-input limit is split into overlapping windows rather than truncated, and the windows of one record collapse to their best-scoring part at retrieval. Set `FIVE_E_EMBED_MAX_TOKENS` when the backend caps lower than OpenAI does; many local embedding servers stop at 512.
+
+### `chat`
+
+An ongoing conversation over the same retrieval `ask` uses. `5e chat` with no question opens a REPL; `5e chat "question"` takes one turn and returns. Either way the transcript is saved and the next run continues it.
+
+A session holds three things: the transcript, the notes the user recorded, and an optional adventure scope. Retrieval knobs (`--kind`, `--source`, `--limit`) are per invocation, so a saved conversation never carries a filter from a previous run.
+
+**Sessions are conversation state, not a campaign model.** They store what was asked, what was answered, and facts the user wrote down. They do not model characters, initiative, inventory, or scheduling — that is still the campaign app's job, and this remains its data plane.
+
+**Grounding still runs every turn.** `ask.Converse` retrieves fresh chunks for each question and sends them with the question, so an answer is grounded in the corpus rather than in what the model said three turns ago. The system prompt says as much: earlier turns are context, not sources.
+
+**Follow-ups.** A follow-up is often unintelligible alone ("how much damage does it do?"), so the retrieval text is the question plus the last two *user* turns. Earlier answers are deliberately excluded: embedding the model's own words steers retrieval toward whatever it already said. The same widened text feeds adventure detection, so a module named once stays in scope for the follow-ups that only say "he" or "there".
+
+**Notes.** `/note` in the REPL, or `5e chat note`, records a fact ("the party sold the Sunsword in Vallaki"). Notes are re-sent with every question, marked as the user's own record: true, preferred over the rules when they conflict, and never cited as a source.
+
+**Budget.** `FIVE_E_ASK_MAX_TOKENS` covers the whole prompt. Notes take at most a fifth, history at most a third, and the retrieved sources get the rest plus whatever those two did not use. Notes drop oldest-first and history drops oldest whole exchanges, so the model never sees half of one.
+
+**Persistence.** One JSON file per session, written temp-then-rename. Sessions live under `XDG_DATA_HOME`, not beside the index: a session is the user's own writing, and clearing the derived cache must not delete a campaign's conversation. A session name is slugged for its filename, which also keeps a name from reaching outside the chat directory. A failed answer is not written, and a failed turn does not end the REPL — a rate limit should cost one question, not the session.
+
+`--json` makes each turn one object (`session`, `question`, `answer`, `citations`), and suppresses the banner and prompt so the REPL is a clean stream.
 
 ### `mcp`
 
@@ -376,6 +402,7 @@ internal/search/     // fuzzy + FTS merge
 internal/edition/    // 2014 / 2024 / all preference
 internal/adventure/  // scoped module lookup, npc/location roles
 internal/ask/        // OpenAI-compatible embed + retrieve + generate
+internal/chat/       // persisted conversations and notes over ask
 internal/mcpserver/  // stdio MCP tools over get/search/retrieve
 internal/cli/        // cobra commands, human vs json
 third_party/5etools-src/  // submodule, sparse data/
@@ -397,6 +424,7 @@ No public library API in v1. Other tools invoke the binary with `--json`.
 9. **Source comparison.** Done. Compare same-name records across sources and report top-level field differences.
 10. **Encounter lookup.** Done. Filter indexed monsters by name/text, CR, type, size, source, edition, and SRD.
 11. **Random tables.** Done. Roll indexed tables with repeat counts, deterministic seeds, and numeric ranges (including the `00` that percentile tables use for 100), sourced from `tables.json` and from tables embedded in prose.
+12. **Chat sessions.** Done. Saved multi-turn conversations with recorded notes over the same retrieval as `ask`.
 
 ## Board
 
@@ -422,6 +450,7 @@ The in-repo board. Argus mirrors this feature; git is the durable copy.
 - `encounter` command for pre-filtered monster lookup
 - `roll` command for indexed random tables
 - MCP `compare`, `encounter`, and `roll` tools matching the CLI commands
+- `chat` command with saved sessions, recorded notes, and multi-turn grounding
 
 ### Open
 

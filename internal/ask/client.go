@@ -59,12 +59,20 @@ func (c *client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 }
 
 func (c *client) Chat(ctx context.Context, system, user string) (string, error) {
+	return c.ChatMessages(ctx, []Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	})
+}
+
+func (c *client) ChatMessages(ctx context.Context, msgs []Message) (string, error) {
+	messages := make([]map[string]string, len(msgs))
+	for i, m := range msgs {
+		messages[i] = map[string]string{"role": m.Role, "content": m.Content}
+	}
 	body := map[string]any{
-		"model": c.cfg.AskModel,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": user},
-		},
+		"model":       c.cfg.AskModel,
+		"messages":    messages,
 		"temperature": 0,
 	}
 	var resp struct {

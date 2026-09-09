@@ -1,0 +1,172 @@
+package chat
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/hbaldwin98/5e-cli/internal/ask"
+)
+
+func TestStore_savesAndResumesASession(t *testing.T) {
+	cs := testStore(t)
+
+	sess, err := cs.Load("Curse of Strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 0 || sess.Name != "Curse of Strahd" {
+		t.Fatalf("a new session should be empty and keep its name: %+v", sess)
+	}
+	sess.AddNote("the party sold the Sunsword")
+	sess.AddTurn("who is Strahd", ask.Result{
+		Answer:    "A vampire.",
+		Citations: []ask.Hit{{Kind: "monster", Name: "Strahd", Source: "CoS"}},
+	})
+	sess.Adventure = "CoS"
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := cs.Load("curse of strahd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Turns) != 1 || again.Turns[0].Answer != "A vampire." {
+		t.Fatalf("transcript did not survive: %+v", again.Turns)
+	}
+	if len(again.Notes) != 1 || again.Notes[0].Text != "the party sold the Sunsword" {
+		t.Fatalf("notes did not survive: %+v", again.Notes)
+	}
+	if again.Adventure != "CoS" {
+		t.Fatalf("adventure scope did not survive: %q", again.Adventure)
+	}
+	if again.Name != "Curse of Strahd" {
+		t.Fatalf("resuming by slug should keep the written name, got %q", again.Name)
+	}
+}
+
+func TestStore_listReportsMostRecentFirst(t *testing.T) {
+	cs := testStore(t)
+	for _, name := range []string{"one", "two"} {
+		sess, err := cs.Load(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess.AddTurn("q", ask.Result{Answer: "a"})
+		if err := cs.Save(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := cs.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want two sessions, got %+v", list)
+	}
+	if list[0].Name != "two" {
+		t.Fatalf("want the newest session first, got %+v", list)
+	}
+	if list[0].Turns != 1 {
+		t.Fatalf("summary should count turns: %+v", list[0])
+	}
+
+	if err := cs.Delete("two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Delete("two"); err != nil {
+		t.Fatalf("deleting a missing session should not fail: %v", err)
+	}
+	list, err = cs.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "one" {
+		t.Fatalf("delete removed the wrong session: %+v", list)
+	}
+}
+
+func TestStore_pathStaysInsideTheChatDirectory(t *testing.T) {
+	cs := testStore(t)
+	path, err := cs.Path("../../etc/passwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(path) != cs.Dir() {
+		t.Fatalf("session name escaped the directory: %s", path)
+	}
+	if _, err := cs.Path("///"); err == nil {
+		t.Fatal("a name with no usable characters should be refused")
+	}
+}
+
+func TestStore_listSkipsAnUnreadableSession(t *testing.T) {
+	cs := testStore(t)
+	sess, err := cs.Load("good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AddTurn("q", ask.Result{Answer: "a"})
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(cs.Dir(), "broken.json"), "{not json"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := cs.List()
+	if err != nil {
+		t.Fatalf("one broken file must not fail the listing: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "good" {
+		t.Fatalf("got %+v", list)
+	}
+}
+
+func TestSession_historyPairsAnsweredTurnsOnly(t *testing.T) {
+	sess := &Session{Name: "s"}
+	sess.AddTurn("first", ask.Result{Answer: "one"})
+	sess.Turns = append(sess.Turns, Record{Question: "unanswered", Answer: "  "})
+	sess.AddTurn("second", ask.Result{Answer: "two"})
+
+	got := sess.History()
+	if len(got) != 4 {
+		t.Fatalf("want two exchanges, got %+v", got)
+	}
+	roles := ""
+	for _, m := range got {
+		roles += m.Role[:1]
+	}
+	if roles != "uaua" {
+		t.Fatalf("history must alternate user and assistant, got %q", roles)
+	}
+	for _, m := range got {
+		if strings.Contains(m.Content, "unanswered") {
+			t.Fatal("a turn with no answer is not history")
+		}
+	}
+}
+
+func TestSession_addNoteRefusesBlankText(t *testing.T) {
+	sess := &Session{Name: "s"}
+	if sess.AddNote("   ") {
+		t.Fatal("blank text is not a note")
+	}
+	if !sess.AddNote("  a real note  ") || sess.Notes[0].Text != "a real note" {
+		t.Fatalf("notes %+v", sess.Notes)
+	}
+}
+
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	cs, err := OpenStore(filepath.Join(t.TempDir(), "chats"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cs
+}
+
+func writeFile(path, body string) error {
+	return os.WriteFile(path, []byte(body), 0o644)
+}

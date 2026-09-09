@@ -148,9 +148,10 @@ func TestClient_requiresAPIKey(t *testing.T) {
 }
 
 type fakeAPI struct {
-	embedCalls atomic.Int32
-	chatCalls  atomic.Int32
-	lastUser   atomic.Value
+	embedCalls   atomic.Int32
+	chatCalls    atomic.Int32
+	lastUser     atomic.Value
+	lastMessages atomic.Value
 }
 
 func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
@@ -229,6 +230,11 @@ func (f *fakeAPI) handler() http.Handler {
 			}
 		}
 		f.lastUser.Store(user)
+		msgs := make([]Message, 0, len(req.Messages))
+		for _, m := range req.Messages {
+			msgs = append(msgs, Message{Role: m.Role, Content: m.Content})
+		}
+		f.lastMessages.Store(msgs)
 		answer := "I don't know."
 		if strings.Contains(user, "Fireball") {
 			answer = "Fireball explodes in fire (spell, Fireball, PHB)."

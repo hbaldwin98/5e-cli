@@ -188,6 +188,53 @@ The first run embeds the whole corpus into a sidecar cache next to the index.
 The cache is keyed by data fingerprint, base URL, embed model, and token
 limit, and rebuilds when any of those change.
 
+## Chat
+
+Keep a conversation going instead of asking one question at a time. `5e chat`
+with no question opens a session; `5e chat "question"` takes a single turn.
+Either way the transcript is saved and the next run continues it:
+
+```sh
+5e chat
+5e chat --session curse-of-strahd --adventure CoS
+5e chat "how does grappling work"
+5e chat note "the party sold the Sunsword in Vallaki"
+5e chat list
+5e chat show curse-of-strahd
+5e chat rm curse-of-strahd
+```
+
+Inside a session:
+
+```text
+/note <text>        record a fact this session keeps in context
+/notes              list the recorded notes
+/sources            citations for the last answer
+/adventure <id>     scope the session to one adventure ("none" clears it)
+/limit <n>          retrieved chunks per question
+/history            print the transcript
+/help               this list
+/exit               leave (Ctrl-D also works)
+```
+
+Every question still retrieves from the embedded corpus, so answers stay
+grounded in the sources rather than in what was said earlier in the
+conversation. A follow-up is retrieved with the questions it follows, so
+`how much damage does it do` finds the spell the previous turn was about, and
+an adventure named once stays in scope for the follow-ups that only say "he".
+
+Notes are your own record of your table. They are sent with every question,
+treated as true, preferred over the rules when they disagree, and never cited
+as a source.
+
+Sessions are stored one JSON file each under `$XDG_DATA_HOME/5e-cli/chats`
+(`~/.local/share/5e-cli/chats` when that is unset). Override the directory with
+`FIVE_E_CHAT_DIR` or `--chat-dir`. They live outside the cache on purpose:
+re-ingesting or clearing the index does not delete a campaign's conversation.
+
+`--json` turns each answer into one object with the session name, question,
+answer, and citations.
+
 ## Development
 
 ```sh

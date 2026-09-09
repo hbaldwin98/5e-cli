@@ -66,6 +66,25 @@ func DefaultIndex() (string, error) {
 	return filepath.Join(base, "5e-cli", "index.sqlite"), nil
 }
 
+// DefaultChatDir is where chat sessions are stored. Sessions are the user's
+// own writing, not derived data, so they live under XDG_DATA_HOME rather than
+// beside the index: clearing the cache and re-ingesting must not delete a
+// campaign's conversation.
+func DefaultChatDir() (string, error) {
+	if v := os.Getenv("FIVE_E_CHAT_DIR"); v != "" {
+		return v, nil
+	}
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, "5e-cli", "chats"), nil
+}
+
 // EmbeddingsForIndex is the sidecar sqlite next to the entity index.
 func EmbeddingsForIndex(index string) string {
 	if v := os.Getenv("FIVE_E_EMBEDDINGS"); v != "" {

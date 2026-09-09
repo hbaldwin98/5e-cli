@@ -1,0 +1,264 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/hbaldwin98/5e-cli/internal/parse"
+	"github.com/hbaldwin98/5e-cli/internal/store"
+)
+
+func TestChat_oneShotPersistsTheTurn(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLI("--index", index, "--data", data, "chat", "--chat-dir", dir, "--session", "table one", "what does fireball do")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Fireball") {
+		t.Fatalf("answer: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "chat", "--chat-dir", dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0]["name"] != "table one" || list[0]["turns"].(float64) != 1 {
+		t.Fatalf("list: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "chat", "--chat-dir", dir, "show", "table one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "what does fireball do") || !strings.Contains(out, "Fireball") {
+		t.Fatalf("show: %s", out)
+	}
+}
+
+func TestChat_replCarriesNotesAndHistoryIntoLaterTurns(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	script := strings.Join([]string{
+		"/note the party's wizard is a tiefling named Rekt",
+		"what does fireball do",
+		"how much damage does it do",
+		"/notes",
+		"/exit",
+	}, "\n") + "\n"
+	out, err := runCLIStdin(script, "--index", index, "--data", data, "chat", "--chat-dir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "noted (1)") {
+		t.Fatalf("note was not recorded: %s", out)
+	}
+	if !strings.Contains(out, "1. the party's wizard is a tiefling named Rekt") {
+		t.Fatalf("/notes did not list the note: %s", out)
+	}
+
+	msgs := api.messages()
+	if len(msgs) != 2 {
+		t.Fatalf("want one chat call per question, got %d", len(msgs))
+	}
+	first, second := msgs[0], msgs[1]
+	if len(second) <= len(first) {
+		t.Fatalf("the second turn should carry the first exchange: %+v", second)
+	}
+	var sawEarlierAnswer bool
+	for _, m := range second {
+		if m.Role == "assistant" && strings.Contains(m.Content, "Fireball") {
+			sawEarlierAnswer = true
+		}
+	}
+	if !sawEarlierAnswer {
+		t.Fatalf("the earlier answer was not sent back as history: %+v", second)
+	}
+	if !strings.Contains(second[len(second)-1].Content, "Rekt") {
+		t.Fatalf("the note was not sent with the question:\n%s", second[len(second)-1].Content)
+	}
+	// The follow-up says nothing retrievable on its own; the session is what
+	// keeps Fireball in front of the model.
+	if !strings.Contains(second[len(second)-1].Content, "A bright streak flashes") {
+		t.Fatalf("the follow-up lost its sources:\n%s", second[len(second)-1].Content)
+	}
+}
+
+func TestChat_replSurvivesAFailedTurn(t *testing.T) {
+	index, api := chatFixture(t)
+	api.fail(true)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLIStdin("what does fireball do\n/notes\n", "--index", index, "--data", data, "chat", "--chat-dir", dir)
+	if err != nil {
+		t.Fatalf("a failed question should not fail the session: %v", err)
+	}
+	if !strings.Contains(out, "no notes") {
+		t.Fatalf("the session should have kept going: %s", out)
+	}
+
+	out, err = runCLI("--index", index, "--data", data, "--json", "chat", "--chat-dir", dir, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess map[string]any
+	if err := json.Unmarshal([]byte(out), &sess); err != nil {
+		t.Fatal(err)
+	}
+	if sess["turns"] != nil {
+		t.Fatalf("a failed answer must not enter the transcript: %s", out)
+	}
+}
+
+func TestChat_noteSubcommandFeedsTheNextQuestion(t *testing.T) {
+	index, api := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	if _, err := runCLI("--index", index, "--data", data, "chat", "--chat-dir", dir, "note", "the tavern burned down"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI("--index", index, "--data", data, "chat", "--chat-dir", dir, "what does fireball do"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := api.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("chat calls %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0][len(msgs[0])-1].Content, "the tavern burned down") {
+		t.Fatalf("the note did not reach the model:\n%s", msgs[0][len(msgs[0])-1].Content)
+	}
+}
+
+func TestChat_rejectsAnUnknownSlashCommand(t *testing.T) {
+	index, _ := chatFixture(t)
+	dir := filepath.Join(t.TempDir(), "chats")
+	data := filepath.Join(t.TempDir(), "missing-data")
+
+	out, err := runCLIStdin("/nope\n/exit\n", "--index", index, "--data", data, "chat", "--chat-dir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "unknown command /nope") {
+		t.Fatalf("out: %s", out)
+	}
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// chatAPI is an OpenAI-compatible stand-in that records every chat request, so
+// a test can assert what the conversation actually sent.
+type chatAPI struct {
+	mu       sync.Mutex
+	requests [][]chatMessage
+	broken   bool
+}
+
+func (a *chatAPI) messages() [][]chatMessage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([][]chatMessage(nil), a.requests...)
+}
+
+func (a *chatAPI) fail(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.broken = v
+}
+
+func chatFixture(t *testing.T) (index string, api *chatAPI) {
+	t.Helper()
+	index = filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "chat", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "spell", Name: "Fireball", Source: "PHB", SRD: true, JSON: json.RawMessage(`{}`), Text: "A bright streak flashes and explodes in fire and flame."},
+		{Kind: "item", Name: "Longsword", Source: "PHB", JSON: json.RawMessage(`{}`), Text: "A martial melee weapon with a steel blade."},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	api = &chatAPI{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			var req struct {
+				Messages []chatMessage `json:"messages"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			api.mu.Lock()
+			broken := api.broken
+			if !broken {
+				api.requests = append(api.requests, req.Messages)
+			}
+			api.mu.Unlock()
+			if broken {
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"content": "Fireball explodes in fire (spell, Fireball, PHB)."}},
+				},
+			})
+			return
+		}
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		type row struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}
+		var data []row
+		for i, s := range req.Input {
+			v := []float32{0.05, 0.05}
+			low := strings.ToLower(s)
+			if strings.Contains(low, "fire") || strings.Contains(low, "flame") {
+				v = []float32{1, 0}
+			}
+			if strings.Contains(low, "sword") || strings.Contains(low, "blade") {
+				v = []float32{0, 1}
+			}
+			data = append(data, row{Index: i, Embedding: v})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("OPENAI_API_KEY", "test")
+	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	t.Setenv("FIVE_E_EMBED_MODEL", "fake-embed")
+	t.Setenv("FIVE_E_ASK_MODEL", "fake-ask")
+	t.Setenv("FIVE_E_EMBEDDINGS", filepath.Join(t.TempDir(), "embeddings.sqlite"))
+	return index, api
+}
+
+// runCLIStdin drives the REPL from a script and folds stderr into the output,
+// since the loop reports a failed turn there and keeps going.
+func runCLIStdin(stdin string, args ...string) (string, error) {
+	cmd := rootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetIn(strings.NewReader(stdin))
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
