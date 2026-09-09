@@ -250,6 +250,8 @@ A session holds three things: the transcript, the notes the user recorded, and a
 
 **Persistence.** One JSON file per session, written temp-then-rename. Sessions live under `XDG_DATA_HOME`, not beside the index: a session is the user's own writing, and clearing the derived cache must not delete a campaign's conversation. A session name is slugged and given an identity hash for its filename, which keeps the path safe without aliasing names such as `a/b`, `a b`, and `a-b`. Existing slug-only files are migrated when they are opened. A failed answer is not written, and a failed turn does not end the REPL — a rate limit should cost one question, not the session.
 
+**Concurrent updates.** `Store.Save` checks that the file it's about to overwrite still has the `updated` timestamp it had when this `*Session` was loaded, and refuses to write if not — a REPL open in one terminal and a scripted `chat note` in another would otherwise both load the same state, and whichever saved last would silently discard the other's change. The check only applies to a `Session` this `Store` actually loaded from that same path; `Rename` and `Import` build or retarget a `Session` and rely on their own existence/`--force` checks instead. Recovering from a refused save is: reload, reapply the change, save again.
+
 `--json` makes an answer a typed `turn` event (`session`, `question`, `answer`,
 `citations`). In the REPL, every input emits one newline-delimited `turn`,
 `command`, or `error` event; slash-command results and failures stay in the

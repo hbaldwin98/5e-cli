@@ -68,7 +68,9 @@ func (s *Store) Load(name string) (*Session, error) {
 			return nil, pathErr
 		}
 		if legacyPath == path {
-			return newSession(name), nil
+			sess := newSession(name)
+			sess.baselinePath = path
+			return sess, nil
 		}
 		raw, err = os.ReadFile(legacyPath)
 		if err == nil {
@@ -77,7 +79,9 @@ func (s *Store) Load(name string) (*Session, error) {
 		}
 	}
 	if os.IsNotExist(err) {
-		return newSession(name), nil
+		sess := newSession(name)
+		sess.baselinePath = path
+		return sess, nil
 	}
 	if err != nil {
 		return nil, err
@@ -93,7 +97,9 @@ func (s *Store) Load(name string) (*Session, error) {
 		// A legacy slug may belong to another name that used to collide with
 		// this one. Leave it untouched and let Save create the hashed path.
 		if legacy {
-			return newSession(name), nil
+			fresh := newSession(name)
+			fresh.baselinePath = path
+			return fresh, nil
 		}
 		return nil, fmt.Errorf("session file %s belongs to %q, not %q", path, sess.Name, strings.TrimSpace(name))
 	}
@@ -102,6 +108,8 @@ func (s *Store) Load(name string) (*Session, error) {
 			return nil, fmt.Errorf("migrate session %s: %w", sourcePath, err)
 		}
 	}
+	sess.baselinePath = path
+	sess.baselineUpdated = sess.Updated
 	return &sess, nil
 }
 
@@ -143,10 +151,30 @@ func sameSessionName(a, b string) bool {
 
 // Save writes the session atomically, so an interrupted write cannot leave a
 // half-written transcript where the conversation used to be.
+//
+// It also refuses to silently discard a concurrent update: if this Session
+// was loaded from this same path, Save checks that the file on disk still
+// has the "updated" timestamp it had at Load time. Two processes editing the
+// same session (a REPL open in one terminal, a scripted `chat note` in
+// another) would otherwise both load the same starting state, and whichever
+// saved last would overwrite the other's change with no trace it ever
+// happened. A Session that was never loaded from this path (a fresh one from
+// Load under a new name, or one built directly, as Import does) has no
+// baseline and is not checked here — Import and Rename apply their own
+// existence checks before calling Save.
 func (s *Store) Save(sess *Session) error {
 	path, err := s.Path(sess.Name)
 	if err != nil {
 		return err
+	}
+	if sess.baselinePath == path {
+		onDisk, err := readUpdated(path)
+		if err != nil {
+			return err
+		}
+		if onDisk != sess.baselineUpdated {
+			return fmt.Errorf("session %q was changed by another process since it was loaded; reload and try again", strings.TrimSpace(sess.Name))
+		}
 	}
 	if sess.Created == "" {
 		sess.Created = now()
@@ -175,7 +203,32 @@ func (s *Store) Save(sess *Session) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	sess.baselinePath = path
+	sess.baselineUpdated = sess.Updated
+	return nil
+}
+
+// readUpdated reads just the "updated" field out of a session file without
+// decoding the whole transcript, for Save's conflict check. A missing file
+// is not an error: it means nothing has been saved under this path yet.
+func readUpdated(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var v struct {
+		Updated string `json:"updated"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return v.Updated, nil
 }
 
 // Corrupt names a session file List could not read, and why. Its presence

@@ -323,6 +323,80 @@ func TestStore_clearedSessionStaysListed(t *testing.T) {
 	}
 }
 
+func TestStore_saveRefusesToClobberAConcurrentUpdate(t *testing.T) {
+	cs := testStore(t)
+
+	first, err := cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Save(first); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two independent loads of the same session, as two processes editing it
+	// concurrently would each do.
+	a, err := cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.AddNote("from process A")
+	if err := cs.Save(a); err != nil {
+		t.Fatal(err)
+	}
+
+	b.AddNote("from process B")
+	if err := cs.Save(b); err == nil {
+		t.Fatal("saving b after a already changed the file on disk should be refused, not silently overwrite a's update")
+	}
+
+	onDisk, err := cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onDisk.Notes) != 1 || onDisk.Notes[0].Text != "from process A" {
+		t.Fatalf("process A's saved update should survive the refused save: %+v", onDisk.Notes)
+	}
+
+	// Reloading b picks up a's change and lets b save on top of it.
+	b, err = cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.AddNote("from process B, retried")
+	if err := cs.Save(b); err != nil {
+		t.Fatal(err)
+	}
+	final, err := cs.Load("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.Notes) != 2 {
+		t.Fatalf("a retried save after reloading should succeed and keep both notes: %+v", final.Notes)
+	}
+}
+
+func TestStore_sequentialSavesOnTheSameLoadedSessionSucceed(t *testing.T) {
+	cs := testStore(t)
+	sess, err := cs.Load("s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AddNote("one")
+	if err := cs.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	sess.AddNote("two")
+	if err := cs.Save(sess); err != nil {
+		t.Fatalf("a second save on the same in-memory session, with nothing else touching the file, should succeed: %v", err)
+	}
+}
+
 func TestStore_loadExistingRefusesAnUnknownSession(t *testing.T) {
 	cs := testStore(t)
 	if _, err := cs.LoadExisting("nope"); err == nil {

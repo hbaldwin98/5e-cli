@@ -22,6 +22,13 @@ type Session struct {
 	Updated       string   `json:"updated"`
 	Notes         []Note   `json:"notes,omitempty"`
 	Turns         []Record `json:"turns,omitempty"`
+
+	// baseline* record what Save should find on disk if nothing else has
+	// written this session since it was loaded. They are unexported, so
+	// json.Marshal never persists them; Load and Save are the only code that
+	// sets or reads them. See Store.Save.
+	baselinePath    string
+	baselineUpdated string
 }
 
 // Note is a durable fact about this campaign, written by the user.
