@@ -438,6 +438,9 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 		}
 	}
 	cfg := ask.ConfigFromEnv()
+	if err := applyProviderOverride(&cfg, opt); err != nil {
+		return err
+	}
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	if opt.JSON {
 		cfg.Progress = io.Discard

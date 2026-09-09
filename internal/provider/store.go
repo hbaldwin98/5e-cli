@@ -18,17 +18,38 @@ import (
 const (
 	OpenAI     = "openai"
 	OpenRouter = "openrouter"
+	Codex      = "codex"
 
 	openRouterBaseURL = "https://openrouter.ai/api/v1"
 )
 
-// Credential is one provider's locally stored auth. APIKey covers the
-// simple case (OpenAI, OpenRouter); BaseURL lets a provider override the
-// default endpoint (OpenRouter's, or a self-hosted OpenAI-compatible
-// gateway).
+// Credential kinds. APIKeyAuth covers OpenAI/OpenRouter; OAuthAuth is
+// Codex's ChatGPT-account login, which stores tokens instead of a key.
+const (
+	APIKeyAuth = "api_key"
+	OAuthAuth  = "oauth"
+)
+
+// Credential is one provider's locally stored auth. APIKey/BaseURL cover
+// the simple case (OpenAI, OpenRouter); the OAuth fields hold a Codex
+// ChatGPT-account login's tokens instead. Type says which set is populated.
 type Credential struct {
+	Type    string `json:"type,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
+	// ChatModel/EmbedModel are this provider's preferred models, set by
+	// `5e auth login --chat-model/--embed-model` or `5e auth set-model`.
+	// Empty means "use the ask package's default for the ask/embed role".
+	ChatModel  string `json:"chat_model,omitempty"`
+	EmbedModel string `json:"embed_model,omitempty"`
+
+	// OAuth fields, set only when Type == OAuthAuth.
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
+	AccountID    string `json:"account_id,omitempty"`
+	// ExpiresAt is a Unix timestamp in seconds.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 // Store is the on-disk set of configured providers, keyed by provider name.

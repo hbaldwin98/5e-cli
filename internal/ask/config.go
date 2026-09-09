@@ -84,34 +84,48 @@ type EmbedProgress struct {
 	Phase       string
 }
 
-// ConfigFromEnv resolves credentials from the local provider store (set via
-// `5e auth login`) first, falling back to OPENAI_API_KEY/OPENAI_BASE_URL for
-// anyone still using the older env-var-only setup. FIVE_E_PROVIDER pins
-// which stored provider to use; otherwise the store's active provider (the
-// most recently logged-in one) is used. Non-credential tuning stays
+// ConfigFromEnv resolves credentials with explicit env vars taking
+// precedence over the local provider store (set via `5e auth login`): an
+// explicitly set OPENAI_API_KEY always wins, since a caller who set it
+// clearly wants that key used regardless of what's stored (this also keeps
+// tests and CI, which set OPENAI_API_KEY/OPENAI_BASE_URL to point at a fake
+// server, from being silently overridden by whatever is logged in on the
+// host). Only when OPENAI_API_KEY is unset does the stored provider fill
+// in: FIVE_E_PROVIDER pins which one, otherwise the store's active provider
+// (the most recently logged-in one) is used. Non-credential tuning stays
 // env-var-only (FIVE_E_* variables). Paths are filled in by the CLI.
 func ConfigFromEnv() Config {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
+	var chatModel, embedModel string
 
-	if path, err := provider.DefaultPath(); err == nil {
-		if store, err := provider.Load(path); err == nil {
-			if _, cred, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER")); ok {
-				if cred.APIKey != "" {
+	if apiKey == "" {
+		if path, err := provider.DefaultPath(); err == nil {
+			if store, err := provider.Load(path); err == nil {
+				if _, cred, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER")); ok {
 					apiKey = cred.APIKey
-				}
-				if cred.BaseURL != "" {
-					baseURL = cred.BaseURL
+					if baseURL == "" {
+						baseURL = cred.BaseURL
+					}
+					chatModel = cred.ChatModel
+					embedModel = cred.EmbedModel
 				}
 			}
 		}
 	}
 
+	if v := os.Getenv("FIVE_E_ASK_MODEL"); v != "" {
+		chatModel = v
+	}
+	if v := os.Getenv("FIVE_E_EMBED_MODEL"); v != "" {
+		embedModel = v
+	}
+
 	return Config{
 		APIKey:          apiKey,
 		BaseURL:         baseURL,
-		EmbedModel:      os.Getenv("FIVE_E_EMBED_MODEL"),
-		AskModel:        os.Getenv("FIVE_E_ASK_MODEL"),
+		EmbedModel:      embedModel,
+		AskModel:        chatModel,
 		EmbedMaxTokens:  envInt("FIVE_E_EMBED_MAX_TOKENS"),
 		AskMaxTokens:    envInt("FIVE_E_ASK_MAX_TOKENS"),
 		AnswerMaxTokens: envInt("FIVE_E_ANSWER_MAX_TOKENS"),

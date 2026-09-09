@@ -2,8 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/hbaldwin98/5e-cli/internal/ask"
+	"github.com/hbaldwin98/5e-cli/internal/provider"
 )
 
 // withIsolatedConfigDir points os.UserConfigDir (via XDG_CONFIG_HOME) at a
@@ -79,5 +85,111 @@ func TestAuthList_withNothingConfigured(t *testing.T) {
 	out := runAuth(t, "", "list")
 	if !strings.Contains(out, "no providers configured") {
 		t.Fatalf("want the empty-state message, got %q", out)
+	}
+}
+
+func TestAuthLogin_storesPreferredModels(t *testing.T) {
+	withIsolatedConfigDir(t)
+	runAuth(t, "", "login", "openai", "--api-key", "sk-abcdef1234", "--chat-model", "gpt-x", "--embed-model", "embed-x")
+	list := runAuth(t, "", "list")
+	if !strings.Contains(list, "chat=gpt-x") || !strings.Contains(list, "embed=embed-x") {
+		t.Fatalf("want the stored model preferences listed, got %q", list)
+	}
+}
+
+func TestAuthSetModel_updatesAnExistingProvider(t *testing.T) {
+	withIsolatedConfigDir(t)
+	runAuth(t, "", "login", "openai", "--api-key", "sk-abcdef1234")
+	runAuth(t, "", "set-model", "openai", "--chat-model", "gpt-y")
+
+	list := runAuth(t, "", "list")
+	if !strings.Contains(list, "chat=gpt-y") {
+		t.Fatalf("want the updated chat model listed, got %q", list)
+	}
+}
+
+func TestAuthSetModel_errorsForAnUnconfiguredProvider(t *testing.T) {
+	withIsolatedConfigDir(t)
+	cmd := authCmd()
+	cmd.SetArgs([]string{"set-model", "openai", "--chat-model", "gpt-y"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("want an error for a provider that was never logged in")
+	}
+}
+
+func TestAuthModels_listsModelsFromTheRealEndpoint(t *testing.T) {
+	withIsolatedConfigDir(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"id": "model-a"}, {"id": "model-b"}},
+		})
+	}))
+	defer srv.Close()
+
+	cmd := authCmd()
+	cmd.SetArgs([]string{"login", "openai", "--api-key", "sk-abcdef1234"})
+	var discard bytes.Buffer
+	cmd.SetOut(&discard)
+	cmd.SetErr(&discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	// login always fills in BaseURL via provider.DefaultBaseURL, which is ""
+	// for plain "openai" (it uses the ask package's default); point it at
+	// the fake server instead via a direct store edit.
+	path, err := provider.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, _ := store.Get("openai")
+	cred.BaseURL = srv.URL
+	store.Set("openai", cred)
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runAuth(t, "", "models", "openai")
+	if !strings.Contains(out, "model-a") || !strings.Contains(out, "model-b") {
+		t.Fatalf("want the fetched models listed, got %q", out)
+	}
+}
+
+func TestApplyProviderOverride_pinsAProviderAndModel(t *testing.T) {
+	withIsolatedConfigDir(t)
+	runAuth(t, "", "login", "openrouter", "--api-key", "or-key-0123456789", "--chat-model", "or-model")
+
+	cfg := ask.ConfigFromEnv()
+	opt := &options{Provider: "openrouter"}
+	if err := applyProviderOverride(&cfg, opt); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIKey != "or-key-0123456789" {
+		t.Fatalf("want the openrouter key applied, got %q", cfg.APIKey)
+	}
+	if cfg.AskModel != "or-model" {
+		t.Fatalf("want the provider's stored chat model applied, got %q", cfg.AskModel)
+	}
+
+	opt.Model = "explicit-override"
+	if err := applyProviderOverride(&cfg, opt); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AskModel != "explicit-override" {
+		t.Fatalf("want --model to win over the provider's stored model, got %q", cfg.AskModel)
+	}
+}
+
+func TestApplyProviderOverride_errorsForAnUnconfiguredProvider(t *testing.T) {
+	withIsolatedConfigDir(t)
+	cfg := ask.ConfigFromEnv()
+	if err := applyProviderOverride(&cfg, &options{Provider: "openai"}); err == nil {
+		t.Fatal("want an error for a --provider that was never logged in")
 	}
 }

@@ -135,12 +135,14 @@ Binary name: `5e`. Module: `github.com/hbaldwin98/5e-cli`.
 5e adventure <id-or-name> list [--kind npc|location|item] [--chapter NAME] [--location NAME] [--json]
 5e mcp
 
-5e auth login <provider> [--api-key KEY]
+5e auth login <provider> [--api-key KEY] [--chat-model NAME] [--embed-model NAME]
 5e auth list
 5e auth logout <provider>
+5e auth models <provider>
+5e auth set-model <provider> [--chat-model NAME] [--embed-model NAME]
 ```
 
-Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`), `--srd`.
+Global flags: `--json`, `--data`, `--index` (path to the sqlite file), `--edition` (`2014` | `2024` | `all`), `--srd`, `--provider` (use this stored provider instead of the active one), `--model` (override the chat model for one run).
 
 ### `auth`
 
@@ -148,13 +150,29 @@ Providers are locally-stored backend credentials, an alternative to setting
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` by hand. `5e auth login openai` or
 `5e auth login openrouter` stores an API key (via `--api-key`, or prompted)
 in `$XDG_CONFIG_HOME/5e/auth.json` (mode 0600) and marks it the active
-provider; `5e auth list` shows configured providers with a masked key;
-`5e auth logout <provider>` removes one. `ask.ConfigFromEnv` reads the
-active stored provider first, falling back to `OPENAI_API_KEY`/
-`OPENAI_BASE_URL` for anyone still using env vars directly;
-`FIVE_E_PROVIDER` pins which stored provider to use instead of the active
-one. OpenRouter's base URL (`https://openrouter.ai/api/v1`) is filled in
-automatically; plain `openai` uses the backend's own default.
+provider; `5e auth list` shows configured providers with a masked key and
+any stored model preferences; `5e auth logout <provider>` removes one.
+`ask.ConfigFromEnv` reads the active stored provider first, falling back to
+`OPENAI_API_KEY`/`OPENAI_BASE_URL` for anyone still using env vars
+directly; `FIVE_E_PROVIDER` pins which stored provider to use instead of
+the active one. OpenRouter's base URL (`https://openrouter.ai/api/v1`) is
+filled in automatically; plain `openai` uses the backend's own default.
+
+Each provider can carry its own preferred chat/embedding model
+(`--chat-model`/`--embed-model` at login, or changed later with
+`5e auth set-model`), stored alongside its credential. `5e auth models
+<provider>` calls that provider's real `GET /models` endpoint (OpenAI and
+OpenRouter both implement it) and lists the model ids it returns, so
+picking a model doesn't mean guessing at names from memory.
+
+`5e ask`/`5e chat`/`5e mcp` all accept `--provider` to pin a specific
+configured provider for that run (overriding the active one — an error if
+that provider was never logged in) and `--model` to override just the chat
+model, taking precedence over both the provider's stored model and
+`FIVE_E_ASK_MODEL`. `--model` deliberately never touches the embedding
+model — swapping embedding models mid-run would invalidate the on-disk
+embedding cache, which a chat-model override has no business doing as a
+side effect.
 
 A future OpenAI Codex provider will add a distinct `5e auth login codex`
 OAuth flow (browser or headless) to this same store — but Codex's ChatGPT

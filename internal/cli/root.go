@@ -25,11 +25,13 @@ import (
 )
 
 type options struct {
-	JSON    bool
-	Data    string
-	Index   string
-	Edition string
-	SRD     bool
+	JSON     bool
+	Data     string
+	Index    string
+	Edition  string
+	SRD      bool
+	Provider string
+	Model    string
 }
 
 func rootCmd() *cobra.Command {
@@ -45,6 +47,8 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.Index, "index", "", "path to sqlite index")
 	cmd.PersistentFlags().StringVar(&opt.Edition, "edition", "", "2014, 2024, or all (default 2024, or FIVE_E_EDITION)")
 	cmd.PersistentFlags().BoolVar(&opt.SRD, "srd", false, "restrict to SRD / basic rules entities")
+	cmd.PersistentFlags().StringVar(&opt.Provider, "provider", "", "use this configured provider (see `5e auth list`) instead of the active one")
+	cmd.PersistentFlags().StringVar(&opt.Model, "model", "", "override the chat model for this run")
 	cmd.AddCommand(ingestCmd(opt), doctorCmd(opt), getCmd(opt), searchCmd(opt), compareCmd(opt), encounterCmd(opt), rollCmd(opt), refsCmd(opt), askCmd(opt), chatCmd(opt), adventureCmd(opt), mcpCmd(opt), authCmd())
 	return cmd
 }
@@ -514,6 +518,9 @@ func runAsk(cmd *cobra.Command, opt *options, args []string, flags askFlags) err
 		return err
 	}
 	cfg := ask.ConfigFromEnv()
+	if err := applyProviderOverride(&cfg, opt); err != nil {
+		return err
+	}
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	cfg.Progress = cmd.ErrOrStderr()
 	cfg.OnProgress = embedProgressRenderer(cfg.Progress)
@@ -746,6 +753,9 @@ func runMCP(ctx context.Context, opt *options, errw io.Writer) error {
 	}
 	defer st.Close()
 	cfg := ask.ConfigFromEnv()
+	if err := applyProviderOverride(&cfg, opt); err != nil {
+		return err
+	}
 	cfg.CachePath = paths.EmbeddingsForIndex(index)
 	cfg.Progress = errw
 	ed, err := opt.editionPref()
