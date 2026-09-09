@@ -103,7 +103,7 @@ func TestChatModel_submitsQuestionAndStreamsAnswer(t *testing.T) {
 	if m.streaming {
 		t.Fatal("the turn should have finished")
 	}
-	transcript := m.transcript.String()
+	transcript := m.transcriptText()
 	if !strings.Contains(transcript, "> what does fireball do") {
 		t.Fatalf("want the question echoed, got:\n%s", transcript)
 	}
@@ -138,6 +138,78 @@ func TestChatModel_rendersTheFinishedAnswerAsMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "bold") {
 		t.Fatalf("want the text itself preserved, got: %q", rendered)
+	}
+}
+
+func TestChatModel_tabCompletesAnUnambiguousSlashCommand(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("/mod")
+	if !m.completeSlashCommand() {
+		t.Fatal("want completeSlashCommand to report it did something")
+	}
+	if m.input.Value() != "/model " {
+		t.Fatalf("want /mod completed to \"/model \", got %q", m.input.Value())
+	}
+}
+
+func TestChatModel_tabCompletesToTheSharedPrefixWhenAmbiguous(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("/s")
+	// /scope, /sources, /source, /srd all start with /s but share no more
+	// than "/s" itself — there's nothing further to fill in, so this
+	// reports no completion happened, same as an unmatched prefix.
+	if m.completeSlashCommand() {
+		t.Fatal("want no completion when the shared prefix is no longer than what's already typed")
+	}
+	if m.input.Value() != "/s" {
+		t.Fatalf("want /s left untouched, got %q", m.input.Value())
+	}
+
+	m.input.SetValue("/so")
+	m.completeSlashCommand()
+	// /sources and /source share "/source".
+	if m.input.Value() != "/source" {
+		t.Fatalf("want /so completed to the shared prefix /source, got %q", m.input.Value())
+	}
+}
+
+func TestChatModel_tabDoesNothingOutsideASlashCommand(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("what does fireball do")
+	if m.completeSlashCommand() {
+		t.Fatal("want no completion for plain text")
+	}
+	if m.input.Value() != "what does fireball do" {
+		t.Fatalf("want the input untouched, got %q", m.input.Value())
+	}
+
+	m.input.SetValue("/model gpt-")
+	if m.completeSlashCommand() {
+		t.Fatal("want no completion once the command's arguments have started")
+	}
+}
+
+func TestChatModel_slashSuggestionsLineListsMatches(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("/mo")
+	line := m.slashSuggestionsLine()
+	if !strings.Contains(line, "/model") {
+		t.Fatalf("want /model suggested, got %q", line)
+	}
+
+	m.input.SetValue("/model")
+	if got := m.slashSuggestionsLine(); got != "" {
+		t.Fatalf("want no suggestion once the command is typed out exactly, got %q", got)
+	}
+
+	m.input.SetValue("")
+	if got := m.slashSuggestionsLine(); got != "" {
+		t.Fatalf("want no suggestion for an empty input, got %q", got)
+	}
+
+	m.input.SetValue("what does fireball do")
+	if got := m.slashSuggestionsLine(); got != "" {
+		t.Fatalf("want no suggestion for plain text, got %q", got)
 	}
 }
 
@@ -195,8 +267,8 @@ func TestChatModel_slashModelOverridesAndPersistsTheModel(t *testing.T) {
 
 	m.input.SetValue("/model gpt-x")
 	m.submit()
-	if !strings.Contains(m.transcript.String(), "model gpt-x (saved to openai)") {
-		t.Fatalf("want the switch confirmed as saved in the transcript, got:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcriptText(), "model gpt-x (saved to openai)") {
+		t.Fatalf("want the switch confirmed as saved in the transcript, got:\n%s", m.transcriptText())
 	}
 	if m.cfg.AskModel != "gpt-x" {
 		t.Fatalf("want the model applied to the workspace's config, got %q", m.cfg.AskModel)
@@ -218,8 +290,8 @@ func TestChatModel_slashModelErrorsWithoutAnActiveProviderToSaveTo(t *testing.T)
 	m, _ := newTestChatModel(t) // providerName is "" here, same as an env-var-only setup
 	m.input.SetValue("/model gpt-x")
 	m.submit()
-	if !strings.Contains(m.transcript.String(), "no active stored provider") {
-		t.Fatalf("want an error explaining there's nowhere to persist the model, got:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcriptText(), "no active stored provider") {
+		t.Fatalf("want an error explaining there's nowhere to persist the model, got:\n%s", m.transcriptText())
 	}
 }
 
@@ -260,8 +332,8 @@ func TestChatModel_slashCommandRunsSynchronouslyAndDoesNotStream(t *testing.T) {
 	if m.streaming {
 		t.Fatal("a slash command must never set streaming")
 	}
-	if !strings.Contains(m.transcript.String(), "noted (1") {
-		t.Fatalf("want the note confirmation in the transcript, got:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcriptText(), "noted (1") {
+		t.Fatalf("want the note confirmation in the transcript, got:\n%s", m.transcriptText())
 	}
 	if len(m.sess.Notes) != 1 {
 		t.Fatalf("want the note recorded on the session, got %+v", m.sess.Notes)
@@ -306,8 +378,8 @@ func TestChatModel_ctrlCCancelsAnInFlightTurnWithoutQuitting(t *testing.T) {
 	if m.streaming {
 		t.Fatal("want the turn to have finished (cancelled)")
 	}
-	if !strings.Contains(m.transcript.String(), "cancelled") {
-		t.Fatalf("want a cancellation notice in the transcript, got:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcriptText(), "cancelled") {
+		t.Fatalf("want a cancellation notice in the transcript, got:\n%s", m.transcriptText())
 	}
 	if len(m.sess.Turns) != 0 {
 		t.Fatalf("a cancelled turn must not be persisted: %+v", m.sess.Turns)

@@ -631,28 +631,45 @@ type chatErrorResult struct {
 	Message  string `json:"message"`
 }
 
-const chatHelp = `Commands:
-  /note <text>        record a fact this session keeps in context
-  /note rm <n>        remove the note numbered <n> in /notes
-  /note edit <n> <text>   replace the text of note <n>
-  /notes              list the recorded notes
-  /sources            citations for the last answer
-  /adventure <id-or-title>   add an adventure's prose (append " only" to
-                      drop the rulebooks, or use "none" to clear the scope)
-  /scope              show the active adventure scope and retrieval filters
-  /limit <n>          retrieved chunks per question
-  /kind [kind|none]   restrict retrieval to one entity kind, or clear it
-  /source [ids|none]  restrict retrieval to source ids (comma-separated), or clear it
-  /srd [on|off]       show or set whether retrieval is SRD-only
-  /history            print the transcript
-  /clear [all]        drop the transcript, or "all" to drop the notes too
-  /provider [name]    switch to a configured provider (see 5e auth list), or show the current model/base url
-  /model [name]       change and persist that provider's chat model, or show the current one
-  /help               this list
-  /exit               leave (Ctrl-D also works)
-In the interactive workspace: PgUp/PgDn (or the mouse wheel) scroll the
-transcript; Ctrl-G toggles the key reference.
-Anything else is a question.`
+// chatSlashCommands is the canonical list of slash commands: chatHelp below
+// is generated from it, and the interactive workspace uses it to suggest
+// and Tab-complete commands as they're typed (see chattui.go's
+// matchingSlashCommands). Keep this the single source of truth for command
+// names rather than letting chatHelp's text and chatCommand's switch drift
+// apart from what the workspace suggests.
+var chatSlashCommands = []struct{ Name, Usage string }{
+	{"/note", "<text>        record a fact this session keeps in context"},
+	{"/notes", "             list the recorded notes"},
+	{"/sources", "           citations for the last answer"},
+	{"/adventure", "<id-or-title>   add an adventure's prose (append \" only\" to drop the rulebooks, or use \"none\" to clear the scope)"},
+	{"/scope", "             show the active adventure scope and retrieval filters"},
+	{"/limit", "<n>          retrieved chunks per question"},
+	{"/kind", "[kind|none]   restrict retrieval to one entity kind, or clear it"},
+	{"/source", "[ids|none]  restrict retrieval to source ids (comma-separated), or clear it"},
+	{"/srd", "[on|off]       show or set whether retrieval is SRD-only"},
+	{"/history", "           print the transcript"},
+	{"/clear", "[all]        drop the transcript, or \"all\" to drop the notes too"},
+	{"/provider", "[name]    switch to a configured provider (see 5e auth list), or show the current model/base url"},
+	{"/model", "[name]       change and persist that provider's chat model, or show the current one"},
+	{"/help", "               this list"},
+	{"/exit", "               leave (Ctrl-D also works)"},
+}
+
+var chatHelp = buildChatHelp()
+
+func buildChatHelp() string {
+	var b strings.Builder
+	b.WriteString("Commands:\n")
+	for _, c := range chatSlashCommands {
+		fmt.Fprintf(&b, "  %s %s\n", c.Name, c.Usage)
+	}
+	b.WriteString("  /note rm <n>        remove the note numbered <n> in /notes\n")
+	b.WriteString("  /note edit <n> <text>   replace the text of note <n>\n")
+	b.WriteString("In the interactive workspace: PgUp/PgDn scroll the transcript, Tab\n")
+	b.WriteString("completes a slash command, Ctrl-G toggles the key reference.\n")
+	b.WriteString("Anything else is a question.")
+	return b.String()
+}
 
 func chatREPL(cmd *cobra.Command, opt *options, st *store.Store, cs *chat.Store, cfg ask.Config, sess *chat.Session, opts chat.Options, providerName string) error {
 	out := cmd.OutOrStdout()

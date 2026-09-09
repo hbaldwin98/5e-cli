@@ -60,6 +60,7 @@ type chatKeyMap struct {
 	Down       key.Binding
 	ScrollUp   key.Binding
 	ScrollDown key.Binding
+	Complete   key.Binding
 	Cancel     key.Binding
 	Quit       key.Binding
 	Help       key.Binding
@@ -67,12 +68,15 @@ type chatKeyMap struct {
 
 func defaultChatKeyMap() chatKeyMap {
 	return chatKeyMap{
-		Submit:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
-		Newline:    key.NewBinding(key.WithKeys("ctrl+j", "alt+enter"), key.WithHelp("ctrl+j", "newline")),
-		Up:         key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "history")),
-		Down:       key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "history")),
-		ScrollUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "scroll up")),
+		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+		Newline: key.NewBinding(key.WithKeys("ctrl+j", "alt+enter"), key.WithHelp("ctrl+j", "newline")),
+		Up:      key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "history")),
+		Down:    key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "history")),
+		// ctrl+b is deliberately not bound here: it's tmux's default prefix
+		// key, so under tmux it would never reach this program at all.
+		ScrollUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "scroll up")),
 		ScrollDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "scroll down")),
+		Complete:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "complete command")),
 		Cancel:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
 		Quit:       key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
 		Help:       key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
@@ -80,7 +84,7 @@ func defaultChatKeyMap() chatKeyMap {
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Newline, k.Up, k.ScrollUp, k.Cancel, k.Quit, k.Help}
+	return []key.Binding{k.Submit, k.Newline, k.Up, k.ScrollUp, k.Complete, k.Cancel, k.Quit, k.Help}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
@@ -117,7 +121,7 @@ type chatModel struct {
 	// banner, past questions and answers, and slash-command output. pending
 	// is the current turn's streamed text, shown appended below transcript
 	// but not yet part of it until the turn finishes.
-	transcript strings.Builder
+	transcript []transcriptBlock
 	pending    strings.Builder
 	streaming  bool
 	turnCh     <-chan any
@@ -174,31 +178,75 @@ func sessionBanner(sess *chat.Session, opts chat.Options) string {
 	return b.String()
 }
 
+// transcriptBlock is one committed piece of scrollback. preWrapped marks
+// content (a glamour-rendered answer) that already carries its own
+// word-wrap and ANSI styling baked in at a fixed width — refreshViewport
+// must not run lipgloss's word-wrap over it a second time, since re-wrapping
+// already-wrapped, already-styled ANSI text is exactly the kind of thing
+// that silently mangles it (a lipgloss Width-render pads and re-breaks
+// lines without understanding glamour's own layout decisions).
+type transcriptBlock struct {
+	text       string
+	preWrapped bool
+}
+
 func (m *chatModel) writeLine(s string) {
 	s = strings.TrimRight(s, "\n")
 	if s == "" {
 		return
 	}
-	if m.transcript.Len() > 0 {
-		m.transcript.WriteString("\n\n")
+	m.transcript = append(m.transcript, transcriptBlock{text: s})
+}
+
+// transcriptText joins every committed block's raw text (unwrapped), for
+// callers that just want to check what's in the scrollback — tests, mostly
+// — without caring about the wrapping refreshViewport applies at render
+// time.
+func (m *chatModel) transcriptText() string {
+	texts := make([]string, len(m.transcript))
+	for i, block := range m.transcript {
+		texts[i] = block.text
 	}
-	m.transcript.WriteString(s)
+	return strings.Join(texts, "\n\n")
+}
+
+// writeRendered is writeLine for content that must reach the screen exactly
+// as rendered — currently just glamour-rendered answers (see renderAnswer).
+func (m *chatModel) writeRendered(s string) {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return
+	}
+	m.transcript = append(m.transcript, transcriptBlock{text: s, preWrapped: true})
 }
 
 func (m *chatModel) refreshViewport() {
-	content := m.transcript.String()
+	var b strings.Builder
+	width := m.viewport.Width()
+	for i, block := range m.transcript {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		if block.preWrapped {
+			b.WriteString(block.text)
+		} else {
+			b.WriteString(wrapToWidth(block.text, width))
+		}
+	}
 	if m.streaming {
 		switch {
 		case m.pending.Len() > 0:
-			content += "\n\n" + m.pending.String()
+			b.WriteString("\n\n")
+			b.WriteString(wrapToWidth(m.pending.String(), width))
 		default:
 			// No tokens yet: show a spinner so a slow retrieval or a slow
 			// first token never looks like the workspace has frozen.
-			content += "\n\n" + lipgloss.NewStyle().Faint(true).Render(m.spin.View()+" thinking")
+			b.WriteString("\n\n")
+			b.WriteString(lipgloss.NewStyle().Faint(true).Render(m.spin.View() + " thinking"))
 		}
 	}
 	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(wrapToWidth(content, m.viewport.Width()))
+	m.viewport.SetContent(b.String())
 	if atBottom {
 		m.viewport.GotoBottom()
 	}
@@ -304,11 +352,89 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.ScrollDown):
 		m.viewport.PageDown()
 		return m, nil
+
+	case key.Matches(msg, m.keys.Complete):
+		if m.completeSlashCommand() {
+			return m, nil
+		}
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// matchingSlashCommands returns the commands in chatSlashCommands whose
+// name starts with prefix (case-insensitive). It only makes sense to call
+// this while prefix looks like an in-progress command word — see
+// slashCommandPrefix.
+func matchingSlashCommands(prefix string) []string {
+	prefix = strings.ToLower(prefix)
+	var out []string
+	for _, c := range chatSlashCommands {
+		if strings.HasPrefix(strings.ToLower(c.Name), prefix) {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// slashCommandPrefix returns the input's current text as a slash-command
+// prefix worth completing or suggesting against, and true, only when the
+// input is a single line whose only content so far is the start of a
+// command word (a "/" with no following space yet) — once a space appears
+// the user has moved on to the command's arguments, where completion and
+// suggestions no longer apply.
+func slashCommandPrefix(value string) (string, bool) {
+	if !strings.HasPrefix(value, "/") || strings.ContainsAny(value, " \n") {
+		return "", false
+	}
+	return value, true
+}
+
+// completeSlashCommand implements Tab: with a single unambiguous match it
+// completes the input to that command plus a trailing space (ready for
+// arguments); with several matches it completes as far as their shared
+// prefix goes, same as a shell's Tab-completion. It reports whether it did
+// anything, so Tab can fall through to the textarea's own handling (a
+// literal tab, mid-answer) when the input isn't a slash command at all.
+func (m *chatModel) completeSlashCommand() bool {
+	prefix, ok := slashCommandPrefix(m.input.Value())
+	if !ok {
+		return false
+	}
+	matches := matchingSlashCommands(prefix)
+	switch len(matches) {
+	case 0:
+		return false
+	case 1:
+		m.input.SetValue(matches[0] + " ")
+		return true
+	default:
+		common := commonPrefix(matches)
+		if len(common) <= len(prefix) {
+			return false
+		}
+		m.input.SetValue(common)
+		return true
+	}
+}
+
+// commonPrefix returns the longest string every element of ss starts with.
+func commonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	prefix := ss[0]
+	for _, s := range ss[1:] {
+		for !strings.HasPrefix(s, prefix) {
+			prefix = prefix[:len(prefix)-1]
+			if prefix == "" {
+				return ""
+			}
+		}
+	}
+	return prefix
 }
 
 func (m *chatModel) recallHistory(dir int) {
@@ -441,7 +567,7 @@ func (m *chatModel) finishTurn(msg turnDoneMsg) {
 		return
 	}
 
-	m.writeLine(m.renderAnswer(msg.res.Answer))
+	m.writeRendered(m.renderAnswer(msg.res.Answer))
 	if len(msg.res.Citations) > 0 {
 		var buf bytes.Buffer
 		buf.WriteString("Sources:\n")
@@ -470,13 +596,33 @@ func (m *chatModel) renderAnswer(answer string) string {
 	return strings.TrimSpace(rendered)
 }
 
+// slashSuggestionsLine renders the commands matching what's currently typed
+// (see slashCommandPrefix), or "" when there's nothing to suggest — an
+// empty input, plain text, a command whose arguments have already started,
+// or a command that's already typed out in full with nothing left to
+// complete. Always returning a string (never skipping the line) is what
+// lets resize() reserve a constant one line of height for it instead of the
+// whole layout shifting around on every keystroke.
+func (m *chatModel) slashSuggestionsLine() string {
+	prefix, ok := slashCommandPrefix(m.input.Value())
+	if !ok {
+		return ""
+	}
+	matches := matchingSlashCommands(prefix)
+	if len(matches) == 0 || (len(matches) == 1 && matches[0] == prefix) {
+		return ""
+	}
+	return lipgloss.NewStyle().Faint(true).Render(strings.Join(matches, "  ") + "  (tab to complete)")
+}
+
 func (m *chatModel) resize() {
 	helpHeight := 1
 	if m.showHelp {
 		helpHeight = 1
 	}
 	const inputHeight = 3
-	vpHeight := m.height - inputHeight - helpHeight - 1
+	const suggestHeight = 1
+	vpHeight := m.height - inputHeight - helpHeight - suggestHeight - 1
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
@@ -490,16 +636,20 @@ func (m *chatModel) resize() {
 func (m *chatModel) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
-	// Lets the mouse wheel scroll the viewport (its Update already handles
-	// tea.MouseWheelMsg); PgUp/PgDn/ctrl+b/ctrl+f are the keyboard path for
-	// the same thing, for terminals or setups without mouse reporting.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Deliberately not enabling mouse reporting (tea.View.MouseMode): doing
+	// so hands every mouse event to the program, which is exactly what
+	// breaks a terminal's own click-drag text selection and copy — most
+	// terminals stop offering native selection the moment an app requests
+	// mouse tracking. PgUp/PgDn/ctrl+u/ctrl+f (chatKeyMap.ScrollUp/Down)
+	// are the only way to scroll here, so that copy/paste keeps working.
 	if !m.ready {
 		v.SetContent("")
 		return v
 	}
 	var b strings.Builder
 	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
+	b.WriteString(m.slashSuggestionsLine())
 	b.WriteString("\n")
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
