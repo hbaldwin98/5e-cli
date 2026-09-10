@@ -302,6 +302,17 @@ func ingestFile(path string, col *collector) error {
 				col.addTables(stringField(obj, "source"), obj)
 				continue
 			}
+			if kind == "magicvariant" {
+				if merged, mergedRaw, ok := parse.FlattenMagicVariant(obj); ok {
+					obj, item = merged, mergedRaw
+				}
+			}
+			// Injectors resolve against the record's own fields, so this has
+			// to run after the magicvariant merge above puts those fields
+			// (bonusWeapon, bonusAc) at the top level where a token names them.
+			if resolved, resolvedRaw, ok := parse.ResolveInjectors(obj); ok {
+				obj, item = resolved, resolvedRaw
+			}
 			e, ok := parse.FromObject(kind, obj, item)
 			if !ok {
 				continue

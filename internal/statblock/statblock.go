@@ -43,7 +43,7 @@ func Render(w io.Writer, kind string, obj map[string]any) {
 		renderSpell(w, obj)
 	case "monster":
 		renderMonster(w, obj)
-	case "item", "itemBase":
+	case "item", "itemBase", "magicvariant":
 		renderItem(w, obj)
 	case "race", "subrace":
 		renderRace(w, obj)
@@ -246,6 +246,7 @@ func renderItem(w io.Writer, obj map[string]any) {
 	writeField(w, "Bonus to Spell Attacks", scalar(obj["bonusSpellAttack"]))
 	writeField(w, "Bonus to Saving Throws", scalar(obj["bonusSavingThrow"]))
 	writeField(w, "Prerequisite", itemPrerequisite(obj))
+	writeField(w, "Applies To", magicVariantApplies(obj["requires"]))
 }
 
 // itemProperties expands a weapon's property codes (V versatile, F finesse,
@@ -2163,19 +2164,52 @@ func challengeRating(v any) string {
 	return cr
 }
 
+var itemTypeCodes = map[string]string{"A": "ammunition", "AF": "ammunition", "AT": "artisan's tools", "G": "adventuring gear", "HA": "heavy armor", "INS": "instrument", "LA": "light armor", "M": "melee weapon", "MA": "medium armor", "P": "potion", "R": "ranged weapon", "RD": "rod", "RG": "ring", "S": "shield", "SC": "scroll", "ST": "staff", "T": "tools", "W": "wand", "WD": "wand", "WOND": "wondrous item"}
+
+// itemTypeName decodes one 5etools item type code, dropping the "|SOURCE"
+// suffix a code may carry ("AF|DMG").
+func itemTypeName(code string) string {
+	if i := strings.Index(code, "|"); i >= 0 {
+		code = code[:i]
+	}
+	if value := itemTypeCodes[code]; value != "" {
+		return value
+	}
+	return strings.ToLower(code)
+}
+
 func itemType(obj map[string]any) string {
 	if detail := stringValue(obj["typeAlt"]); detail != "" {
 		return detail
 	}
-	codes := map[string]string{"A": "ammunition", "AF": "ammunition", "AT": "artisan's tools", "G": "adventuring gear", "HA": "heavy armor", "INS": "instrument", "LA": "light armor", "M": "melee weapon", "MA": "medium armor", "P": "potion", "R": "ranged weapon", "RD": "rod", "RG": "ring", "S": "shield", "SC": "scroll", "ST": "staff", "T": "tools", "W": "wand", "WD": "wand", "WOND": "wondrous item"}
 	code := stringValue(obj["type"])
-	if i := strings.Index(code, "|"); i >= 0 {
-		code = code[:i]
+	// GV ("generic variant") marks a magicvariant template rather than naming
+	// a kind of item, so showing it would put a meaningless "gv" where a
+	// reader expects "ammunition" or "melee weapon".
+	if strings.HasPrefix(code, "GV") {
+		return ""
 	}
-	if value := codes[code]; value != "" {
-		return value
+	return itemTypeName(code)
+}
+
+// magicVariantApplies names the base item types a magic variant can be
+// applied to, from its requires field — the one thing a variant card needs
+// that a plain item card does not, since "+1 Ammunition" is a template rather
+// than an item you can pick up.
+func magicVariantApplies(v any) string {
+	requires, _ := v.([]any)
+	var names []string
+	seen := map[string]bool{}
+	for _, item := range requires {
+		req, _ := item.(map[string]any)
+		name := itemTypeName(stringValue(req["type"]))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
 	}
-	return strings.ToLower(code)
+	return strings.Join(names, ", ")
 }
 
 // itemRarity is an item's rarity, or "" for the "none" placeholder 5etools

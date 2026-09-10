@@ -45,6 +45,7 @@ var kindAccent = map[string]string{
 	"monster":         "9",  // red
 	"spell":           "13", // magenta
 	"item":            "11", // yellow
+	"magicvariant":    "11", // yellow, same family as item
 	"itemBase":        "11",
 	"race":            "10", // green
 	"subrace":         "10",
@@ -90,7 +91,7 @@ func Summary(kind string, obj map[string]any) string {
 			d = joinNonEmpty(", ", d, a)
 		}
 		return d
-	case "item", "itemBase":
+	case "item", "itemBase", "magicvariant":
 		line := joinNonEmpty(", ", itemType(obj), itemRarity(obj))
 		if attune := obj["reqAttune"]; attune != nil && attune != false {
 			text := "requires attunement"
@@ -142,7 +143,7 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Senses", senses(obj))
 		add("Languages", stringList(obj["languages"]))
 		add("Challenge", challengeRating(obj["cr"]))
-	case "item", "itemBase":
+	case "item", "itemBase", "magicvariant":
 		add("Damage", itemDamage(obj))
 		add("Properties", itemProperties(obj))
 		add("Weapon Mastery", itemMastery(obj))
@@ -158,6 +159,9 @@ func Fields(kind string, obj map[string]any) []Field {
 		add("Bonus to Spell Attacks", scalar(obj["bonusSpellAttack"]))
 		add("Bonus to Saving Throws", scalar(obj["bonusSavingThrow"]))
 		add("Prerequisite", itemPrerequisite(obj))
+		if kind == "magicvariant" {
+			add("Applies To", magicVariantApplies(obj["requires"]))
+		}
 	case "race", "subrace":
 		add("Size", raceSizes(obj["size"]))
 		add("Speed", speed(obj["speed"]))

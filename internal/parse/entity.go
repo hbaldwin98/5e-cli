@@ -23,6 +23,44 @@ func (e Entity) Key() string {
 	return e.Kind + "\x00" + strings.ToLower(e.Name) + "\x00" + strings.ToLower(e.Source)
 }
 
+// FlattenMagicVariant lifts a magicvariant's "inherits" object up to the top
+// level, returning the merged object and its re-encoded JSON.
+//
+// A magicvariant record describes a template ("+1 Ammunition") whose own top
+// level carries only how it combines with a base item (type, requires,
+// excludes). Everything that makes it an item a DM can read — source, page,
+// srd, rarity, entries, reqAttune, the bonus fields — lives under inherits,
+// because those are the fields the generated item inherits. Only 5 of 230
+// records carry a top-level source, so without this the other 225 (every
+// +1/+2/+3 weapon, armor, shield and ammunition, Adamantine and Mithral
+// armor) fail FromObjectWithName's name/source check and never reach the
+// index at all.
+//
+// inherits wins on conflict, since it is the generated item's own value, and
+// the merged JSON is what gets stored so the item renderer sees those fields
+// too rather than only the search text seeing them.
+func FlattenMagicVariant(obj map[string]any) (map[string]any, json.RawMessage, bool) {
+	inherits, ok := obj["inherits"].(map[string]any)
+	if !ok {
+		return obj, nil, false
+	}
+	merged := make(map[string]any, len(obj)+len(inherits))
+	for k, v := range obj {
+		if k == "inherits" {
+			continue
+		}
+		merged[k] = v
+	}
+	for k, v := range inherits {
+		merged[k] = v
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return obj, nil, false
+	}
+	return merged, raw, true
+}
+
 // FromObject builds an Entity from a 5etools object and its array kind,
 // disambiguating its name up front (see DisambiguateName). classFeature and
 // subclassFeature are the exception: a plain feature name only actually
