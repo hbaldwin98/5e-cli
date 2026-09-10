@@ -38,9 +38,8 @@ CREATE TABLE vectors (
   embedding BLOB NOT NULL
 );
 `
-	// embedBatch bounds inputs per request; maxBatchTokens bounds their
-	// combined size, since the API caps a request's total tokens too.
-	embedBatch     = 64
+	// maxBatchTokens bounds a request's combined input size, since the API
+	// caps a request's total tokens as well as its input count.
 	maxBatchTokens = 250000
 
 	// minCharsPerToken is a deliberately pessimistic tokenizer ratio. Ordinary
@@ -236,26 +235,14 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 	}
 	defer ins.Close()
 
-	for i := 0; i < len(chunks); {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		end := batchEnd(chunks, i)
-		batch := chunks[i:end]
-		i = end
-		inputs := make([]string, len(batch))
-		for j, ch := range batch {
-			inputs[j] = ch.Text
-		}
+	report := func(done int) {
 		if cfg.OnProgress != nil {
-			cfg.OnProgress(EmbedProgress{Done: end, Total: len(chunks), Phase: "embedding"})
+			cfg.OnProgress(EmbedProgress{Done: done, Total: len(chunks), Phase: "embedding"})
 		} else if cfg.Progress != nil {
-			fmt.Fprintf(cfg.Progress, "embedding %d/%d\n", end, len(chunks))
+			fmt.Fprintf(cfg.Progress, "embedding %d/%d\n", done, len(chunks))
 		}
-		vecs, err := cli.Embed(ctx, inputs)
-		if err != nil {
-			return err
-		}
+	}
+	insert := func(batch []chunk, vecs [][]float32) error {
 		for j, ch := range batch {
 			if err := validateVector(vecs[j], fmt.Sprintf("%s %s (%s)", ch.Kind, ch.Name, ch.Source)); err != nil {
 				return err
@@ -270,6 +257,17 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 				return err
 			}
 		}
+		return nil
+	}
+	report(0)
+	if err := embedConcurrently(ctx, cli, chunks, func(batch []chunk, vecs [][]float32, done int) error {
+		if err := insert(batch, vecs); err != nil {
+			return err
+		}
+		report(done)
+		return nil
+	}); err != nil {
+		return err
 	}
 	if dim == 0 {
 		return fmt.Errorf("embeddings: no vectors returned")

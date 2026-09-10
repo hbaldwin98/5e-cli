@@ -297,7 +297,15 @@ type fakeAPI struct {
 func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 	t.Helper()
 	api := &fakeAPI{}
-	srv := httptest.NewServer(api.handler())
+	st, cfg := harnessServing(t, api.handler())
+	return st, cfg, api
+}
+
+// harnessServing is harness with the API served by h, for tests that wrap
+// the fake API to inject failures or observe requests.
+func harnessServing(t *testing.T, h http.Handler) (*store.Store, Config) {
+	t.Helper()
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
 	index := filepath.Join(t.TempDir(), "index.sqlite")
@@ -328,7 +336,7 @@ func harness(t *testing.T) (*store.Store, Config, *fakeAPI) {
 		HTTPClient: srv.Client(),
 		Progress:   io.Discard,
 	}
-	return st, cfg, api
+	return st, cfg
 }
 
 func (f *fakeAPI) handler() http.Handler {

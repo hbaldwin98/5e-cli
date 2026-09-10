@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hbaldwin98/5e-cli/internal/provider"
 )
@@ -335,6 +337,41 @@ func errorBodyMessage(payload []byte, status string) string {
 	return msg
 }
 
+// statusError is a non-2xx API response. It keeps the status code (and any
+// Retry-After the server sent) so a caller can tell a rate limit or an
+// outage worth retrying from a request that will never succeed.
+type statusError struct {
+	Path       string
+	Code       int
+	Msg        string
+	RetryAfter time.Duration
+}
+
+func (e *statusError) Error() string { return e.Path + ": " + e.Msg }
+
+// transient reports whether retrying the same request could succeed:
+// timeouts, rate limits, and server-side failures.
+func (e *statusError) transient() bool {
+	return e.Code == http.StatusRequestTimeout || e.Code == http.StatusTooManyRequests || e.Code >= 500
+}
+
+// retryAfter parses a Retry-After header, either delay-seconds or an HTTP
+// date, returning 0 when it is absent or unparseable.
+func retryAfter(h string) time.Duration {
+	if h == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(h); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if at, err := http.ParseTime(h); err == nil {
+		if d := time.Until(at); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 func (c *client) post(ctx context.Context, path string, body any, dest any) error {
 	key, baseURL := c.cfg.APIKey, c.cfg.BaseURL
 	if path == "chat/completions" {
@@ -364,7 +401,12 @@ func (c *client) post(ctx context.Context, path string, body any, dest any) erro
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: %s", path, errorBodyMessage(payload, resp.Status))
+		return &statusError{
+			Path:       path,
+			Code:       resp.StatusCode,
+			Msg:        errorBodyMessage(payload, resp.Status),
+			RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 	if err := json.Unmarshal(payload, dest); err != nil {
 		return fmt.Errorf("%s: decode: %w", path, err)
