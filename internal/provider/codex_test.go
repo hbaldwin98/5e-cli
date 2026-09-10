@@ -196,3 +196,132 @@ func readBody(t *testing.T, r *http.Request) string {
 	}
 	return string(body)
 }
+
+func TestCodexBeginRedeemExchangesPastedRedirect(t *testing.T) {
+	var gotForm url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotForm, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"at","refresh_token":"rt","expires_in":3600}`)
+	}))
+	defer server.Close()
+
+	config := CodexOAuthConfig{TokenURL: server.URL, HTTPClient: server.Client()}
+	request, err := config.Begin(config.PasteRedirectURI())
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if !strings.Contains(request.AuthorizeURL, "code_challenge_method=S256") {
+		t.Fatalf("authorize URL missing PKCE challenge: %s", request.AuthorizeURL)
+	}
+	if request.RedirectURI != "http://localhost:1455/auth/callback" {
+		t.Fatalf("redirect URI = %q", request.RedirectURI)
+	}
+
+	pasted := "http://localhost:1455/auth/callback?code=abc123&state=" + request.State
+	cred, err := request.Redeem(context.Background(), pasted)
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	if cred.AccessToken != "at" || cred.Type != OAuthAuth {
+		t.Fatalf("credential = %+v", cred)
+	}
+	if gotForm.Get("code") != "abc123" {
+		t.Fatalf("exchanged code = %q", gotForm.Get("code"))
+	}
+	if gotForm.Get("code_verifier") == "" {
+		t.Fatal("exchange omitted code_verifier")
+	}
+	if gotForm.Get("redirect_uri") != request.RedirectURI {
+		t.Fatalf("redirect_uri = %q", gotForm.Get("redirect_uri"))
+	}
+}
+
+func TestCodexRedeemRejectsMismatchedState(t *testing.T) {
+	config := CodexOAuthConfig{TokenURL: "http://127.0.0.1:1/unused"}
+	request, err := config.Begin(config.PasteRedirectURI())
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	_, err = request.Redeem(context.Background(), "http://localhost:1455/auth/callback?code=abc&state=someone-elses")
+	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
+		t.Fatalf("err = %v, want a state mismatch", err)
+	}
+}
+
+func TestParseCallbackInputAcceptsWhatIsEasyToCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, code, state string
+	}{
+		{"full URL", "http://localhost:1455/auth/callback?code=a1&state=s1", "a1", "s1"},
+		{"query only", "code=a2&state=s2", "a2", "s2"},
+		{"bare code", "a3", "a3", ""},
+		{"surrounding space", "  http://localhost:1455/auth/callback?code=a4  ", "a4", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, state, err := parseCallbackInput(tc.input)
+			if err != nil {
+				t.Fatalf("parseCallbackInput: %v", err)
+			}
+			if code != tc.code || state != tc.state {
+				t.Fatalf("got (%q, %q), want (%q, %q)", code, state, tc.code, tc.state)
+			}
+		})
+	}
+}
+
+func TestParseCallbackInputSurfacesAuthorizationErrors(t *testing.T) {
+	_, _, err := parseCallbackInput("http://localhost:1455/auth/callback?error=access_denied&error_description=User+refused")
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("err = %v, want the authorization error", err)
+	}
+	if _, _, err := parseCallbackInput("http://localhost:1455/auth/callback?state=s"); err == nil {
+		t.Fatal("want an error when the pasted URL carries no code")
+	}
+}
+
+// A headless caller sets OnAuthorizeURL and no OpenBrowser; Login must still
+// reach the authorization URL rather than refusing for want of a browser.
+func TestCodexLoginAnnouncesURLWithoutABrowser(t *testing.T) {
+	listener, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	announced := make(chan string, 1)
+	config := CodexOAuthConfig{
+		TokenURL: "http://127.0.0.1:1/unused",
+		Listen:   func(_, _ string) (net.Listener, error) { return listener, nil },
+		OnAuthorizeURL: func(rawURL string) {
+			announced <- rawURL
+			// Deliver the callback the way a browser opened elsewhere would.
+			parsed, _ := url.Parse(rawURL)
+			redirect := parsed.Query().Get("redirect_uri")
+			go func() {
+				resp, err := http.Get(redirect + "?code=pasted&state=" + parsed.Query().Get("state"))
+				if err == nil {
+					resp.Body.Close()
+				}
+			}()
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The exchange fails against the unroutable token URL, which is fine: the
+	// point is that Login got as far as announcing and accepting the callback.
+	_, err = config.Login(ctx)
+	if err == nil || !strings.Contains(err.Error(), "exchange code") {
+		t.Fatalf("err = %v, want a token-exchange failure", err)
+	}
+	select {
+	case rawURL := <-announced:
+		if !strings.Contains(rawURL, "code_challenge=") {
+			t.Fatalf("announced URL = %s", rawURL)
+		}
+	default:
+		t.Fatal("Login never announced the authorization URL")
+	}
+}

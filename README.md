@@ -158,7 +158,9 @@ percentile tables use for 100. Other tables use uniform row selection.
 Answer a question from the embedded corpus. Configure an API-key provider with
 `5e auth login openai` or `5e auth login openrouter`. Chat can instead use a
 ChatGPT subscription through `5e auth login codex`; embeddings still use the
-configured API-key provider. `--retrieve-only` ranks chunks without calling a
+configured API-key provider. On a machine with no browser, see
+[Signing In To Codex Without A Browser](#signing-in-to-codex-without-a-browser).
+`--retrieve-only` ranks chunks without calling a
 chat model. Use the global `--edition` flag or `FIVE_E_EDITION` (`2014`, `2024`,
 or `all`) to choose which reprint grounds each answer; the default is `2024`:
 
@@ -197,6 +199,33 @@ widens the corpus.
 The first run embeds the whole corpus into a sidecar cache next to the index.
 The cache is keyed by data fingerprint, base URL, embed model, and token
 limit, and rebuilds when any of those change.
+
+### Signing In To Codex Without A Browser
+
+`5e auth login codex` is an OAuth flow: it sends a browser to a page you approve,
+and the resulting code comes back to `http://localhost:1455/auth/callback`. The
+command always prints the sign-in URL, so on a headless machine there are two
+ways to finish it.
+
+Forward the callback port from a machine that has a browser, then run the login
+over that connection and open the printed URL locally:
+
+```sh
+ssh -L 1455:localhost:1455 <this-host>
+5e auth login codex --no-browser
+```
+
+Or skip the forward entirely. With `--paste-code` nothing listens locally: open
+the printed URL anywhere, approve it, and the browser is redirected to a
+`localhost:1455` page that fails to load. That failed URL carries the code, so
+copy it out of the address bar and paste it back:
+
+```sh
+5e auth login codex --paste-code
+```
+
+Either way the credential is stored the same, and `5e auth login codex` refreshes
+it from then on without asking again.
 
 ## Chat
 

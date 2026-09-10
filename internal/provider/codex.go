@@ -40,6 +40,23 @@ type CodexOAuthConfig struct {
 	OpenBrowser   func(url string) error
 	Random        io.Reader
 	Now           func() time.Time
+
+	// OnAuthorizeURL, when set, is called with the authorization URL before
+	// the browser is opened. Headless callers use it to print the URL so it
+	// can be opened on a machine that actually has a browser.
+	OnAuthorizeURL func(url string)
+}
+
+// CodexAuthRequest is one in-flight Codex authorization: the URL to open and
+// the PKCE state needed to redeem whatever authorization code comes back,
+// whether that arrives over the loopback callback or is pasted in by hand.
+type CodexAuthRequest struct {
+	AuthorizeURL string
+	RedirectURI  string
+	State        string
+
+	verifier string
+	config   CodexOAuthConfig
 }
 
 // CodexAccessToken returns a current Codex token and account ID, refreshing
@@ -79,38 +96,36 @@ func DefaultCodexOAuthConfig() CodexOAuthConfig {
 	}
 }
 
-// Login opens the Codex authorization page, waits for the loopback callback,
-// exchanges its code using PKCE S256, and returns a credential ready to save.
-func (c CodexOAuthConfig) Login(ctx context.Context) (Credential, error) {
+// PasteRedirectURI returns the redirect the paste flow advertises. It is the
+// fixed loopback callback registered for the Codex client rather than a port
+// the process is listening on, because in the paste flow nothing is listening:
+// the browser's attempt to reach it fails, and the address bar it fails on is
+// exactly what the user copies back.
+func (c CodexOAuthConfig) PasteRedirectURI() string {
 	c = c.withDefaults()
-	if c.OpenBrowser == nil {
-		return Credential{}, fmt.Errorf("codex oauth: OpenBrowser is required")
-	}
+	return "http://" + c.ListenAddress + c.CallbackPath
+}
 
-	listener, err := c.Listen("tcp", c.ListenAddress)
-	if err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: listen: %w", err)
-	}
-	defer listener.Close()
-
-	redirectURI, err := callbackURL(listener, c.CallbackPath)
-	if err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: callback URL: %w", err)
-	}
+// Begin creates the PKCE state for one authorization and builds the URL the
+// user has to open. The caller decides how the resulting code comes back:
+// Login waits for it on a loopback listener, while a headless caller reads it
+// off a pasted redirect and hands it to Redeem.
+func (c CodexOAuthConfig) Begin(redirectURI string) (*CodexAuthRequest, error) {
+	c = c.withDefaults()
 	state, err := randomURLString(c.Random, 32)
 	if err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: create state: %w", err)
+		return nil, fmt.Errorf("codex oauth: create state: %w", err)
 	}
 	verifier, err := randomURLString(c.Random, 64)
 	if err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: create PKCE verifier: %w", err)
+		return nil, fmt.Errorf("codex oauth: create PKCE verifier: %w", err)
 	}
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
 
 	authorizeURL, err := url.Parse(c.AuthorizeURL)
 	if err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: parse authorize URL: %w", err)
+		return nil, fmt.Errorf("codex oauth: parse authorize URL: %w", err)
 	}
 	query := authorizeURL.Query()
 	query.Set("client_id", c.ClientID)
@@ -124,6 +139,80 @@ func (c CodexOAuthConfig) Login(ctx context.Context) (Credential, error) {
 	query.Set("codex_cli_simplified_flow", "true")
 	query.Set("originator", "codex_cli_rs")
 	authorizeURL.RawQuery = query.Encode()
+
+	return &CodexAuthRequest{
+		AuthorizeURL: authorizeURL.String(),
+		RedirectURI:  redirectURI,
+		State:        state,
+		verifier:     verifier,
+		config:       c,
+	}, nil
+}
+
+// Redeem exchanges an authorization code the user brought back by hand. It
+// accepts whatever is easiest to copy: the whole redirected URL, just its
+// query string, or the bare code. A state parameter is checked when one is
+// present; a bare code carries none to check.
+func (r *CodexAuthRequest) Redeem(ctx context.Context, pasted string) (Credential, error) {
+	code, state, err := parseCallbackInput(pasted)
+	if err != nil {
+		return Credential{}, err
+	}
+	if state != "" && state != r.State {
+		return Credential{}, fmt.Errorf("codex oauth: callback state mismatch; the pasted URL is from a different sign-in attempt")
+	}
+	return r.config.exchangeCode(ctx, code, r.verifier, r.RedirectURI)
+}
+
+// parseCallbackInput pulls the authorization code out of a pasted redirect.
+func parseCallbackInput(pasted string) (string, string, error) {
+	pasted = strings.TrimSpace(pasted)
+	if pasted == "" {
+		return "", "", fmt.Errorf("codex oauth: no authorization code given")
+	}
+	query := ""
+	switch {
+	case strings.Contains(pasted, "?"):
+		_, query, _ = strings.Cut(pasted, "?")
+	case strings.Contains(pasted, "="):
+		query = pasted
+	default:
+		return pasted, "", nil
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return "", "", fmt.Errorf("codex oauth: parse pasted URL: %w", err)
+	}
+	if oauthErr := values.Get("error"); oauthErr != "" {
+		return "", "", fmt.Errorf("codex oauth: authorization failed: %s: %s", oauthErr, values.Get("error_description"))
+	}
+	code := values.Get("code")
+	if code == "" {
+		return "", "", fmt.Errorf("codex oauth: pasted URL has no code parameter")
+	}
+	return code, values.Get("state"), nil
+}
+
+// Login opens the Codex authorization page, waits for the loopback callback,
+// exchanges its code using PKCE S256, and returns a credential ready to save.
+func (c CodexOAuthConfig) Login(ctx context.Context) (Credential, error) {
+	c = c.withDefaults()
+
+	listener, err := c.Listen("tcp", c.ListenAddress)
+	if err != nil {
+		return Credential{}, fmt.Errorf("codex oauth: listen: %w", err)
+	}
+	defer listener.Close()
+
+	redirectURI, err := callbackURL(listener, c.CallbackPath)
+	if err != nil {
+		return Credential{}, fmt.Errorf("codex oauth: callback URL: %w", err)
+	}
+	request, err := c.Begin(redirectURI)
+	if err != nil {
+		return Credential{}, err
+	}
+	state := request.State
 
 	type callbackResult struct {
 		code string
@@ -169,8 +258,17 @@ func (c CodexOAuthConfig) Login(ctx context.Context) (Credential, error) {
 	go func() { serveDone <- server.Serve(listener) }()
 	defer server.Close()
 
-	if err := c.OpenBrowser(authorizeURL.String()); err != nil {
-		return Credential{}, fmt.Errorf("codex oauth: open browser: %w", err)
+	if c.OnAuthorizeURL != nil {
+		c.OnAuthorizeURL(request.AuthorizeURL)
+	}
+	if c.OpenBrowser != nil {
+		// A failure to spawn a browser only ends the login when the URL was
+		// not announced; if it was, the user can still open it themselves.
+		if err := c.OpenBrowser(request.AuthorizeURL); err != nil && c.OnAuthorizeURL == nil {
+			return Credential{}, fmt.Errorf("codex oauth: open browser: %w", err)
+		}
+	} else if c.OnAuthorizeURL == nil {
+		return Credential{}, fmt.Errorf("codex oauth: set OpenBrowser or OnAuthorizeURL")
 	}
 
 	select {
@@ -178,7 +276,7 @@ func (c CodexOAuthConfig) Login(ctx context.Context) (Credential, error) {
 		if got.err != nil {
 			return Credential{}, got.err
 		}
-		return c.exchangeCode(ctx, got.code, verifier, redirectURI)
+		return c.exchangeCode(ctx, got.code, request.verifier, redirectURI)
 	case err := <-serveDone:
 		if err == nil || err == http.ErrServerClosed {
 			err = fmt.Errorf("callback server stopped")

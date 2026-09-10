@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/provider"
@@ -240,4 +244,179 @@ func TestApplyProviderOverride_errorsForAnUnconfiguredProvider(t *testing.T) {
 	if err := applyProviderOverride(&cfg, &options{Provider: "openai"}); err == nil {
 		t.Fatal("want an error for a --provider that was never logged in")
 	}
+}
+
+// stubCodexOAuth points the Codex flow at a local token endpoint so the paste
+// flow can be driven end to end without a browser or a real OpenAI round trip.
+func stubCodexOAuth(t *testing.T) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"codex-at","refresh_token":"codex-rt","expires_in":3600}`)
+	}))
+	t.Cleanup(server.Close)
+
+	previous := codexOAuthConfig
+	codexOAuthConfig = func() provider.CodexOAuthConfig {
+		cfg := provider.DefaultCodexOAuthConfig()
+		cfg.TokenURL = server.URL
+		cfg.HTTPClient = server.Client()
+		return cfg
+	}
+	t.Cleanup(func() { codexOAuthConfig = previous })
+}
+
+func TestAuthLoginCodex_pasteCodeCompletesWithoutABrowser(t *testing.T) {
+	withIsolatedConfigDir(t)
+	stubCodexOAuth(t)
+
+	out := runAuth(t, "http://localhost:1455/auth/callback?code=pasted-code\n", "login", "codex", "--paste-code")
+	if !strings.Contains(out, "Open this URL to sign in") {
+		t.Fatalf("want the authorize URL printed, got %q", out)
+	}
+	if !strings.Contains(out, "https://auth.openai.com/oauth/authorize?") {
+		t.Fatalf("want the real authorize endpoint, got %q", out)
+	}
+	if !strings.Contains(out, "credentials saved") {
+		t.Fatalf("want a confirmation, got %q", out)
+	}
+
+	cred, ok := providerCredentialForTest(t, provider.Codex)
+	if !ok {
+		t.Fatal("codex credential was not stored")
+	}
+	if cred.Type != provider.OAuthAuth || cred.AccessToken != "codex-at" {
+		t.Fatalf("credential = %+v", cred)
+	}
+	if cred.ChatModel != provider.DefaultCodexModel {
+		t.Fatalf("chat model = %q, want the default", cred.ChatModel)
+	}
+}
+
+// The paste flow accepts a bare code, since a user copying out of an address
+// bar may reasonably trim it down to the part that matters.
+func TestAuthLoginCodex_pasteCodeAcceptsABareCode(t *testing.T) {
+	withIsolatedConfigDir(t)
+	stubCodexOAuth(t)
+
+	runAuth(t, "just-the-code\n", "login", "codex", "--paste-code")
+	if cred, ok := providerCredentialForTest(t, provider.Codex); !ok || cred.AccessToken != "codex-at" {
+		t.Fatalf("credential = %+v (stored: %v)", cred, ok)
+	}
+}
+
+// --no-browser must not shell out to a browser, and must tell the user how to
+// reach the callback from a machine that has one.
+func TestAuthLoginCodex_noBrowserPrintsURLAndForwardingHint(t *testing.T) {
+	withIsolatedConfigDir(t)
+	stubCodexOAuth(t)
+	// Claim a desktop session, so this asserts the flag rather than the
+	// headless auto-detect that would suppress the browser anyway.
+	t.Setenv("DISPLAY", ":0")
+	previous := openBrowserFunc
+	openBrowserFunc = func(rawURL string) error {
+		t.Errorf("--no-browser opened a browser at %s", rawURL)
+		return nil
+	}
+	t.Cleanup(func() { openBrowserFunc = previous })
+
+	printed := runCodexLoginUntilURL(t, "--no-browser")
+	if strings.Contains(printed, "Opening a browser") {
+		t.Fatalf("--no-browser still tried to open a browser: %q", printed)
+	}
+	for _, want := range []string{"Open this URL to sign in", "ssh -L 1455:localhost:1455", "--paste-code"} {
+		if !strings.Contains(printed, want) {
+			t.Fatalf("output missing %q: %q", want, printed)
+		}
+	}
+}
+
+// With no display and no flag, the login must not claim to open a browser:
+// that claim was the original bug, since xdg-open reports success on a
+// headless box while opening nothing.
+func TestAuthLoginCodex_headlessSuppressesTheBrowserByDefault(t *testing.T) {
+	withIsolatedConfigDir(t)
+	stubCodexOAuth(t)
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+
+	printed := runCodexLoginUntilURL(t)
+	if strings.Contains(printed, "Opening a browser") {
+		t.Fatalf("headless login claimed to open a browser: %q", printed)
+	}
+	if !strings.Contains(printed, "Open this URL to sign in") {
+		t.Fatalf("headless login never printed the URL: %q", printed)
+	}
+}
+
+// A desktop session keeps the original behaviour, and now prints the URL too.
+func TestAuthLoginCodex_withDisplayStillOpensTheBrowser(t *testing.T) {
+	withIsolatedConfigDir(t)
+	stubCodexOAuth(t)
+	t.Setenv("DISPLAY", ":0")
+	opened := make(chan string, 1)
+	previous := openBrowserFunc
+	openBrowserFunc = func(rawURL string) error {
+		opened <- rawURL
+		return nil
+	}
+	t.Cleanup(func() { openBrowserFunc = previous })
+
+	printed := runCodexLoginUntilURL(t)
+	select {
+	case rawURL := <-opened:
+		if !strings.Contains(rawURL, "code_challenge=") {
+			t.Fatalf("browser opened %q", rawURL)
+		}
+	default:
+		t.Fatal("the desktop path never opened a browser")
+	}
+	if !strings.Contains(printed, "Opening a browser") {
+		t.Fatalf("want the browser path on a desktop session: %q", printed)
+	}
+}
+
+// runCodexLoginUntilURL starts `auth login codex`, waits for it to print the
+// authorization URL, then cancels it -- nothing can complete the callback in a
+// test -- and returns everything it printed.
+func runCodexLoginUntilURL(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := authCmd()
+	out := &lockedBuffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetArgs(append([]string{"login", "codex"}, args...))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for i := 0; i < 400 && !strings.Contains(out.String(), "Open this URL"); i++ {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+	if err := cmd.ExecuteContext(ctx); err == nil {
+		t.Fatalf("want the cancelled login to report an error (output: %s)", out.String())
+	}
+	return out.String()
+}
+
+// lockedBuffer lets the watchdog goroutine poll the command's output while the
+// command is still writing to it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

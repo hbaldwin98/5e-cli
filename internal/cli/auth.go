@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -166,6 +167,10 @@ var knownProviders = []string{provider.OpenAI, provider.OpenRouter, provider.Cod
 
 var codexOAuthConfig = provider.DefaultCodexOAuthConfig
 
+// openBrowserFunc is indirected so tests can exercise the browser path
+// without spawning a real browser process.
+var openBrowserFunc = openBrowser
+
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
@@ -177,6 +182,7 @@ func authCmd() *cobra.Command {
 
 func authLoginCmd() *cobra.Command {
 	var apiKey, chatModel, embedModel string
+	var noBrowser, pasteCode bool
 	cmd := &cobra.Command{
 		Use:   "login <provider>",
 		Short: "Authenticate with a model provider",
@@ -187,10 +193,7 @@ func authLoginCmd() *cobra.Command {
 				return fmt.Errorf("unknown provider %q (known: %s)", name, strings.Join(knownProviders, ", "))
 			}
 			if name == provider.Codex {
-				cfg := codexOAuthConfig()
-				cfg.OpenBrowser = openBrowser
-				fmt.Fprintln(cmd.OutOrStdout(), "Opening a browser to sign in with ChatGPT...")
-				cred, err := cfg.Login(cmd.Context())
+				cred, err := loginCodex(cmd, noBrowser, pasteCode)
 				if err != nil {
 					return err
 				}
@@ -223,6 +226,8 @@ func authLoginCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key (omit to be prompted)")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "codex: print the sign-in URL instead of opening a browser")
+	cmd.Flags().BoolVar(&pasteCode, "paste-code", false, "codex: sign in by pasting the redirected URL back (for machines with no browser and no port forward)")
 	cmd.Flags().StringVar(&chatModel, "chat-model", "", "preferred chat model (default: ask's built-in default)")
 	cmd.Flags().StringVar(&embedModel, "embed-model", "", "preferred embedding model (default: ask's built-in default)")
 	return cmd
@@ -244,6 +249,79 @@ func saveLogin(cmd *cobra.Command, name string, cred provider.Credential) error 
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), styles(cmd.OutOrStdout()).Success.Render(fmt.Sprintf("%s: credentials saved to %s", name, path)))
 	return nil
+}
+
+// loginCodex runs the Codex OAuth flow, choosing between the two ways the
+// authorization code can get back to this process.
+//
+// The default is the loopback callback: a browser on this machine is sent to
+// localhost:1455 and the code arrives over that listener. That is the whole
+// flow when there is a browser here, and it still works headless over an SSH
+// forward of port 1455, since the redirect is fixed at that port.
+//
+// --paste-code covers the case where neither is available. Nothing listens;
+// the browser on some other machine fails to reach localhost:1455 and the
+// user copies the code out of the address bar of that failed page.
+//
+// The URL is printed in every case. It used to be passed only to xdg-open,
+// which on a headless box exists and reports success while opening nothing,
+// leaving the command blocked on a callback that could never arrive.
+func loginCodex(cmd *cobra.Command, noBrowser, pasteCode bool) (provider.Credential, error) {
+	out := cmd.OutOrStdout()
+	cfg := codexOAuthConfig()
+
+	if pasteCode {
+		request, err := cfg.Begin(cfg.PasteRedirectURI())
+		if err != nil {
+			return provider.Credential{}, err
+		}
+		printAuthorizeURL(out, request.AuthorizeURL)
+		fmt.Fprintf(out, "\nAfter you approve, the browser is redirected to %s,\nwhich will not load. Copy that failed URL from the address bar and paste it here.\n\n", cfg.PasteRedirectURI())
+		pasted, err := promptLine(cmd, "Redirected URL (or just the code)")
+		if err != nil {
+			return provider.Credential{}, err
+		}
+		return request.Redeem(cmd.Context(), pasted)
+	}
+
+	useBrowser := !noBrowser && hasDisplay()
+	if useBrowser {
+		cfg.OpenBrowser = openBrowserFunc
+		fmt.Fprintln(out, "Opening a browser to sign in with ChatGPT...")
+	}
+	cfg.OnAuthorizeURL = func(rawURL string) {
+		printAuthorizeURL(out, rawURL)
+		if useBrowser {
+			return
+		}
+		fmt.Fprintf(out, "\nWaiting for the callback on %s.\nIf this machine has no browser, forward that port from one that does:\n\n    ssh -L %d:localhost:%d <this-host>\n\nOr press Ctrl-C and re-run with --paste-code to sign in without a forward.\n", cfg.PasteRedirectURI(), provider.CodexCallbackPort, provider.CodexCallbackPort)
+	}
+	return cfg.Login(cmd.Context())
+}
+
+func printAuthorizeURL(w io.Writer, rawURL string) {
+	fmt.Fprintf(w, "\nOpen this URL to sign in with ChatGPT:\n\n    %s\n", rawURL)
+}
+
+// hasDisplay reports whether opening a browser on this machine could plausibly
+// work. xdg-open is normally present regardless, so its exit status says
+// nothing; the display environment is what actually distinguishes a desktop
+// session from an SSH session.
+func hasDisplay() bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return true
+	}
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+// promptLine reads one line of non-secret input, echoed as normal.
+func promptLine(cmd *cobra.Command, label string) (string, error) {
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: ", label)
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return "", fmt.Errorf("read %s: %w", label, err)
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func openBrowser(url string) error {
