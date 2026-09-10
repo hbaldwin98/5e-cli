@@ -171,7 +171,57 @@ func ensureCache(ctx context.Context, st *store.Store, cfg Config) error {
 		return fmt.Errorf("index has no embeddable text; run `5e ingest`")
 	}
 	cli := newClient(cfg)
-	return writeCache(ctx, cli, cfg, meta.SHA, chunks)
+	return writeCache(ctx, cli, cfg, meta.SHA, chunks, reusableVectors(cfg.CachePath, cfg.EmbedModel))
+}
+
+// reusedVector is one chunk's vector carried over from an existing cache.
+type reusedVector struct {
+	text string
+	vec  []float32
+}
+
+// reusableVectors reads an existing cache's vectors, keyed by chunk id, when
+// it was built with the same embedding model, so a rebuild only sends chunks
+// whose text actually changed. The corpus fingerprint that decides freshness
+// identifies the data tree, not its text: the same data copied to another
+// machine or folder can fingerprint differently (git HEAD there, a size hash
+// here), and that alone used to throw away every vector. Any problem reading
+// the old cache just means nothing is reused.
+func reusableVectors(path, model string) map[string]reusedVector {
+	if st, err := os.Stat(path); err != nil || st.Size() == 0 {
+		return nil
+	}
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	var gotModel string
+	if err := db.QueryRow(`SELECT embed_model FROM meta LIMIT 1`).Scan(&gotModel); err != nil || gotModel != model {
+		return nil
+	}
+	rows, err := db.Query(`SELECT id, text, embedding FROM vectors`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]reusedVector)
+	for rows.Next() {
+		var id, text string
+		var blob []byte
+		if err := rows.Scan(&id, &text, &blob); err != nil {
+			return nil
+		}
+		vec, err := decodeVec(blob)
+		if err != nil {
+			return nil
+		}
+		out[id] = reusedVector{text: text, vec: vec}
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return out
 }
 
 func cacheFresh(path, sha, baseURL, model string, maxTokens int) (bool, error) {
@@ -205,7 +255,7 @@ func cacheFresh(path, sha, baseURL, model string, maxTokens int) (bool, error) {
 	return gotSHA == sha && gotURL == baseURL && gotModel == model && gotMaxTokens == maxTokens, nil
 }
 
-func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks []chunk) error {
+func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks []chunk, old map[string]reusedVector) error {
 	if err := os.MkdirAll(filepath.Dir(cfg.CachePath), 0o755); err != nil {
 		return err
 	}
@@ -235,11 +285,12 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 	}
 	defer ins.Close()
 
+	var todo []chunk
 	report := func(done int) {
 		if cfg.OnProgress != nil {
-			cfg.OnProgress(EmbedProgress{Done: done, Total: len(chunks), Phase: "embedding"})
+			cfg.OnProgress(EmbedProgress{Done: done, Total: len(todo), Phase: "embedding"})
 		} else if cfg.Progress != nil {
-			fmt.Fprintf(cfg.Progress, "embedding %d/%d\n", done, len(chunks))
+			fmt.Fprintf(cfg.Progress, "embedding %d/%d\n", done, len(todo))
 		}
 	}
 	insert := func(batch []chunk, vecs [][]float32) error {
@@ -259,15 +310,26 @@ func writeCache(ctx context.Context, cli *client, cfg Config, sha string, chunks
 		}
 		return nil
 	}
-	report(0)
-	if err := embedConcurrently(ctx, cli, chunks, func(batch []chunk, vecs [][]float32, done int) error {
-		if err := insert(batch, vecs); err != nil {
+	for _, ch := range chunks {
+		if o, ok := old[ch.id()]; ok && o.text == ch.Text {
+			if err := insert([]chunk{ch}, [][]float32{o.vec}); err != nil {
+				return err
+			}
+			continue
+		}
+		todo = append(todo, ch)
+	}
+	if len(todo) > 0 {
+		report(0)
+		if err := embedConcurrently(ctx, cli, todo, func(batch []chunk, vecs [][]float32, done int) error {
+			if err := insert(batch, vecs); err != nil {
+				return err
+			}
+			report(done)
+			return nil
+		}); err != nil {
 			return err
 		}
-		report(done)
-		return nil
-	}); err != nil {
-		return err
 	}
 	if dim == 0 {
 		return fmt.Errorf("embeddings: no vectors returned")

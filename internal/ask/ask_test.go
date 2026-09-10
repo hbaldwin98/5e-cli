@@ -2,6 +2,7 @@ package ask
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -150,6 +151,41 @@ func TestRetrieve_skipsAdventureDocs(t *testing.T) {
 	}
 	if len(hits) == 0 || hits[0].Name != "Cragmaw Hideout" {
 		t.Fatalf("adventure retrieve %+v", hits)
+	}
+}
+
+func TestRetrieve_rebuildReusesVectorsWhoseTextIsUnchanged(t *testing.T) {
+	st, cfg, api := harness(t)
+	defer st.Close()
+
+	if _, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire", Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// The same data copied elsewhere can fingerprint differently; the cache
+	// then looks stale even though every chunk's text is identical.
+	db, err := sql.Open("sqlite", dsn(cfg.CachePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET corpus_sha = 'fingerprint-from-another-machine'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	first := api.embedCalls.Load()
+	hits, err := Retrieve(context.Background(), st, cfg, Query{Text: "fire", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("want hits from the reused vectors")
+	}
+	if got := api.embedCalls.Load() - first; got != 1 {
+		t.Fatalf("want only the query embedded after a fingerprint-only change, got %d calls", got)
+	}
+	built := cfg.withDefaults()
+	if ok, err := cacheFresh(built.CachePath, "testha", built.BaseURL, built.EmbedModel, built.EmbedMaxTokens); err != nil || !ok {
+		t.Fatalf("want the rebuilt cache stamped with the current fingerprint, fresh=%v err=%v", ok, err)
 	}
 }
 
