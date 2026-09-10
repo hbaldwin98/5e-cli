@@ -2,6 +2,7 @@ package parse
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +118,44 @@ func TestFlattenMagicVariant_inheritsWinsOnConflict(t *testing.T) {
 	})
 	if merged["type"] != "S" {
 		t.Fatalf("inherits should win, got %v", merged["type"])
+	}
+}
+
+func TestMergeLegendaryGroup_attachesSectionsAndSearchText(t *testing.T) {
+	e := Entity{
+		Kind: "monster", Name: "Aboleth", Source: "MM",
+		JSON: json.RawMessage(`{"name":"Aboleth","legendaryGroup":{"name":"Aboleth","source":"MM"}}`),
+		Text: "Aboleth",
+	}
+	merged := MergeLegendaryGroup(e, map[string]any{
+		"name":            "Aboleth",
+		"lairActions":     []any{"On initiative count 20, the aboleth takes a lair action."},
+		"regionalEffects": []any{"Underground surfaces are slimy."},
+	})
+
+	var obj map[string]any
+	if err := json.Unmarshal(merged.JSON, &obj); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := obj["lairActions"].([]any); !ok {
+		t.Fatalf("lairActions not merged: %v", obj)
+	}
+	if _, ok := obj["regionalEffects"].([]any); !ok {
+		t.Fatalf("regionalEffects not merged: %v", obj)
+	}
+	// The merged content has to be searchable, so "lair action" finds the
+	// monsters that have one.
+	if !strings.Contains(merged.Text, "lair action") {
+		t.Fatalf("merged text should carry the lair action: %q", merged.Text)
+	}
+	if !strings.Contains(merged.Text, "Aboleth") {
+		t.Fatalf("original text should survive: %q", merged.Text)
+	}
+}
+
+func TestMergeLegendaryGroup_groupWithNoContentLeavesTheEntityAlone(t *testing.T) {
+	e := Entity{Kind: "monster", Name: "X", JSON: json.RawMessage(`{"name":"X"}`), Text: "X"}
+	if got := MergeLegendaryGroup(e, map[string]any{"name": "X", "page": 1}); string(got.JSON) != string(e.JSON) || got.Text != e.Text {
+		t.Fatalf("expected the entity untouched, got %+v", got)
 	}
 }

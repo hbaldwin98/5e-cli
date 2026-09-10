@@ -23,6 +23,56 @@ func (e Entity) Key() string {
 	return e.Kind + "\x00" + strings.ToLower(e.Name) + "\x00" + strings.ToLower(e.Source)
 }
 
+// MergeLegendaryGroup attaches a legendary group's lair actions, regional
+// effects, and mythic encounter onto a monster entity, under the keys the
+// monster renderer already walks.
+//
+// A monster's own record carries only a {"name","source"} pointer to its
+// group; the content lives in bestiary/legendarygroups.json. So a boss
+// monster's stat block looks complete while its lair actions — the whole
+// reason a DM pulls the stat block up to run the set-piece fight — are
+// absent. Merging here, rather than looking the group up at render time,
+// follows MergeSpellClasses and keeps internal/statblock free of any store.
+func MergeLegendaryGroup(e Entity, group map[string]any) Entity {
+	dec := json.NewDecoder(strings.NewReader(string(e.JSON)))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		return e
+	}
+	var merged bool
+	var text []string
+	for _, key := range []string{"lairActions", "regionalEffects", "mythicEncounter"} {
+		entries, ok := group[key].([]any)
+		if !ok || len(entries) == 0 {
+			continue
+		}
+		obj[key] = entries
+		merged = true
+		if t, _ := Flatten(map[string]any{key: entries}); t != "" {
+			text = append(text, t)
+		}
+	}
+	if !merged {
+		return e
+	}
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return e
+	}
+	e.JSON = raw
+	// Keep the merged content searchable too, so "lair action" finds the
+	// monsters that have one rather than nothing at all.
+	if joined := strings.Join(text, "\n\n"); joined != "" {
+		if e.Text != "" {
+			e.Text = e.Text + "\n\n" + joined
+		} else {
+			e.Text = joined
+		}
+	}
+	return e
+}
+
 // FlattenMagicVariant lifts a magicvariant's "inherits" object up to the top
 // level, returning the merged object and its re-encoded JSON.
 //

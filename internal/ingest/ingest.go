@@ -76,6 +76,9 @@ func writeIndex(dataDir, index, sha string) (Result, error) {
 	if err := mergeSpellClasses(dataDir, entities); err != nil {
 		return Result{}, err
 	}
+	if err := mergeLegendaryGroups(dataDir, entities); err != nil {
+		return Result{}, err
+	}
 	docs, apps, inline, err := loadDocuments(dataDir)
 	if err != nil {
 		return Result{}, err
@@ -160,6 +163,134 @@ func mergeSpellClasses(dataDir string, entities map[string]parse.Entity) error {
 		entities[key] = parse.MergeSpellClasses(e, names)
 	}
 	return nil
+}
+
+// mergeLegendaryGroups attaches lair actions, regional effects, and mythic
+// encounters onto the monsters that point at them. A monster record carries
+// only {"legendaryGroup": {"name", "source"}}; the content itself lives in
+// bestiary/legendarygroups.json, so without this step a lair-having boss
+// monster's card silently ends at its legendary actions.
+//
+// The file is optional, the same way the spell/class lookup is: a data tree
+// without it leaves monsters exactly as they were.
+func mergeLegendaryGroups(dataDir string, entities map[string]parse.Entity) error {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "bestiary", "legendarygroups.json"))
+	if err != nil {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var file struct {
+		LegendaryGroup []map[string]any `json:"legendaryGroup"`
+	}
+	if err := dec.Decode(&file); err != nil {
+		return fmt.Errorf("parse legendary groups: %w", err)
+	}
+	groups := make(map[string]map[string]any, len(file.LegendaryGroup))
+	for _, g := range file.LegendaryGroup {
+		groups[legendaryGroupKey(stringField(g, "name"), stringField(g, "source"))] = g
+	}
+	for _, g := range file.LegendaryGroup {
+		resolveLegendaryCopy(g, groups)
+	}
+	for key, e := range entities {
+		if e.Kind != "monster" {
+			continue
+		}
+		var obj struct {
+			LegendaryGroup struct {
+				Name   string `json:"name"`
+				Source string `json:"source"`
+			} `json:"legendaryGroup"`
+		}
+		if err := json.Unmarshal(e.JSON, &obj); err != nil {
+			continue
+		}
+		ref := obj.LegendaryGroup
+		if ref.Name == "" {
+			continue
+		}
+		group, ok := groups[legendaryGroupKey(ref.Name, ref.Source)]
+		if !ok {
+			continue
+		}
+		entities[key] = parse.MergeLegendaryGroup(e, group)
+	}
+	return nil
+}
+
+func legendaryGroupKey(name, source string) string {
+	return strings.ToLower(name) + "\x00" + strings.ToLower(source)
+}
+
+// resolveLegendaryCopy applies a group's "_copy" inheritance in place, for
+// the 16 groups that use it (e.g. Annis Hag copying Hag and adding one lair
+// action of its own). This implements only the two modes this file actually
+// uses — appendArr and prependArr, on lairActions and regionalEffects —
+// rather than 5etools' full _mod language, which nothing else here needs.
+// A group naming a parent that has its own unresolved _copy is resolved
+// depth-first so the parent's inherited content is in place first.
+func resolveLegendaryCopy(g map[string]any, groups map[string]map[string]any) {
+	copyRef, ok := g["_copy"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(g, "_copy") // before recursing, so a cycle cannot spin forever
+	parent, ok := groups[legendaryGroupKey(stringField(copyRef, "name"), stringField(copyRef, "source"))]
+	if !ok {
+		return
+	}
+	resolveLegendaryCopy(parent, groups)
+
+	mods, _ := copyRef["_mod"].(map[string]any)
+	for _, prop := range []string{"lairActions", "regionalEffects", "mythicEncounter"} {
+		inherited, _ := parent[prop].([]any)
+		if len(inherited) == 0 {
+			continue
+		}
+		// Copy the parent's slice rather than aliasing it: several groups
+		// copy the same parent, and appending into a shared backing array
+		// would leak one child's additions into its siblings.
+		merged := append([]any(nil), inherited...)
+		for _, mod := range modList(mods[prop]) {
+			items := modItems(mod["items"])
+			switch mod["mode"] {
+			case "appendArr":
+				merged = append(merged, items...)
+			case "prependArr":
+				merged = append(append([]any(nil), items...), merged...)
+			}
+		}
+		g[prop] = merged
+	}
+}
+
+func modList(v any) []map[string]any {
+	switch mod := v.(type) {
+	case map[string]any:
+		return []map[string]any{mod}
+	case []any:
+		out := make([]map[string]any, 0, len(mod))
+		for _, m := range mod {
+			if entry, ok := m.(map[string]any); ok {
+				out = append(out, entry)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// modItems normalizes a mod's items, which 5etools writes as either a single
+// entry or an array of them.
+func modItems(v any) []any {
+	if list, ok := v.([]any); ok {
+		return list
+	}
+	if v == nil {
+		return nil
+	}
+	return []any{v}
 }
 
 // collector accumulates everything one pass over the data tree produces.

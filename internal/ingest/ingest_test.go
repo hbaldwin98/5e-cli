@@ -245,3 +245,76 @@ func TestClassifyKey_dropsRendererSupportArrays(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveLegendaryCopy_inheritsParentAndAppliesMods(t *testing.T) {
+	groups := map[string]map[string]any{
+		legendaryGroupKey("Hag", "VGM"): {
+			"name": "Hag", "source": "VGM",
+			"lairActions":     []any{"base one", "base two"},
+			"regionalEffects": []any{"regional base"},
+		},
+		legendaryGroupKey("Annis Hag", "VGM"): {
+			"name": "Annis Hag", "source": "VGM",
+			"_copy": map[string]any{
+				"name": "Hag", "source": "VGM",
+				"_mod": map[string]any{
+					"lairActions": map[string]any{"mode": "appendArr", "items": "annis extra"},
+				},
+			},
+		},
+		legendaryGroupKey("Green Hag", "VGM"): {
+			"name": "Green Hag", "source": "VGM",
+			"_copy": map[string]any{
+				"name": "Hag", "source": "VGM",
+				"_mod": map[string]any{
+					"lairActions": map[string]any{"mode": "prependArr", "items": []any{"green first"}},
+				},
+			},
+		},
+	}
+	for _, g := range groups {
+		resolveLegendaryCopy(g, groups)
+	}
+
+	annis := groups[legendaryGroupKey("Annis Hag", "VGM")]
+	if got := annis["lairActions"].([]any); len(got) != 3 || got[2] != "annis extra" || got[0] != "base one" {
+		t.Fatalf("appendArr: %v", got)
+	}
+	if got := annis["regionalEffects"].([]any); len(got) != 1 || got[0] != "regional base" {
+		t.Fatalf("unmodified property should still be inherited: %v", got)
+	}
+
+	green := groups[legendaryGroupKey("Green Hag", "VGM")]
+	if got := green["lairActions"].([]any); len(got) != 3 || got[0] != "green first" || got[1] != "base one" {
+		t.Fatalf("prependArr: %v", got)
+	}
+
+	// Two children copying one parent must not see each other's additions —
+	// the parent's slice has to be copied, not aliased.
+	if got := groups[legendaryGroupKey("Hag", "VGM")]["lairActions"].([]any); len(got) != 2 {
+		t.Fatalf("the parent itself should be unchanged: %v", got)
+	}
+	for _, item := range annis["lairActions"].([]any) {
+		if item == "green first" {
+			t.Fatal("one child's prepend leaked into its sibling")
+		}
+	}
+}
+
+func TestResolveLegendaryCopy_missingParentAndCycleTerminate(t *testing.T) {
+	groups := map[string]map[string]any{
+		legendaryGroupKey("Orphan", "X"): {
+			"name": "Orphan", "_copy": map[string]any{"name": "Nobody", "source": "X"},
+		},
+		legendaryGroupKey("A", "X"): {"name": "A", "_copy": map[string]any{"name": "B", "source": "X"}},
+		legendaryGroupKey("B", "X"): {"name": "B", "_copy": map[string]any{"name": "A", "source": "X"}},
+	}
+	for _, g := range groups {
+		resolveLegendaryCopy(g, groups) // must not recurse forever
+	}
+	for key, g := range groups {
+		if _, still := g["_copy"]; still {
+			t.Fatalf("%s kept an unresolved _copy", key)
+		}
+	}
+}

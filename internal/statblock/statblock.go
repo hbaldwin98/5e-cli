@@ -1499,6 +1499,12 @@ func entrySections(kind string) []entrySection {
 			{key: "reaction", heading: "Reactions"},
 			{key: "legendary", heading: "Legendary Actions"},
 			{key: "mythic", heading: "Mythic Actions"},
+			// Merged in from the monster's legendary group at ingest (see
+			// parse.MergeLegendaryGroup) — a monster's own record only
+			// points at the group by name.
+			{key: "lairActions", heading: "Lair Actions"},
+			{key: "regionalEffects", heading: "Regional Effects"},
+			{key: "mythicEncounter", heading: "Mythic Encounter"},
 			{key: "entries"},
 		}
 	}
