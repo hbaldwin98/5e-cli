@@ -83,7 +83,7 @@ func New(st *store.Store, opt Options) *mcp.Server {
 	}, h.encounter)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list",
-		Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind. Call with no kind to see which kinds are indexed. Use before roll or encounter when the exact name isn't already known.",
+		Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind. Call with no kind to see which kinds are indexed. With kind \"spell\", class and/or level answer \"what spells does a Wizard get\" or \"what cantrips can a Cleric cast\" (class=Cleric, level=0). Use before roll or encounter when the exact name isn't already known.",
 	}, h.list)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "roll",
@@ -421,17 +421,28 @@ type listInput struct {
 	Kind    string   `json:"kind,omitempty" jsonschema:"entity kind to list, such as table, encounter, monster, or spell; omit to list available kinds instead"`
 	Query   string   `json:"query,omitempty" jsonschema:"optional substring to filter names by"`
 	Sources []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids"`
-	Limit   int      `json:"limit,omitempty" jsonschema:"maximum names to return, default 100"`
+	Class   string   `json:"class,omitempty" jsonschema:"with kind spell, keep only spells on this class's spell list (including spells granted by its subclasses), e.g. Wizard, Cleric"`
+	Level   *int     `json:"level,omitempty" jsonschema:"with kind spell, keep only spells of this level; 0 means cantrips"`
+	Limit   int      `json:"limit,omitempty" jsonschema:"maximum entries to return, default 100 (600 for a class/level spell list)"`
 }
 
 type listOutput struct {
-	Kinds []string          `json:"kinds,omitempty"`
-	Kind  string            `json:"kind,omitempty"`
-	Total int               `json:"total,omitempty"`
-	Names []listOutputEntry `json:"names,omitempty"`
+	Kinds  []string          `json:"kinds,omitempty"`
+	Kind   string            `json:"kind,omitempty"`
+	Class  string            `json:"class,omitempty"`
+	Level  *int              `json:"level,omitempty"`
+	Total  int               `json:"total,omitempty"`
+	Names  []listOutputEntry `json:"names,omitempty"`
+	Spells []listOutputSpell `json:"spells,omitempty"`
 }
 
 type listOutputEntry struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+type listOutputSpell struct {
+	Level  int    `json:"level"`
 	Name   string `json:"name"`
 	Source string `json:"source"`
 }
@@ -452,6 +463,24 @@ func (h *handler) list(_ context.Context, _ *mcp.CallToolRequest, in listInput) 
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, h.ed)
 	}
 	ents = search.FilterByQuery(ents, in.Query)
+	if in.Kind == "spell" && (in.Class != "" || in.Level != nil) {
+		rows := search.SpellList(h.st, ents, in.Class, in.Level)
+		limit := in.Limit
+		if limit <= 0 {
+			// A full class list runs to several hundred spells; the
+			// generic 100-name default would truncate the answer.
+			limit = 600
+		}
+		total := len(rows)
+		if total > limit {
+			rows = rows[:limit]
+		}
+		spells := make([]listOutputSpell, 0, len(rows))
+		for _, r := range rows {
+			spells = append(spells, listOutputSpell(r))
+		}
+		return nil, listOutput{Kind: in.Kind, Class: in.Class, Level: in.Level, Total: total, Spells: spells}, nil
+	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 100

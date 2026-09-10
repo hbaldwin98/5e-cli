@@ -9,6 +9,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/ask"
 	"github.com/hbaldwin98/5e-cli/internal/dice"
 	"github.com/hbaldwin98/5e-cli/internal/encounter"
+	"github.com/hbaldwin98/5e-cli/internal/search"
 	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
 )
 
@@ -168,5 +169,51 @@ func TestChatModel_diceDisplayReachesTheTranscript(t *testing.T) {
 	transcript := m.transcriptText()
 	if !strings.Contains(transcript, "2d6+3 = 9") {
 		t.Fatalf("dice result missing from the transcript:\n%s", transcript)
+	}
+}
+
+func TestWrapToolExecutorWithDisplays_spellListCardVsPlainNameList(t *testing.T) {
+	base := func(_ context.Context, call ask.ToolCall) (string, error) {
+		if call.Arguments != nil && strings.Contains(string(call.Arguments), "class") {
+			return `{"kind":"spell","class":"Wizard","total":2,"spells":[{"level":0,"name":"Fire Bolt","source":"PHB"},{"level":3,"name":"Fireball","source":"PHB"}]}`, nil
+		}
+		return `{"kind":"spell","total":1,"names":[{"name":"Fireball","source":"PHB"}]}`, nil
+	}
+	wrapped, drain := wrapToolExecutorWithDisplays(base)
+
+	if _, err := wrapped(context.Background(), ask.ToolCall{Name: "list", Arguments: json.RawMessage(`{"kind":"spell","class":"Wizard"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped(context.Background(), ask.ToolCall{Name: "list", Arguments: json.RawMessage(`{"kind":"spell"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := drain()
+	// Only the class list is card-worthy; a plain name dump stays prose.
+	if len(d.SpellLists) != 1 || d.SpellLists[0].Class != "Wizard" || len(d.SpellLists[0].Spells) != 2 {
+		t.Fatalf("spell lists: %+v", d.SpellLists)
+	}
+}
+
+func TestRenderSpellListCard_isALipglossTableNotMarkdown(t *testing.T) {
+	got := renderSpellListCard(shownSpellList{
+		Class: "Wizard",
+		Total: 2,
+		Spells: []search.SpellRow{
+			{Level: 0, Name: "Fire Bolt", Source: "PHB"},
+			{Level: 3, Name: "Fireball", Source: "PHB"},
+		},
+	}, 60)
+
+	if strings.Contains(got, "| --- |") {
+		t.Fatalf("expected a lipgloss table, got Markdown pipes:\n%s", got)
+	}
+	for _, want := range []string{"Wizard Spells", "Cantrip", "Fire Bolt", "Fireball", "Level"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "╭") {
+		t.Fatalf("expected a bordered card:\n%s", got)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/hbaldwin98/5e-cli/internal/dice"
 	"github.com/hbaldwin98/5e-cli/internal/encounter"
 	"github.com/hbaldwin98/5e-cli/internal/paths"
+	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/statblock"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 	randomtable "github.com/hbaldwin98/5e-cli/internal/table"
@@ -43,13 +44,26 @@ type shownEntity struct {
 // text, the same reasoning that already applies to a get card.
 type turnDisplays struct {
 	Entities   []shownEntity
+	SpellLists []shownSpellList
 	Rolls      []randomtable.Report
 	DiceRolls  []dice.Report
 	Encounters [][]encounter.Hit
 }
 
+// shownSpellList is one class/level spell list the list tool returned, kept
+// for the same reason a get card is: a 200-row list is exactly what the
+// model will otherwise abbreviate into "and many others", and it reads far
+// better as a table than as prose.
+type shownSpellList struct {
+	Class  string            `json:"class"`
+	Level  *int              `json:"level"`
+	Total  int               `json:"total"`
+	Spells []search.SpellRow `json:"spells"`
+}
+
 func (d turnDisplays) empty() bool {
-	return len(d.Entities) == 0 && len(d.Rolls) == 0 && len(d.DiceRolls) == 0 && len(d.Encounters) == 0
+	return len(d.Entities) == 0 && len(d.SpellLists) == 0 && len(d.Rolls) == 0 &&
+		len(d.DiceRolls) == 0 && len(d.Encounters) == 0
 }
 
 // parseShownEntity decodes one get-shaped tool result ({"kind","name",
@@ -110,6 +124,15 @@ func wrapToolExecutorWithDisplays(base ask.ToolExecutor) (wrapped ask.ToolExecut
 				}
 				mu.Unlock()
 			}
+		case "list":
+			// Only a class/level spell list gets a card; a plain name dump
+			// carries no "spells" key and is left to the model's prose.
+			var parsed shownSpellList
+			if jsonErr := json.Unmarshal([]byte(result), &parsed); jsonErr == nil && len(parsed.Spells) > 0 {
+				mu.Lock()
+				d.SpellLists = append(d.SpellLists, parsed)
+				mu.Unlock()
+			}
 		case "roll":
 			var report randomtable.Report
 			if jsonErr := json.Unmarshal([]byte(result), &report); jsonErr == nil {
@@ -159,6 +182,10 @@ func writeTurnDisplays(w io.Writer, d turnDisplays, cardWidth int) {
 		fmt.Fprintln(w, statblock.RenderCard(e.Kind, e.Name, e.Source, e.Obj, cardWidth))
 		fmt.Fprintln(w)
 	}
+	for _, l := range d.SpellLists {
+		fmt.Fprintln(w, renderSpellListCard(l, cardWidth))
+		fmt.Fprintln(w)
+	}
 	for _, r := range d.Rolls {
 		_ = writeRandomTable(w, r)
 		fmt.Fprintln(w)
@@ -171,6 +198,34 @@ func writeTurnDisplays(w io.Writer, d turnDisplays, cardWidth int) {
 		_ = writeEncounterResults(w, hits)
 		fmt.Fprintln(w)
 	}
+}
+
+// renderSpellListCard lays a class/level spell list out as a bordered card
+// with a Level/Name/Source table, so "what spells does a Wizard get" reads
+// the way `5e list spell --class Wizard` does rather than as a paraphrased
+// wall of comma-separated names.
+func renderSpellListCard(l shownSpellList, width int) string {
+	rows := make([][]string, len(l.Spells))
+	for i, s := range l.Spells {
+		level := "Cantrip"
+		if s.Level > 0 {
+			level = strconv.Itoa(s.Level)
+		}
+		rows[i] = []string{level, s.Name, s.Source}
+	}
+	title := "Spells"
+	if l.Class != "" {
+		title = l.Class + " Spells"
+	}
+	if l.Level != nil && *l.Level == 0 {
+		title = strings.TrimSuffix(title, "Spells") + "Cantrips"
+	}
+	meta := fmt.Sprintf("%d shown", len(l.Spells))
+	if l.Total > len(l.Spells) {
+		meta = fmt.Sprintf("%d of %d", len(l.Spells), l.Total)
+	}
+	return statblock.RenderTableCard("spell", strings.TrimSpace(title), meta,
+		[]string{"Level", "Name", "Source"}, rows, width)
 }
 
 // dedupShown drops repeats by (kind, name, source), keeping the first

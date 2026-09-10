@@ -55,8 +55,8 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 		},
 		{
 			Name:        "list",
-			Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind (monster, spell, item, ...). Call with no kind to see which kinds are indexed. Use this before roll or encounter when you don't already know the exact table or region name.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind to list, such as table, encounter, monster, or spell; omit to list available kinds instead"},"query":{"type":"string","description":"optional substring to filter names by"},"sources":{"type":"array","items":{"type":"string"},"description":"optional 5etools source ids"},"limit":{"type":"integer","description":"maximum names to return, default 100"}},"required":[]}`),
+			Description: "List entity names indexed for a kind, such as every random table (kind \"table\"), every indexed encounter table (kind \"encounter\"), or any other entity kind (monster, spell, item, feat, background, ...). Call with no kind to see which kinds are indexed. With kind \"spell\", class and/or level answer \"what spells does a Wizard get\", \"what cantrips can a Cleric cast\" (class=Cleric, level=0), or \"list every 3rd-level spell\" — the spell data records which classes each spell is on, so never answer such a question from retrieved prose or say the sources don't specify. Also use this before roll or encounter when you don't already know the exact table or region name.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind to list, such as table, encounter, monster, spell, or feat; omit to list available kinds instead"},"query":{"type":"string","description":"optional substring to filter names by"},"sources":{"type":"array","items":{"type":"string"},"description":"optional 5etools source ids"},"class":{"type":"string","description":"with kind spell, keep only spells on this class's spell list (including spells granted by its subclasses), e.g. Wizard, Cleric"},"level":{"type":"integer","description":"with kind spell, keep only spells of this level; 0 means cantrips"},"limit":{"type":"integer","description":"maximum entries to return, default 100 (600 for a class/level spell list)"}},"required":[]}`),
 		},
 		{
 			Name:        "roll",
@@ -435,6 +435,8 @@ type toolListArgs struct {
 	Kind    string   `json:"kind"`
 	Query   string   `json:"query"`
 	Sources []string `json:"sources"`
+	Class   string   `json:"class"`
+	Level   *int     `json:"level"`
 	Limit   int      `json:"limit"`
 }
 
@@ -458,6 +460,9 @@ func toolList(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, e
 		ents = edition.Filter(ents, func(e store.Entity) string { return e.Source }, opt.Edition)
 	}
 	ents = search.FilterByQuery(ents, args.Query)
+	if args.Kind == "spell" && (args.Class != "" || args.Level != nil) {
+		return listSpells(st, ents, args)
+	}
 	limit := args.Limit
 	if limit <= 0 {
 		limit = 100
@@ -471,6 +476,33 @@ func toolList(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, e
 		names = append(names, map[string]string{"name": e.Name, "source": e.Source})
 	}
 	return toJSON(map[string]any{"kind": args.Kind, "total": total, "names": names})
+}
+
+// listSpells answers "which spells does <class> get" and "which cantrips can
+// it cast" from the spell rows themselves rather than from retrieved prose,
+// ordered by level — a flat alphabetical dump of 300 wizard spells is not
+// what anyone asking the question wants. It mirrors internal/cli's
+// `5e list spell --class` and internal/mcpserver's list tool.
+func listSpells(st *store.Store, ents []store.Entity, args toolListArgs) (string, error) {
+	rows := search.SpellList(st, ents, args.Class, args.Level)
+	limit := args.Limit
+	if limit <= 0 {
+		// A full class list runs to several hundred spells; the generic
+		// 100-name default would silently truncate the answer.
+		limit = 600
+	}
+	total := len(rows)
+	if total > limit {
+		rows = rows[:limit]
+	}
+	out := map[string]any{"kind": "spell", "total": total, "spells": rows}
+	if args.Class != "" {
+		out["class"] = args.Class
+	}
+	if args.Level != nil {
+		out["level"] = *args.Level
+	}
+	return toJSON(out)
 }
 
 type toolRollArgs struct {

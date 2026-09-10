@@ -431,6 +431,35 @@ func RenderCard(kind, name, source string, obj map[string]any, width int) string
 	return card
 }
 
+// RenderTableCard renders an arbitrary set of rows as a bordered lipgloss
+// card wrapping a bordered table — the same shape RenderCard produces, for
+// results that are a list rather than a single entity (a class's spell list,
+// say). kind only picks the accent color; title and meta form the header
+// line the way RenderCard's name and kind·source do.
+func RenderTableCard(kind, title, meta string, headers []string, rows [][]string, width int) string {
+	if width < 40 {
+		width = 40
+	}
+	accentColor := lipgloss.Color(accent(kind))
+	inner := width - 4 // border (2) + horizontal padding (2)
+
+	var body strings.Builder
+	body.WriteString(joinTitleLine(
+		lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(title),
+		lipgloss.NewStyle().Faint(true).Render(meta),
+		inner,
+	))
+	body.WriteString("\n\n")
+	body.WriteString(renderClassTable(classTable{Headers: headers, Rows: rows}, inner, accentColor))
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(0, 1).
+		Width(width).
+		Render(strings.TrimRight(body.String(), "\n"))
+}
+
 // joinTitleLine right-aligns meta ("monster · MM") against the left-aligned
 // title on one line within width, falling back to stacking them on two
 // lines when they don't both fit.
