@@ -83,6 +83,15 @@ func writeIndex(dataDir, index, sha string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	rollTables, err := loadRollTables(dataDir)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, e := range rollTables {
+		if _, ok := entities[e.Key()]; !ok {
+			entities[e.Key()] = e
+		}
+	}
 	// data/tables.json holds only a handful of tables; keep the standalone
 	// records authoritative and fill in the rest from prose.
 	for _, e := range col.tables {

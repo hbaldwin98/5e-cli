@@ -1,11 +1,13 @@
 package ingest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hbaldwin98/5e-cli/internal/parse"
 	"github.com/hbaldwin98/5e-cli/internal/search"
 	"github.com/hbaldwin98/5e-cli/internal/store"
 )
@@ -316,5 +318,85 @@ func TestResolveLegendaryCopy_missingParentAndCycleTerminate(t *testing.T) {
 		if _, still := g["_copy"]; still {
 			t.Fatalf("%s kept an unresolved _copy", key)
 		}
+	}
+}
+
+func TestLoadRollTables_convertsBespokeShapesToStandardTables(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("names.json", `{"name":[{"name":"Dwarf","source":"XGE","page":1,"tables":[
+		{"option":"Female","diceExpression":"d100","table":[{"min":1,"max":2,"result":"Anbera"},{"min":3,"max":3,"result":"Artin"}]}]}]}`)
+	write("life.json", `{"lifeTrinket":["a mummified goblin hand","a piece of crystal"]}`)
+	write("loot.json", `{
+		"gems":[{"name":"10 gp Gemstones","source":"DMG","table":["Azurite","Banded agate"]}],
+		"artObjects":[{"name":"25 gp Art Objects","source":"DMG","table":["Silver ewer"]}],
+		"magicItems":[{"name":"Magic Item Table A","source":"DMG","table":[{"min":1,"max":50,"item":"Potion of Healing"}]}]}`)
+
+	entities, err := loadRollTables(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]parse.Entity{}
+	for _, e := range entities {
+		if e.Kind != "table" {
+			t.Fatalf("everything here should be a table, got %q", e.Kind)
+		}
+		byName[e.Name] = e
+	}
+	for _, want := range []string{"Dwarf Female Names", "Trinkets", "10 gp Gemstones", "25 gp Art Objects", "Magic Item Table A"} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("missing table %q; got %v", want, byName)
+		}
+	}
+
+	// The converted shape has to be the one internal/table understands:
+	// colLabels plus rows whose first cell is the roll range.
+	var names struct {
+		ColLabels []string `json:"colLabels"`
+		Rows      [][]any  `json:"rows"`
+	}
+	if err := json.Unmarshal(byName["Dwarf Female Names"].JSON, &names); err != nil {
+		t.Fatal(err)
+	}
+	if len(names.ColLabels) != 2 || names.ColLabels[0] != "d100" {
+		t.Fatalf("colLabels: %v", names.ColLabels)
+	}
+	if len(names.Rows) != 2 || names.Rows[0][0] != "1-2" || names.Rows[1][0] != "3" {
+		t.Fatalf("a span should render as 1-2 and a single result as 3: %v", names.Rows)
+	}
+
+	// A list with no ranges of its own is numbered by position.
+	var gems struct {
+		ColLabels []string `json:"colLabels"`
+		Rows      [][]any  `json:"rows"`
+	}
+	if err := json.Unmarshal(byName["10 gp Gemstones"].JSON, &gems); err != nil {
+		t.Fatal(err)
+	}
+	if gems.ColLabels[0] != "d2" || gems.Rows[1][0] != "2" {
+		t.Fatalf("positional numbering: %v %v", gems.ColLabels, gems.Rows)
+	}
+
+	// The procedural generators must stay out: rolling them once would give
+	// a meaningless answer.
+	for name := range byName {
+		if name == "Challenge 0-4" || name == "Wyrmling" {
+			t.Fatalf("hoard/dragon generators should not be indexed as tables: %q", name)
+		}
+	}
+}
+
+func TestLoadRollTables_missingFilesAreNotAnError(t *testing.T) {
+	entities, err := loadRollTables(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entities) != 0 {
+		t.Fatalf("an empty tree should contribute no tables, got %d", len(entities))
 	}
 }

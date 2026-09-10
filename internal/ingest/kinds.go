@@ -49,6 +49,12 @@ var kindByArray = map[string]string{
 	"subclassFeature": "subclassFeature",
 }
 
+// skipFiles are never walked by ingestFile. Most are renderer support or
+// homebrew scaffolding with no content. life.json, loot.json and names.json
+// are the exception: they hold real roll tables, but in their own bespoke
+// shapes, so the generic walk would index "gems", "hoard" and "lifeClass" as
+// junk entity kinds. loadRollTables (rolltables.go) reads those three
+// directly instead and converts them to standard tables.
 var skipFiles = map[string]bool{
 	"changelog.json":         true,
 	"converter.json":         true,
