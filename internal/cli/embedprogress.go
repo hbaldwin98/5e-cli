@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"charm.land/bubbles/v2/progress"
 	"github.com/hbaldwin98/5e-cli/internal/ask"
@@ -22,6 +23,46 @@ func embedProgressRenderer(w io.Writer) func(ask.EmbedProgress) {
 		return nil
 	}
 	return newEmbedProgressRenderer(w)
+}
+
+// spinnerYieldingToProgress runs a "thinking" spinner on w that steps aside
+// while onProgress draws an embedding build's bar. The spinner and the bar
+// each redraw the current terminal line, so running both at once makes the
+// line flash between them; instead the spinner is stopped on the first
+// progress update and restarted once the build completes, to cover the
+// wait for the first token that follows. It returns the stop func (same
+// contract as runSpinner's) and the OnProgress to install in place of
+// onProgress, which is nil when onProgress is (no bar to yield to).
+func spinnerYieldingToProgress(w io.Writer, label string, onProgress func(ask.EmbedProgress)) (stop func(), progress func(ask.EmbedProgress)) {
+	return yieldingSpinner(func() func() { return runSpinner(w, label) }, onProgress)
+}
+
+// yieldingSpinner is spinnerYieldingToProgress with the spinner's start
+// injected, so the stop/restart sequencing can run under a test.
+func yieldingSpinner(start func() (stop func()), onProgress func(ask.EmbedProgress)) (stop func(), progress func(ask.EmbedProgress)) {
+	var mu sync.Mutex
+	cur := start()
+	stopped := false
+	stop = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		stopped = true
+		cur()
+	}
+	if onProgress == nil {
+		return stop, nil
+	}
+	progress = func(p ask.EmbedProgress) {
+		mu.Lock()
+		defer mu.Unlock()
+		cur()
+		cur = func() {}
+		onProgress(p)
+		if !stopped && p.Total > 0 && p.Done >= p.Total {
+			cur = start()
+		}
+	}
+	return stop, progress
 }
 
 // newEmbedProgressRenderer is embedProgressRenderer's rendering logic with

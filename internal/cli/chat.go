@@ -829,14 +829,16 @@ func chatTurn(cmd *cobra.Command, asJSON bool, st *store.Store, cs *chat.Store, 
 		// exactly the kind of answer that carries bold labels and tables,
 		// and writing it as raw deltas would print literal "**" and "|"
 		// instead of a rendered block.
-		stop := runSpinner(out, "thinking")
+		var stop func()
+		stop, cfg.OnProgress = spinnerYieldingToProgress(out, "thinking", cfg.OnProgress)
 		res, err = chat.Ask(cmd.Context(), st, cfg, sess, question, opts)
 		stop()
 	case !asJSON && isTTY(out):
 		// A spinner covers retrieval and the wait for the first token; once
 		// a delta arrives, stop() clears it so the spinner and the streamed
 		// answer never compete for the line.
-		stop := runSpinner(out, "thinking")
+		var stop func()
+		stop, cfg.OnProgress = spinnerYieldingToProgress(out, "thinking", cfg.OnProgress)
 		res, err = chat.AskStream(cmd.Context(), st, cfg, sess, question, opts, func(delta string) error {
 			stop()
 			streamed = true

@@ -847,7 +847,8 @@ func writeAskResult(cmd *cobra.Command, asJSON bool, st *store.Store, cfg ask.Co
 		// A spinner covers retrieval and the wait for the first token; once
 		// a delta arrives, stop() clears it and every following delta is
 		// the streamed answer itself, so the two never compete for the line.
-		stop := runSpinner(out, "thinking")
+		stop, onProgress := spinnerYieldingToProgress(out, "thinking", cfg.OnProgress)
+		cfg.OnProgress = onProgress
 		var streamed bool
 		res, err = ask.AskStream(cmd.Context(), st, cfg, q, func(delta string) error {
 			stop()
