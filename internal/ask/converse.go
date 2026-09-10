@@ -76,7 +76,11 @@ which classes it is on and what level it is, so call list with kind "spell"
 and class and/or level (level 0 means cantrips) instead of answering from
 the retrieved sources or saying the sources don't specify. The same goes for
 enumerating any other kind — feats, backgrounds, conditions, items: call
-list with that kind rather than listing from memory. A class/level spell
+list with that kind rather than listing from memory. "What lives in a
+swamp?" and "what can I throw at the party in the Feywild?" are the same
+kind of question for monsters: the bestiary records each creature's
+environments, so call encounter with environment (plus cr or type to
+narrow it) rather than recalling which monsters seem swampy. A class/level spell
 list renders as its own table for the user just like a get card does, so
 don't repeat the names back in prose; answer with what isn't in the table
 (how many there are, which ones matter at a given level, what to prepare).

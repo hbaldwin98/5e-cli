@@ -385,12 +385,13 @@ func decodeJSON(raw json.RawMessage) any {
 }
 
 type encounterInput struct {
-	Query   string   `json:"query" jsonschema:"monster name or text to match"`
-	CR      string   `json:"cr,omitempty" jsonschema:"optional challenge rating such as 1/4 or 5"`
-	Type    string   `json:"type,omitempty" jsonschema:"optional creature type such as humanoid or fey"`
-	Size    string   `json:"size,omitempty" jsonschema:"optional creature size such as small or large"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids"`
-	Limit   int      `json:"limit,omitempty" jsonschema:"maximum hits"`
+	Query       string   `json:"query" jsonschema:"monster name or text to match"`
+	CR          string   `json:"cr,omitempty" jsonschema:"optional challenge rating such as 1/4 or 5"`
+	Type        string   `json:"type,omitempty" jsonschema:"optional creature type such as humanoid or fey"`
+	Size        string   `json:"size,omitempty" jsonschema:"optional creature size such as small or large"`
+	Environment string   `json:"environment,omitempty" jsonschema:"optional environment such as forest, underdark, swamp, urban or feywild"`
+	Sources     []string `json:"sources,omitempty" jsonschema:"optional 5etools source ids"`
+	Limit       int      `json:"limit,omitempty" jsonschema:"maximum hits"`
 }
 
 type encounterOutput struct {
@@ -399,14 +400,15 @@ type encounterOutput struct {
 
 func (h *handler) encounter(_ context.Context, _ *mcp.CallToolRequest, in encounterInput) (*mcp.CallToolResult, encounterOutput, error) {
 	hits, err := encounter.Search(h.st, encounter.Query{
-		Text:    in.Query,
-		CR:      in.CR,
-		Type:    in.Type,
-		Size:    in.Size,
-		Sources: in.Sources,
-		Edition: h.ed,
-		SRD:     h.srd,
-		Limit:   in.Limit,
+		Text:        in.Query,
+		CR:          in.CR,
+		Type:        in.Type,
+		Size:        in.Size,
+		Environment: in.Environment,
+		Sources:     in.Sources,
+		Edition:     h.ed,
+		SRD:         h.srd,
+		Limit:       in.Limit,
 	})
 	if err != nil {
 		return nil, encounterOutput{}, err

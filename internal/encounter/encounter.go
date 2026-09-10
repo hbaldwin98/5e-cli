@@ -17,14 +17,15 @@ import (
 
 // Query describes a filtered monster lookup.
 type Query struct {
-	Text    string
-	CR      string
-	Type    string
-	Size    string
-	Sources []string
-	Edition edition.Pref
-	SRD     bool
-	Limit   int
+	Text        string
+	CR          string
+	Type        string
+	Size        string
+	Environment string
+	Sources     []string
+	Edition     edition.Pref
+	SRD         bool
+	Limit       int
 }
 
 // Hit is a compact encounter result suitable for humans and agents. AC, HP,
@@ -33,20 +34,21 @@ type Query struct {
 // are omitted (zero/empty) rather than guessed when the source JSON does not
 // carry them in a shape this package understands.
 type Hit struct {
-	Kind    string  `json:"kind"`
-	Name    string  `json:"name"`
-	Source  string  `json:"source"`
-	Page    int     `json:"page"`
-	Score   float64 `json:"score"`
-	CR      string  `json:"cr,omitempty"`
-	Type    string  `json:"type,omitempty"`
-	Size    string  `json:"size,omitempty"`
-	AC      int     `json:"ac,omitempty"`
-	HP      int     `json:"hp,omitempty"`
-	XP      int     `json:"xp,omitempty"`
-	Speed   string  `json:"speed,omitempty"`
-	SRD     bool    `json:"srd"`
-	Snippet string  `json:"snippet,omitempty"`
+	Kind        string  `json:"kind"`
+	Name        string  `json:"name"`
+	Source      string  `json:"source"`
+	Page        int     `json:"page"`
+	Score       float64 `json:"score"`
+	CR          string  `json:"cr,omitempty"`
+	Type        string  `json:"type,omitempty"`
+	Size        string  `json:"size,omitempty"`
+	Environment string  `json:"environment,omitempty"`
+	AC          int     `json:"ac,omitempty"`
+	HP          int     `json:"hp,omitempty"`
+	XP          int     `json:"xp,omitempty"`
+	Speed       string  `json:"speed,omitempty"`
+	SRD         bool    `json:"srd"`
+	Snippet     string  `json:"snippet,omitempty"`
 }
 
 // Search returns monsters matching all metadata filters before applying Limit.
@@ -62,33 +64,54 @@ func Search(st *store.Store, q Query) ([]Hit, error) {
 		q.Limit = 10
 	}
 
-	hits := make([]Hit, 0, len(candidates))
+	ranked := make([]rankedHit, 0, len(candidates))
 	for _, candidate := range candidates {
 		hit, ok := makeHit(candidate, q.Text)
 		if ok {
-			hits = append(hits, hit)
+			ranked = append(ranked, rankedHit{hit: hit, exactEnv: candidate.exactEnv})
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+	sort.Slice(ranked, func(i, j int) bool {
+		// A creature actually tagged for the requested environment outranks
+		// one tagged "any". Both belong in the answer — a bandit really can
+		// turn up in a swamp — but 65 wildcard NPCs sorting above the fey
+		// would bury what the question was about.
+		if ranked[i].exactEnv != ranked[j].exactEnv {
+			return ranked[i].exactEnv
 		}
-		if hits[i].Name != hits[j].Name {
-			return strings.ToLower(hits[i].Name) < strings.ToLower(hits[j].Name)
+		if ranked[i].hit.Score != ranked[j].hit.Score {
+			return ranked[i].hit.Score > ranked[j].hit.Score
 		}
-		return strings.ToLower(hits[i].Source) < strings.ToLower(hits[j].Source)
+		if ranked[i].hit.Name != ranked[j].hit.Name {
+			return strings.ToLower(ranked[i].hit.Name) < strings.ToLower(ranked[j].hit.Name)
+		}
+		return strings.ToLower(ranked[i].hit.Source) < strings.ToLower(ranked[j].hit.Source)
 	})
-	if len(hits) > q.Limit {
-		hits = hits[:q.Limit]
+	if len(ranked) > q.Limit {
+		ranked = ranked[:q.Limit]
+	}
+	hits := make([]Hit, len(ranked))
+	for i, r := range ranked {
+		hits[i] = r.hit
 	}
 	return hits, nil
 }
 
 // candidate pairs a stored monster with its decoded JSON so the filter pass
-// and the hit pass share one unmarshal per row.
+// and the hit pass share one unmarshal per row. exactEnv records whether it
+// matched the environment filter by its own tag rather than by the "any"
+// wildcard, which only affects ordering.
 type candidate struct {
-	entity store.Entity
-	obj    map[string]any
+	entity   store.Entity
+	obj      map[string]any
+	exactEnv bool
+}
+
+// rankedHit carries a hit alongside the ordering key that does not belong in
+// the hit itself, since exactEnv is meaningless without the query.
+type rankedHit struct {
+	hit      Hit
+	exactEnv bool
 }
 
 func filterEntities(entities []store.Entity, q Query) []candidate {
@@ -120,7 +143,15 @@ func filterEntities(entities []store.Entity, q Query) []candidate {
 		if q.Size != "" && !hasSize(obj, q.Size) {
 			continue
 		}
-		filtered = append(filtered, candidate{entity: entity, obj: obj})
+		exactEnv := false
+		if q.Environment != "" {
+			var matched bool
+			matched, exactEnv = matchEnvironment(obj, q.Environment)
+			if !matched {
+				continue
+			}
+		}
+		filtered = append(filtered, candidate{entity: entity, obj: obj, exactEnv: exactEnv})
 	}
 	return filtered
 }
@@ -145,20 +176,21 @@ func makeHit(c candidate, query string) (Hit, bool) {
 	cr := challenge(obj)
 	xp, _ := statblock.XPForCR(cr)
 	return Hit{
-		Kind:    entity.Kind,
-		Name:    entity.Name,
-		Source:  entity.Source,
-		Page:    entity.Page,
-		Score:   score,
-		CR:      cr,
-		Type:    creatureType(obj),
-		Size:    sizes(obj),
-		AC:      armorClassValue(obj),
-		HP:      hitPointsValue(obj),
-		XP:      xp,
-		Speed:   speedSummary(obj),
-		SRD:     entity.SRD,
-		Snippet: snippet(entity.Text),
+		Kind:        entity.Kind,
+		Name:        entity.Name,
+		Source:      entity.Source,
+		Page:        entity.Page,
+		Score:       score,
+		CR:          cr,
+		Type:        creatureType(obj),
+		Size:        sizes(obj),
+		Environment: strings.Join(environments(obj), ", "),
+		AC:          armorClassValue(obj),
+		HP:          hitPointsValue(obj),
+		XP:          xp,
+		Speed:       speedSummary(obj),
+		SRD:         entity.SRD,
+		Snippet:     snippet(entity.Text),
 	}, true
 }
 
@@ -209,6 +241,47 @@ func hasSize(obj map[string]any, wanted string) bool {
 		}
 	}
 	return false
+}
+
+// hasEnvironment reports whether a monster is tagged for wanted. 5etools
+// writes these as lowercase tags ("forest", "underdark") with planes as a
+// compound "planar, feywild", so a query of "feywild" matches the plane
+// without the caller having to know the prefix.
+//
+// A monster tagged "any" is at home everywhere and matches every query — a
+// swarm of rats belongs in the swamp list as much as the urban one.
+func matchEnvironment(obj map[string]any, wanted string) (matched, exact bool) {
+	wanted = strings.ToLower(strings.TrimSpace(wanted))
+	if wanted == "" {
+		return true, false
+	}
+	for _, tag := range environments(obj) {
+		tag = strings.ToLower(tag)
+		if tag == wanted {
+			return true, true
+		}
+		// "planar, feywild" answers to "feywild" and to "planar".
+		for _, part := range strings.Split(tag, ",") {
+			if strings.TrimSpace(part) == wanted {
+				return true, true
+			}
+		}
+		if tag == "any" {
+			matched = true
+		}
+	}
+	return matched, false
+}
+
+func environments(obj map[string]any) []string {
+	list, _ := obj["environment"].([]any)
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s := stringValue(item); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sizeMatches normalizes both sides, so data written as "S" or "Small" both

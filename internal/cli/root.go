@@ -299,14 +299,23 @@ func compareCmd(opt *options) *cobra.Command {
 }
 
 func encounterCmd(opt *options) *cobra.Command {
-	var cr, creatureType, size string
+	var cr, creatureType, size, environment string
 	var sources []string
 	var limit int
 	cmd := &cobra.Command{
-		Use:   "encounter <query>",
+		Use:   "encounter [query]",
 		Short: "Find monsters for an encounter",
-		Args:  cobra.MinimumNArgs(1),
+		Example: `  5e encounter goblin --cr 1/4
+  5e encounter --environment swamp --cr 2
+  5e encounter --environment feywild --type fey --limit 20`,
+		// The query is optional as long as something narrows the search:
+		// "what lives in a swamp at CR 2" is a filter-only question, and
+		// requiring a text argument would force a meaningless placeholder.
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && cr == "" && creatureType == "" && size == "" && environment == "" {
+				return fmt.Errorf("give a query or at least one of --cr, --type, --size, --environment")
+			}
 			data, index, err := resolve(opt)
 			if err != nil {
 				return err
@@ -321,14 +330,15 @@ func encounterCmd(opt *options) *cobra.Command {
 				return err
 			}
 			hits, err := encounter.Search(st, encounter.Query{
-				Text:    strings.Join(args, " "),
-				CR:      cr,
-				Type:    creatureType,
-				Size:    size,
-				Sources: splitSources(sources),
-				Edition: ed,
-				SRD:     opt.SRD,
-				Limit:   limit,
+				Text:        strings.Join(args, " "),
+				CR:          cr,
+				Type:        creatureType,
+				Size:        size,
+				Environment: environment,
+				Sources:     splitSources(sources),
+				Edition:     ed,
+				SRD:         opt.SRD,
+				Limit:       limit,
 			})
 			if err != nil {
 				return err
@@ -342,6 +352,7 @@ func encounterCmd(opt *options) *cobra.Command {
 	cmd.Flags().StringVar(&cr, "cr", "", "restrict to challenge rating")
 	cmd.Flags().StringVar(&creatureType, "type", "", "restrict to creature type")
 	cmd.Flags().StringVar(&size, "size", "", "restrict to creature size")
+	cmd.Flags().StringVar(&environment, "environment", "", "restrict to an environment (forest, underdark, swamp, feywild, ...)")
 	cmd.Flags().StringSliceVar(&sources, "source", nil, "restrict to source ids")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum hits")
 	return cmd

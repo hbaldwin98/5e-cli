@@ -50,8 +50,8 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 		},
 		{
 			Name:        "encounter",
-			Description: "Find monsters for an encounter, filtered by challenge rating, creature type, and size. Returns CR, type, size, and page for each hit.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"monster name or text to match"},"cr":{"type":"string","description":"challenge rating such as 1/4 or 5"},"type":{"type":"string","description":"creature type such as humanoid or fey"},"size":{"type":"string","description":"creature size such as small or large"},"sources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer"}},"required":[]}`),
+			Description: "Find monsters for an encounter, filtered by challenge rating, creature type, size, and environment. Returns CR, type, size, environment, and page for each hit. The monster data records which environments each creature is found in, so answer \"what lives in a swamp\" or \"what can I throw at the party in the Feywild\" with this rather than from retrieved prose.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"monster name or text to match"},"cr":{"type":"string","description":"challenge rating such as 1/4 or 5"},"type":{"type":"string","description":"creature type such as humanoid or fey"},"size":{"type":"string","description":"creature size such as small or large"},"environment":{"type":"string","description":"environment the monster is found in: forest, underdark, urban, hill, grassland, desert, mountain, swamp, coastal, arctic, underwater, or a plane such as feywild or shadowfell"},"sources":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer"}},"required":[]}`),
 		},
 		{
 			Name:        "list",
@@ -402,12 +402,13 @@ func toolSearch(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string,
 }
 
 type toolEncounterArgs struct {
-	Query   string   `json:"query"`
-	CR      string   `json:"cr"`
-	Type    string   `json:"type"`
-	Size    string   `json:"size"`
-	Sources []string `json:"sources"`
-	Limit   int      `json:"limit"`
+	Query       string   `json:"query"`
+	CR          string   `json:"cr"`
+	Type        string   `json:"type"`
+	Size        string   `json:"size"`
+	Environment string   `json:"environment"`
+	Sources     []string `json:"sources"`
+	Limit       int      `json:"limit"`
 }
 
 func toolEncounter(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, error) {
@@ -416,14 +417,15 @@ func toolEncounter(st *store.Store, opt ToolsOptions, raw json.RawMessage) (stri
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 	hits, err := encounter.Search(st, encounter.Query{
-		Text:    args.Query,
-		CR:      args.CR,
-		Type:    args.Type,
-		Size:    args.Size,
-		Sources: args.Sources,
-		Edition: opt.Edition,
-		SRD:     opt.SRD,
-		Limit:   args.Limit,
+		Text:        args.Query,
+		CR:          args.CR,
+		Type:        args.Type,
+		Size:        args.Size,
+		Environment: args.Environment,
+		Sources:     args.Sources,
+		Edition:     opt.Edition,
+		SRD:         opt.SRD,
+		Limit:       args.Limit,
 	})
 	if err != nil {
 		return "", err

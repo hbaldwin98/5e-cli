@@ -148,3 +148,97 @@ func TestSizes_rendersDisplayNames(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func environmentStore(t *testing.T) *store.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "index.sqlite")
+	entities := []parse.Entity{
+		{
+			Kind: "monster", Name: "Bullywug", Source: "MM",
+			JSON: json.RawMessage(`{"name":"Bullywug","cr":"1/4","environment":["swamp","forest"]}`),
+			Text: "bullywug",
+		},
+		{
+			Kind: "monster", Name: "Blink Dog", Source: "MM",
+			JSON: json.RawMessage(`{"name":"Blink Dog","cr":"1/4","environment":["planar, feywild","forest"]}`),
+			Text: "blink dog",
+		},
+		{
+			Kind: "monster", Name: "Bandit", Source: "MM",
+			JSON: json.RawMessage(`{"name":"Bandit","cr":"1/8","environment":["any"]}`),
+			Text: "bandit",
+		},
+		{
+			Kind: "monster", Name: "Ogre", Source: "MM",
+			JSON: json.RawMessage(`{"name":"Ogre","cr":2,"environment":["hill"]}`),
+			Text: "ogre",
+		},
+		{
+			Kind: "monster", Name: "Untagged", Source: "MM",
+			JSON: json.RawMessage(`{"name":"Untagged","cr":1}`),
+			Text: "untagged",
+		},
+	}
+	if err := store.Create(path, store.Meta{SHA: "env", DataRoot: t.TempDir(), IngestedAt: store.Now()}, entities, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestSearch_environmentFiltersAndRanksExactAboveWildcard(t *testing.T) {
+	st := environmentStore(t)
+	defer st.Close()
+
+	hits, err := Search(st, Query{Environment: "swamp", Edition: edition.All, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, h := range hits {
+		names = append(names, h.Name)
+	}
+	// Bullywug is tagged for the swamp; Bandit is tagged "any" and belongs in
+	// the answer but below it. Ogre (hill) and Untagged must not appear.
+	if len(names) != 2 || names[0] != "Bullywug" || names[1] != "Bandit" {
+		t.Fatalf("got %v, want [Bullywug Bandit]", names)
+	}
+	if hits[0].Environment != "swamp, forest" {
+		t.Fatalf("environment should be reported on the hit: %q", hits[0].Environment)
+	}
+}
+
+func TestSearch_environmentMatchesAPlaneWithoutItsPlanarPrefix(t *testing.T) {
+	st := environmentStore(t)
+	defer st.Close()
+
+	hits, err := Search(st, Query{Environment: "feywild", Edition: edition.All, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Name != "Blink Dog" {
+		t.Fatalf("expected the planar, feywild creature first, got %+v", hits)
+	}
+}
+
+func TestMatchEnvironment_reportsExactnessSeparatelyFromMatching(t *testing.T) {
+	exactObj := map[string]any{"environment": []any{"swamp"}}
+	anyObj := map[string]any{"environment": []any{"any"}}
+	noneObj := map[string]any{"environment": []any{"hill"}}
+
+	if matched, exact := matchEnvironment(exactObj, "Swamp"); !matched || !exact {
+		t.Fatalf("case-insensitive exact match: %v %v", matched, exact)
+	}
+	if matched, exact := matchEnvironment(anyObj, "swamp"); !matched || exact {
+		t.Fatalf(`"any" should match but not count as exact: %v %v`, matched, exact)
+	}
+	if matched, _ := matchEnvironment(noneObj, "swamp"); matched {
+		t.Fatal("a different environment should not match")
+	}
+	if matched, _ := matchEnvironment(noneObj, ""); !matched {
+		t.Fatal("an empty filter should match everything")
+	}
+}
