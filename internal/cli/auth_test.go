@@ -123,6 +123,39 @@ func TestAuthSetModel_updatesAnExistingProvider(t *testing.T) {
 	}
 }
 
+func TestAuthSetModel_acceptsQualifiedModel(t *testing.T) {
+	withIsolatedConfigDir(t)
+	runAuth(t, "", "login", "openrouter", "--api-key", "or-key-0123456789")
+	runAuth(t, "", "set-model", "openrouter/vendor/model")
+	cred, _ := providerCredentialForTest(t, "openrouter")
+	if cred.ChatModel != "vendor/model" {
+		t.Fatalf("chat model = %q", cred.ChatModel)
+	}
+}
+
+func TestAuthSetModel_withoutTerminalExplainsDirectSyntax(t *testing.T) {
+	withIsolatedConfigDir(t)
+	cmd := authCmd()
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"set-model"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "<provider>/<model>") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestApplyCredential_codexOnlyChangesChatTransport(t *testing.T) {
+	withIsolatedConfigDir(t)
+	cfg := ask.Config{APIKey: "embedding-key", BaseURL: "https://embeddings.example", EmbedModel: "embed-model"}
+	applyCredential(&cfg, provider.Codex, provider.Credential{Type: provider.OAuthAuth, AccessToken: "oauth-token", AccountID: "account-1", ChatModel: "codex-model"})
+	if cfg.APIKey != "embedding-key" || cfg.BaseURL != "https://embeddings.example" || cfg.EmbedModel != "embed-model" {
+		t.Fatalf("embedding config changed: %#v", cfg)
+	}
+	if cfg.ChatProvider != provider.Codex || cfg.ChatAPIKey != "oauth-token" || cfg.ChatBaseURL != provider.CodexBaseURL {
+		t.Fatalf("chat config = %#v", cfg)
+	}
+}
+
 func TestAuthSetModel_errorsForAnUnconfiguredProvider(t *testing.T) {
 	withIsolatedConfigDir(t)
 	cmd := authCmd()

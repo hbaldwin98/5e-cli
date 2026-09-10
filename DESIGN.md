@@ -191,12 +191,11 @@ applies for the session but returns an error explaining there's nowhere to
 persist it, rather than silently discarding the "make this permanent"
 half of the request.
 
-A future OpenAI Codex provider will add a distinct `5e auth login codex`
-OAuth flow (browser or headless) to this same store — but Codex's ChatGPT
-subscription auth only scopes to the chat/completion endpoints Codex
-itself uses, not the standalone Embeddings API, so a Codex login covers
-chat only; embeddings still need an API-key provider (OpenAI or
-OpenRouter, if/when it adds embedding models) configured alongside it.
+The OpenAI Codex provider uses a distinct `5e auth login codex` browser OAuth
+flow and stores refreshable ChatGPT credentials in the same store. Codex's
+ChatGPT subscription auth only covers chat through the Responses API, not the
+standalone Embeddings API, so embeddings still need an API-key provider
+(OpenAI or OpenRouter) configured alongside it.
 
 ### `ingest`
 

@@ -155,8 +155,10 @@ percentile tables use for 100. Other tables use uniform row selection.
 
 ## Ask
 
-Answer a question from the embedded corpus. Requires `OPENAI_API_KEY` and an
-OpenAI-compatible endpoint; `--retrieve-only` ranks chunks without calling a
+Answer a question from the embedded corpus. Configure an API-key provider with
+`5e auth login openai` or `5e auth login openrouter`. Chat can instead use a
+ChatGPT subscription through `5e auth login codex`; embeddings still use the
+configured API-key provider. `--retrieve-only` ranks chunks without calling a
 chat model. Use the global `--edition` flag or `FIVE_E_EDITION` (`2014`, `2024`,
 or `all`) to choose which reprint grounds each answer; the default is `2024`:
 
@@ -227,9 +229,15 @@ Inside a session:
 /limit <n>          retrieved chunks per question
 /history            print the transcript
 /clear [all]        drop the transcript, or "all" to drop the notes too
+/provider [name]    choose a configured provider; omit the name for a picker
+/model [provider/]model
+                    choose and persist a model; omit it for a picker
 /help               this list
 /exit               leave (Ctrl-D also works)
 ```
+
+Outside chat, `5e auth set-model` opens the same provider/model picker. Use
+`5e auth set-model codex/gpt-5.2-codex` for a direct, non-interactive change.
 
 Every question still retrieves from the embedded corpus, so answers stay
 grounded in the sources rather than in what was said earlier in the

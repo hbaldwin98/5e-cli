@@ -1,6 +1,7 @@
 package ask
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -54,6 +55,11 @@ const (
 type Config struct {
 	APIKey          string
 	BaseURL         string
+	ChatProvider    string
+	ChatAPIKey      string
+	ChatBaseURL     string
+	ChatAccountID   string
+	ChatToken       func(context.Context) (token, accountID string, err error)
 	EmbedModel      string
 	AskModel        string
 	EmbedMaxTokens  int
@@ -133,17 +139,34 @@ func ConfigFromEnv() Config {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
 	var chatModel, embedModel string
+	var chatProvider, chatAPIKey, chatBaseURL, chatAccountID string
+	var chatToken func(context.Context) (string, string, error)
 
 	if apiKey == "" {
 		if path, err := provider.DefaultPath(); err == nil {
 			if store, err := provider.Load(path); err == nil {
-				if _, cred, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER")); ok {
-					apiKey = cred.APIKey
-					if baseURL == "" {
-						baseURL = cred.BaseURL
-					}
+				if name, cred, ok := store.Resolve(os.Getenv("FIVE_E_PROVIDER")); ok {
+					chatProvider = name
 					chatModel = cred.ChatModel
-					embedModel = cred.EmbedModel
+					if cred.Type == provider.OAuthAuth {
+						chatAPIKey, chatBaseURL, chatAccountID = cred.AccessToken, provider.CodexBaseURL, cred.AccountID
+						storePath := path
+						chatToken = func(ctx context.Context) (string, string, error) {
+							return provider.CodexAccessToken(ctx, storePath, nil)
+						}
+						for _, fallback := range []string{provider.OpenAI, provider.OpenRouter} {
+							if embedding, found := store.Get(fallback); found && embedding.APIKey != "" {
+								apiKey, baseURL, embedModel = embedding.APIKey, embedding.BaseURL, embedding.EmbedModel
+								break
+							}
+						}
+					} else {
+						apiKey, chatAPIKey = cred.APIKey, cred.APIKey
+						if baseURL == "" {
+							baseURL = cred.BaseURL
+						}
+						chatBaseURL, embedModel = cred.BaseURL, cred.EmbedModel
+					}
 				}
 			}
 		}
@@ -159,6 +182,11 @@ func ConfigFromEnv() Config {
 	return Config{
 		APIKey:          apiKey,
 		BaseURL:         baseURL,
+		ChatProvider:    chatProvider,
+		ChatAPIKey:      chatAPIKey,
+		ChatBaseURL:     chatBaseURL,
+		ChatAccountID:   chatAccountID,
+		ChatToken:       chatToken,
 		EmbedModel:      embedModel,
 		AskModel:        chatModel,
 		EmbedMaxTokens:  envInt("FIVE_E_EMBED_MAX_TOKENS"),
@@ -199,6 +227,13 @@ func (c Config) withDefaults() Config {
 		c.BaseURL = DefaultBaseURL
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
+	if c.ChatAPIKey == "" {
+		c.ChatAPIKey = c.APIKey
+	}
+	if c.ChatBaseURL == "" {
+		c.ChatBaseURL = c.BaseURL
+	}
+	c.ChatBaseURL = strings.TrimRight(c.ChatBaseURL, "/")
 	if c.EmbedModel == "" {
 		c.EmbedModel = DefaultEmbedModel
 	}

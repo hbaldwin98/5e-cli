@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,7 +29,7 @@ func applyProviderOverride(cfg *ask.Config, opt *options) error {
 		if err != nil {
 			return err
 		}
-		applyCredential(cfg, cred)
+		applyCredential(cfg, opt.Provider, cred)
 	}
 	if opt.Model != "" {
 		cfg.AskModel = opt.Model
@@ -102,14 +105,53 @@ func loadProviderCredential(name string) (provider.Credential, error) {
 	return cred, nil
 }
 
+func configuredProviderNames() ([]string, error) {
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range knownProviders {
+		if _, ok := store.Get(name); ok {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func providerModels(ctx context.Context, name string) ([]string, error) {
+	cred, err := loadProviderCredential(name)
+	if err != nil {
+		return nil, err
+	}
+	return provider.FetchModels(ctx, nil, name, cred)
+}
+
 // applyCredential layers a resolved credential onto cfg, which was already
 // defaulted by ask.ConfigFromEnv: an empty cred.BaseURL (plain "openai")
 // means "use that existing default", not "clear it", and an empty model
 // leaves whatever cfg already had.
-func applyCredential(cfg *ask.Config, cred provider.Credential) {
-	cfg.APIKey = cred.APIKey
-	if cred.BaseURL != "" {
-		cfg.BaseURL = cred.BaseURL
+func applyCredential(cfg *ask.Config, name string, cred provider.Credential) {
+	cfg.ChatProvider = name
+	if cred.Type == provider.OAuthAuth {
+		cfg.ChatAPIKey, cfg.ChatAccountID = cred.AccessToken, cred.AccountID
+		cfg.ChatBaseURL = provider.CodexBaseURL
+		if path, err := provider.DefaultPath(); err == nil {
+			cfg.ChatToken = func(ctx context.Context) (string, string, error) {
+				return provider.CodexAccessToken(ctx, path, nil)
+			}
+		}
+	} else {
+		cfg.APIKey, cfg.ChatAPIKey = cred.APIKey, cred.APIKey
+		cfg.BaseURL, cfg.ChatBaseURL = ask.DefaultBaseURL, ask.DefaultBaseURL
+		if cred.BaseURL != "" {
+			cfg.BaseURL, cfg.ChatBaseURL = cred.BaseURL, cred.BaseURL
+		}
+		cfg.ChatAccountID, cfg.ChatToken = "", nil
 	}
 	if cred.ChatModel != "" {
 		cfg.AskModel = cred.ChatModel
@@ -119,10 +161,10 @@ func applyCredential(cfg *ask.Config, cred provider.Credential) {
 	}
 }
 
-// knownProviders lists the API-key providers `5e auth login` accepts today.
-// OpenAI Codex's OAuth flow will add a distinct login path (no API key
-// prompt) alongside these rather than joining this list.
-var knownProviders = []string{provider.OpenAI, provider.OpenRouter}
+// knownProviders lists every provider accepted by `5e auth login`.
+var knownProviders = []string{provider.OpenAI, provider.OpenRouter, provider.Codex}
+
+var codexOAuthConfig = provider.DefaultCodexOAuthConfig
 
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -137,12 +179,26 @@ func authLoginCmd() *cobra.Command {
 	var apiKey, chatModel, embedModel string
 	cmd := &cobra.Command{
 		Use:   "login <provider>",
-		Short: "Store an API key for a provider (openai, openrouter)",
+		Short: "Authenticate with a model provider",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.ToLower(strings.TrimSpace(args[0]))
 			if !isKnownProvider(name) {
 				return fmt.Errorf("unknown provider %q (known: %s)", name, strings.Join(knownProviders, ", "))
+			}
+			if name == provider.Codex {
+				cfg := codexOAuthConfig()
+				cfg.OpenBrowser = openBrowser
+				fmt.Fprintln(cmd.OutOrStdout(), "Opening a browser to sign in with ChatGPT...")
+				cred, err := cfg.Login(cmd.Context())
+				if err != nil {
+					return err
+				}
+				cred.ChatModel = chatModel
+				if cred.ChatModel == "" {
+					cred.ChatModel = provider.DefaultCodexModel
+				}
+				return saveLogin(cmd, name, cred)
 			}
 
 			key := apiKey
@@ -157,35 +213,51 @@ func authLoginCmd() *cobra.Command {
 				return fmt.Errorf("no API key given")
 			}
 
-			path, err := provider.DefaultPath()
-			if err != nil {
-				return err
-			}
-			store, err := provider.Load(path)
-			if err != nil {
-				return err
-			}
-			store.Set(name, provider.Credential{
+			return saveLogin(cmd, name, provider.Credential{
 				Type:       provider.APIKeyAuth,
 				APIKey:     key,
 				BaseURL:    provider.DefaultBaseURL(name),
 				ChatModel:  chatModel,
 				EmbedModel: embedModel,
 			})
-			store.Active = name
-			if err := store.Save(); err != nil {
-				return err
-			}
-
-			sty := styles(cmd.OutOrStdout())
-			fmt.Fprintln(cmd.OutOrStdout(), sty.Success.Render(fmt.Sprintf("%s: credentials saved to %s", name, path)))
-			return nil
 		},
 	}
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key (omit to be prompted)")
 	cmd.Flags().StringVar(&chatModel, "chat-model", "", "preferred chat model (default: ask's built-in default)")
 	cmd.Flags().StringVar(&embedModel, "embed-model", "", "preferred embedding model (default: ask's built-in default)")
 	return cmd
+}
+
+func saveLogin(cmd *cobra.Command, name string, cred provider.Credential) error {
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return err
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return err
+	}
+	store.Set(name, cred)
+	store.Active = name
+	if err := store.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), styles(cmd.OutOrStdout()).Success.Render(fmt.Sprintf("%s: credentials saved to %s", name, path)))
+	return nil
+}
+
+func openBrowser(url string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{url}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		name, args = "xdg-open", []string{url}
+	}
+	return exec.Command(name, args...).Start()
 }
 
 func authModelsCmd() *cobra.Command {
@@ -227,11 +299,34 @@ func authModelsCmd() *cobra.Command {
 func authSetModelCmd() *cobra.Command {
 	var chatModel, embedModel string
 	cmd := &cobra.Command{
-		Use:   "set-model <provider>",
+		Use:   "set-model <provider>[/<model>]",
 		Short: "Change a configured provider's preferred chat/embedding model",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := strings.ToLower(strings.TrimSpace(args[0]))
+			var selection string
+			if len(args) == 0 {
+				if chatModel != "" || embedModel != "" {
+					return fmt.Errorf("a provider argument is required with model flags")
+				}
+				if !isTTY(cmd.OutOrStdout()) || !isTTYReader(cmd.InOrStdin()) {
+					return fmt.Errorf("interactive model selection requires a terminal; use `5e auth set-model <provider>/<model>`")
+				}
+				var err error
+				selection, err = pickProviderModel(cmd)
+				if err != nil {
+					return err
+				}
+			} else {
+				selection = args[0]
+			}
+			name, directModel, _ := strings.Cut(strings.TrimSpace(selection), "/")
+			name = strings.ToLower(name)
+			if directModel != "" {
+				if chatModel != "" {
+					return fmt.Errorf("model given both in the argument and --chat-model")
+				}
+				chatModel = directModel
+			}
 			if chatModel == "" && embedModel == "" {
 				return fmt.Errorf("give at least one of --chat-model or --embed-model")
 			}
@@ -265,6 +360,57 @@ func authSetModelCmd() *cobra.Command {
 	cmd.Flags().StringVar(&chatModel, "chat-model", "", "preferred chat model")
 	cmd.Flags().StringVar(&embedModel, "embed-model", "", "preferred embedding model")
 	return cmd
+}
+
+// configuredProviderModel treats the prefix before the first slash as a
+// provider only when that provider is configured. This keeps model IDs such
+// as "openai/gpt-4.1" valid when "openai" is not a configured provider.
+func configuredProviderModel(value, fallbackProvider string) (string, string, error) {
+	value = strings.TrimSpace(value)
+	prefix, model, found := strings.Cut(value, "/")
+	if !found {
+		return fallbackProvider, value, nil
+	}
+	path, err := provider.DefaultPath()
+	if err != nil {
+		return "", "", err
+	}
+	store, err := provider.Load(path)
+	if err != nil {
+		return "", "", err
+	}
+	name := strings.ToLower(strings.TrimSpace(prefix))
+	if _, ok := store.Get(name); ok {
+		return name, model, nil
+	}
+	return fallbackProvider, value, nil
+}
+
+func applyChatModel(cfg *ask.Config, providerName *string, value string) error {
+	name, model, err := configuredProviderModel(value, *providerName)
+	if err != nil {
+		return err
+	}
+	if model == "" {
+		return fmt.Errorf("model cannot be empty")
+	}
+	if name == "" {
+		cfg.AskModel = model
+		return fmt.Errorf("model %s applied for this session, but there is no active stored provider to save it to", model)
+	}
+	if name != *providerName {
+		cred, err := loadProviderCredential(name)
+		if err != nil {
+			return err
+		}
+		applyCredential(cfg, name, cred)
+	}
+	if err := saveProviderModel(name, model); err != nil {
+		return err
+	}
+	cfg.AskModel = model
+	*providerName = name
+	return nil
 }
 
 // promptForKey reads a key from stdin without echoing it to the transcript
@@ -310,6 +456,12 @@ func authListCmd() *cobra.Command {
 					marker = "*"
 				}
 				masked := maskKey(cred.APIKey)
+				if cred.Type == provider.OAuthAuth {
+					masked = "oauth"
+					if cred.AccountID != "" {
+						masked += " account=" + cred.AccountID
+					}
+				}
 				line := fmt.Sprintf("%s %s\t%s", marker, name, masked)
 				if cred.ChatModel != "" {
 					line += fmt.Sprintf("\tchat=%s", cred.ChatModel)

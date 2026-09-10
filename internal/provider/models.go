@@ -16,11 +16,18 @@ import (
 // provider importing ask back would cycle.
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
+const DefaultCodexModel = "gpt-5.2-codex"
+
+var CodexModels = []string{"gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"}
+
 // FetchModels calls the provider's OpenAI-compatible GET /models endpoint
 // (OpenAI and OpenRouter both implement this) and returns the model ids,
 // sorted. client may be nil, in which case a client with a short timeout is
 // used so a hung endpoint doesn't block the CLI indefinitely.
 func FetchModels(ctx context.Context, client *http.Client, name string, cred Credential) ([]string, error) {
+	if name == Codex && cred.Type == OAuthAuth {
+		return append([]string(nil), CodexModels...), nil
+	}
 	if cred.APIKey == "" {
 		return nil, fmt.Errorf("%s has no API key configured; run `5e auth login %s`", name, name)
 	}

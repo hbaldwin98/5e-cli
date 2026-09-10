@@ -862,8 +862,8 @@ var chatSlashCommands = []struct{ Name, Usage string }{
 	{"/srd", "[on|off]       show or set whether retrieval is SRD-only"},
 	{"/history", "           print the transcript"},
 	{"/clear", "[all]        drop the transcript, or \"all\" to drop the notes too"},
-	{"/provider", "[name]    switch to a configured provider (see 5e auth list), or show the current model/base url"},
-	{"/model", "[name]       change and persist that provider's chat model, or show the current one"},
+	{"/provider", "[name]    choose a configured provider, or show the current provider"},
+	{"/model", "[provider/]model   choose and persist a chat model, or show the current model"},
 	{"/help", "               this list"},
 	{"/exit", "               leave (Ctrl-D also works)"},
 }
@@ -1198,7 +1198,7 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 		if err != nil {
 			return false, event, err
 		}
-		applyCredential(cfg, cred)
+		applyCredential(cfg, name, cred)
 		*providerName = name
 		event.Data = map[string]any{"provider": rest, "model": cfg.AskModel, "embed_model": cfg.EmbedModel}
 		if !asJSON {
@@ -1212,19 +1212,12 @@ func chatCommand(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *chat
 			}
 			break
 		}
-		cfg.AskModel = rest
-		event.Data = map[string]any{"model": cfg.AskModel}
-		// /model persists, unlike --model/one-shot session state: the whole
-		// point of a slash command over the flag is "change this and keep
-		// it changed" without a separate `5e auth set-model` step.
-		if *providerName == "" {
-			return false, event, fmt.Errorf("model %s applied for this session, but there is no active stored provider to save it to; run `5e auth login <provider>` or set FIVE_E_ASK_MODEL to persist a choice", rest)
+		if err := applyChatModel(cfg, providerName, rest); err != nil {
+			return false, event, fmt.Errorf("select model: %w", err)
 		}
-		if err := saveProviderModel(*providerName, rest); err != nil {
-			return false, event, fmt.Errorf("model %s applied for this session, but saving it failed: %w", rest, err)
-		}
+		event.Data = map[string]any{"provider": *providerName, "model": cfg.AskModel}
 		if !asJSON {
-			fmt.Fprintf(out, "model %s (saved to %s)\n", rest, *providerName)
+			fmt.Fprintf(out, "model %s (saved to %s)\n", cfg.AskModel, *providerName)
 		}
 	default:
 		return false, event, fmt.Errorf("unknown command %s; /help for the list", name)

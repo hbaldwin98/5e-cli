@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/hbaldwin98/5e-cli/internal/provider"
 )
 
 type client struct {
@@ -152,6 +154,9 @@ func toWireTools(tools []Tool) []map[string]any {
 // the user, so there is nothing meaningful to stream until the loop that
 // owns this call has a final answer in hand.
 func (c *client) ChatCompletion(ctx context.Context, msgs []Message, tools []Tool) (completionResult, error) {
+	if c.cfg.ChatProvider == provider.Codex {
+		return c.codexCompletion(ctx, msgs, tools, nil)
+	}
 	body := map[string]any{
 		"model":       c.cfg.AskModel,
 		"messages":    toWireMessages(msgs),
@@ -208,7 +213,11 @@ func (c *client) ChatCompletion(ctx context.Context, msgs []Message, tools []Too
 // validate citations against, or to persist) does not have to reassemble it
 // from the deltas itself.
 func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta func(string) error) (string, error) {
-	if c.cfg.APIKey == "" {
+	if c.cfg.ChatProvider == provider.Codex {
+		result, err := c.codexCompletion(ctx, msgs, nil, onDelta)
+		return result.Content, err
+	}
+	if c.cfg.ChatAPIKey == "" {
 		return "", fmt.Errorf("OPENAI_API_KEY is not set")
 	}
 	body := map[string]any{
@@ -222,12 +231,12 @@ func (c *client) ChatMessagesStream(ctx context.Context, msgs []Message, onDelta
 	if err != nil {
 		return "", err
 	}
-	url := c.cfg.BaseURL + "/" + strings.TrimLeft("chat/completions", "/")
+	url := c.cfg.ChatBaseURL + "/" + strings.TrimLeft("chat/completions", "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+c.cfg.ChatAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := c.cfg.HTTPClient.Do(req)
@@ -327,19 +336,23 @@ func errorBodyMessage(payload []byte, status string) string {
 }
 
 func (c *client) post(ctx context.Context, path string, body any, dest any) error {
-	if c.cfg.APIKey == "" {
+	key, baseURL := c.cfg.APIKey, c.cfg.BaseURL
+	if path == "chat/completions" {
+		key, baseURL = c.cfg.ChatAPIKey, c.cfg.ChatBaseURL
+	}
+	if key == "" {
 		return fmt.Errorf("OPENAI_API_KEY is not set")
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	url := c.cfg.BaseURL + "/" + strings.TrimLeft(path, "/")
+	url := baseURL + "/" + strings.TrimLeft(path, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.cfg.HTTPClient.Do(req)
 	if err != nil {

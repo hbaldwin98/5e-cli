@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -123,6 +124,26 @@ type turnDoneMsg struct {
 	err error
 }
 
+type selectorKind uint8
+
+const (
+	selectorNone selectorKind = iota
+	selectorProvider
+	selectorModel
+)
+
+type selectorItem string
+
+func (i selectorItem) FilterValue() string { return string(i) }
+func (i selectorItem) Title() string       { return string(i) }
+func (i selectorItem) Description() string { return "" }
+
+type modelsLoadedMsg struct {
+	provider string
+	models   []string
+	err      error
+}
+
 type chatModel struct {
 	cmd          *cobra.Command
 	st           *store.Store
@@ -138,9 +159,11 @@ type chatModel struct {
 	keys chatKeyMap
 	help help.Model
 
-	viewport viewport.Model
-	input    textarea.Model
-	spin     spinner.Model
+	viewport  viewport.Model
+	input     textarea.Model
+	spin      spinner.Model
+	selector  list.Model
+	selecting selectorKind
 
 	// transcript is everything already committed to the scrollback: the
 	// banner, past questions and answers, and slash-command output. pending
@@ -324,6 +347,16 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case modelsLoadedMsg:
+		if msg.err != nil {
+			m.selecting = selectorNone
+			m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(msg.err.Error()))
+			m.refreshViewport()
+			return m, nil
+		}
+		m.openSelector(selectorModel, "Choose a model for "+msg.provider, msg.models)
+		return m, nil
+
 	case deltaMsg:
 		m.pending.WriteString(string(msg))
 		m.refreshViewport()
@@ -358,6 +391,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.selecting != selectorNone {
+		return m.handleSelectorKey(msg)
+	}
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
@@ -429,6 +465,30 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m *chatModel) handleSelectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.selecting = selectorNone
+		m.input.Focus()
+		return m, nil
+	case "enter":
+		item, ok := m.selector.SelectedItem().(selectorItem)
+		if !ok {
+			return m, nil
+		}
+		kind := m.selecting
+		m.selecting = selectorNone
+		m.input.Focus()
+		if kind == selectorProvider {
+			return m.runSlashCommand("/provider " + string(item))
+		}
+		return m.runSlashCommand("/model " + m.providerName + "/" + string(item))
+	}
+	var cmd tea.Cmd
+	m.selector, cmd = m.selector.Update(msg)
 	return m, cmd
 }
 
@@ -553,6 +613,32 @@ func (m *chatModel) submit() (tea.Model, tea.Cmd) {
 // written to stdout/stderr into the transcript instead — the same commands,
 // the same output text, just relocated into the workspace's scrollback.
 func (m *chatModel) runSlashCommand(line string) (tea.Model, tea.Cmd) {
+	if strings.EqualFold(strings.TrimSpace(line), "/provider") {
+		names, err := configuredProviderNames()
+		if err != nil || len(names) == 0 {
+			if err == nil {
+				err = fmt.Errorf("no providers configured; run `5e auth login <provider>`")
+			}
+			m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(err.Error()))
+			m.refreshViewport()
+			return m, nil
+		}
+		m.openSelector(selectorProvider, "Choose a provider", names)
+		return m, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(line), "/model") {
+		if m.providerName == "" {
+			m.writeLine(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render("no active stored provider; run `5e auth login <provider>` first"))
+			m.refreshViewport()
+			return m, nil
+		}
+		name := m.providerName
+		m.selecting = selectorModel
+		return m, func() tea.Msg {
+			models, err := providerModels(m.cmd.Context(), name)
+			return modelsLoadedMsg{provider: name, models: models, err: err}
+		}
+	}
 	m.writeLine("> " + line)
 	captured := &cobra.Command{}
 	var buf bytes.Buffer
@@ -584,6 +670,17 @@ func (m *chatModel) runSlashCommand(line string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m *chatModel) openSelector(kind selectorKind, title string, values []string) {
+	items := make([]list.Item, len(values))
+	for i, value := range values {
+		items[i] = selectorItem(value)
+	}
+	m.selector = list.New(items, list.NewDefaultDelegate(), m.width, m.height)
+	m.selector.Title = title
+	m.selecting = kind
+	m.input.Blur()
 }
 
 func (m *chatModel) startTurn(question string) (tea.Model, tea.Cmd) {
@@ -760,6 +857,9 @@ func (m *chatModel) resize() {
 	m.viewport.SetHeight(vpHeight)
 	m.input.SetWidth(m.width)
 	m.input.SetHeight(inputHeight)
+	if m.selecting != selectorNone {
+		m.selector.SetSize(m.width, m.height)
+	}
 	m.refreshViewport()
 }
 
@@ -778,6 +878,10 @@ func (m *chatModel) View() tea.View {
 	}
 	if !m.ready {
 		v.SetContent("")
+		return v
+	}
+	if m.selecting != selectorNone {
+		v.SetContent(m.selector.View())
 		return v
 	}
 	var b strings.Builder

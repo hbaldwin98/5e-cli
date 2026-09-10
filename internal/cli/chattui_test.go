@@ -61,6 +61,47 @@ func newTestChatModelWithProvider(t *testing.T) (*chatModel, *chatAPI) {
 	return m, api
 }
 
+func TestChatModel_providerCommandOpensPicker(t *testing.T) {
+	m, _ := newTestChatModelWithProvider(t)
+	_, cmd := m.runSlashCommand("/provider")
+	if cmd != nil {
+		t.Fatal("provider picker should not require async loading")
+	}
+	if m.selecting != selectorProvider {
+		t.Fatalf("selector = %v", m.selecting)
+	}
+	_, _ = m.handleSelectorKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.selecting != selectorNone || m.providerName != "openai" {
+		t.Fatalf("selection did not apply: mode=%v provider=%q", m.selecting, m.providerName)
+	}
+}
+
+func TestChatModel_modelPickerAppliesLoadedSelection(t *testing.T) {
+	m, _ := newTestChatModelWithProvider(t)
+	m.Update(modelsLoadedMsg{provider: "openai", models: []string{"gpt-picked"}})
+	if m.selecting != selectorModel {
+		t.Fatalf("selector = %v", m.selecting)
+	}
+	_, _ = m.handleSelectorKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.cfg.AskModel != "gpt-picked" {
+		t.Fatalf("model = %q", m.cfg.AskModel)
+	}
+	cred, _ := providerCredentialForTest(t, "openai")
+	if cred.ChatModel != "gpt-picked" {
+		t.Fatalf("stored model = %q", cred.ChatModel)
+	}
+}
+
+func TestChatModel_escapeCancelsPicker(t *testing.T) {
+	m, _ := newTestChatModelWithProvider(t)
+	m.openSelector(selectorModel, "Choose", []string{"gpt-picked"})
+	before := m.cfg.AskModel
+	_, _ = m.handleSelectorKey(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.selecting != selectorNone || m.cfg.AskModel != before {
+		t.Fatalf("cancel changed selection: mode=%v model=%q", m.selecting, m.cfg.AskModel)
+	}
+}
+
 // drive runs cmd (and every tea.Cmd it and its follow-ups produce) to
 // completion against m, the same loop tea.Program's runtime performs, minus
 // the terminal. It is how these tests exercise chatModel's real streaming
