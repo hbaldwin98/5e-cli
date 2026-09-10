@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 
 	"github.com/hbaldwin98/5e-cli/internal/ask"
@@ -512,5 +513,52 @@ func TestChatWorkspaceAvailable_falseInJSONMode(t *testing.T) {
 	cmd := &cobra.Command{}
 	if chatWorkspaceAvailable(cmd, true) {
 		t.Fatal("--json must never get the workspace")
+	}
+}
+
+// Esc cancels an in-flight turn but never quits; only Ctrl-C (or Ctrl-D)
+// leaves the workspace.
+func TestChatModel_escCancelsTurnWithoutQuitting(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	cancelled := false
+	m.streaming = true
+	m.cancel = func() { cancelled = true }
+	if _, cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc}); cmd != nil || m.quitting {
+		t.Fatal("esc should not quit")
+	}
+	if !cancelled {
+		t.Fatal("esc should cancel the in-flight turn")
+	}
+	m.streaming = false
+	if _, _ = m.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc}); m.quitting {
+		t.Fatal("esc while idle should not quit")
+	}
+	if _, _ = m.handleKey(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); !m.quitting {
+		t.Fatal("ctrl+c should quit")
+	}
+}
+
+// The input uses the terminal's real cursor, placed on the input row at the
+// cursor's column, so Left/Right never re-renders the line's text.
+func TestChatModel_realCursorTracksInput(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	for _, r := range "hello" {
+		m.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	before := m.View()
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyLeft})
+	after := m.View()
+	if before.Cursor == nil || after.Cursor == nil {
+		t.Fatal("view should place the real cursor")
+	}
+	if ansi.Strip(before.Content) != ansi.Strip(after.Content) {
+		t.Fatal("moving the cursor should not change the rendered text")
+	}
+	if after.Cursor.X != before.Cursor.X-1 {
+		t.Fatalf("cursor x = %d, want %d", after.Cursor.X, before.Cursor.X-1)
+	}
+	lines := strings.Split(after.Content, "\n")
+	if row := ansi.Strip(lines[after.Cursor.Y]); !strings.Contains(row, "hello") {
+		t.Fatalf("cursor row %d is %q, not the input", after.Cursor.Y, row)
 	}
 }

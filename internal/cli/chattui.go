@@ -94,8 +94,8 @@ func defaultChatKeyMap() chatKeyMap {
 		ScrollDown:  key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "scroll down")),
 		Complete:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "complete command")),
 		ToggleMouse: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "toggle mouse")),
-		Cancel:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel turn / quit")),
-		Quit:        key.NewBinding(key.WithKeys("ctrl+d", "esc"), key.WithHelp("ctrl+d", "quit")),
+		Cancel:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel turn")),
+		Quit:        key.NewBinding(key.WithKeys("ctrl+c", "ctrl+d"), key.WithHelp("ctrl+c", "quit")),
 		Help:        key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle help")),
 	}
 }
@@ -205,6 +205,12 @@ func newChatModel(cmd *cobra.Command, st *store.Store, cs *chat.Store, sess *cha
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question, or /help for commands"
 	ta.ShowLineNumbers = false
+	// Use the terminal's real cursor (placed by View) rather than the
+	// textarea's virtual one. A virtual cursor re-renders a reverse-video
+	// cell in the middle of the line on every Left/Right, and the renderer's
+	// diff of that edit can use insert/delete-character sequences some
+	// terminals and multiplexers apply wrongly, visibly smearing the line.
+	ta.SetVirtualCursor(false)
 	ta.Focus()
 
 	m := &chatModel{
@@ -396,16 +402,19 @@ func (m *chatModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		if m.streaming {
+			m.cancel()
+		}
 		m.quitting = true
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keys.Cancel):
+		// Esc only ever cancels the in-flight turn; it never quits, so a
+		// double-tapped Esc can't throw away the workspace.
 		if m.streaming {
 			m.cancel()
-			return m, nil
 		}
-		m.quitting = true
-		return m, tea.Quit
+		return m, nil
 
 	case key.Matches(msg, m.keys.Help):
 		m.showHelp = !m.showHelp
@@ -891,6 +900,12 @@ func (m *chatModel) View() tea.View {
 	b.WriteString("\n")
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
+	if c := m.input.Cursor(); c != nil {
+		// Cursor() is relative to the textarea; it sits below the viewport
+		// and the one-line slash-suggestions row.
+		c.Y += m.viewport.Height() + 1
+		v.Cursor = c
+	}
 	if m.showHelp {
 		b.WriteString(m.help.View(m.keys))
 	} else {
