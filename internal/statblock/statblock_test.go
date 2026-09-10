@@ -74,6 +74,48 @@ func TestRenderMonster_conditionalDamageResistance(t *testing.T) {
 	}
 }
 
+func TestMergeSubrace_inheritsUnoverriddenRaceTraitsAndCombinesAbility(t *testing.T) {
+	race := map[string]any{
+		"name":  "Elf",
+		"size":  []any{"M"},
+		"speed": json.Number("30"),
+		"ability": []any{
+			map[string]any{"dex": json.Number("2")},
+		},
+		"entries": []any{
+			map[string]any{"name": "Fey Ancestry", "entries": []any{"advantage against charm"}},
+			map[string]any{"name": "Darkvision", "entries": []any{"60 feet"}},
+		},
+	}
+	subrace := map[string]any{
+		"name":     "Drow",
+		"raceName": "Elf",
+		"ability": []any{
+			map[string]any{"cha": json.Number("1")},
+		},
+		"entries": []any{
+			map[string]any{"name": "Superior Darkvision", "entries": []any{"120 feet"}, "data": map[string]any{"overwrite": "Darkvision"}},
+			map[string]any{"name": "Sunlight Sensitivity", "entries": []any{"disadvantage in sunlight"}},
+		},
+	}
+
+	merged := MergeSubrace(subrace, race)
+	got := RenderString("subrace", merged)
+
+	if !strings.Contains(got, "DEX +2, CHA +1") {
+		t.Fatalf("expected combined ability scores, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Fey Ancestry") {
+		t.Fatalf("expected inherited race trait to survive, got:\n%s", got)
+	}
+	if strings.Contains(got, "60 feet") {
+		t.Fatalf("expected the race's Darkvision entry to be overwritten, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Superior Darkvision") || !strings.Contains(got, "Sunlight Sensitivity") {
+		t.Fatalf("expected subrace's own traits, got:\n%s", got)
+	}
+}
+
 func TestXPForCR(t *testing.T) {
 	cases := map[string]int{"0": 10, "1/4": 50, "5": 1800, "20": 25000}
 	for cr, want := range cases {

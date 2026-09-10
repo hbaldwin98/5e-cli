@@ -34,6 +34,9 @@ func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity, full bool) e
 	if err != nil {
 		return fmt.Errorf("decode %s %q: %w", e.Kind, e.Name, err)
 	}
+	if e.Kind == "subrace" {
+		obj = mergeSubraceRace(st, obj)
+	}
 	if stylingEnabled(w) {
 		if _, err := io.WriteString(w, statblock.RenderCard(e.Kind, e.Name, e.Source, obj, statblockCardWidth)+"\n"); err != nil {
 			return err
@@ -172,6 +175,32 @@ func writeRaceSubraces(w io.Writer, st *store.Store, kind string, obj map[string
 		fmt.Fprintf(&b, "- %s (%s) — `5e get subrace \"%s\" --source %s` for its full traits\n", sr.Name, sr.Source, sr.Name, sr.Source)
 	}
 	return renderMarkdown(w, b.String())
+}
+
+// mergeSubraceRace looks up a subrace's parent race by its raceName/
+// raceSource fields and merges it in via statblock.MergeSubrace, so
+// rendering a subrace includes the base race traits it doesn't override
+// (Fey Ancestry, Trance, elf weapon training, ...) instead of only the
+// subrace's own delta entries. Falls back to the subrace's own obj
+// unchanged if the parent race can't be found.
+func mergeSubraceRace(st *store.Store, subraceObj map[string]any) map[string]any {
+	if st == nil {
+		return subraceObj
+	}
+	raceName, _ := subraceObj["raceName"].(string)
+	raceSource, _ := subraceObj["raceSource"].(string)
+	if raceName == "" {
+		return subraceObj
+	}
+	ents, err := st.Lookup("race", raceName, raceSource)
+	if err != nil || len(ents) == 0 {
+		return subraceObj
+	}
+	raceObj, err := statblock.Decode(ents[0].JSON)
+	if err != nil {
+		return subraceObj
+	}
+	return statblock.MergeSubrace(subraceObj, raceObj)
 }
 
 // raceSubraceEntities finds every subrace entity for a race by name,

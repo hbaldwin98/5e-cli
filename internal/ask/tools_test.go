@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/hbaldwin98/5e-cli/internal/edition"
+	"github.com/hbaldwin98/5e-cli/internal/parse"
+	"github.com/hbaldwin98/5e-cli/internal/store"
 )
 
 // toolCallServer answers chat/completions with one round of tool calls (when
@@ -344,6 +347,75 @@ func TestBuildTools_listFiltersNamesByKindAndQuery(t *testing.T) {
 	}
 	if result.Total != 0 {
 		t.Fatalf("expected no matches: %s", out)
+	}
+}
+
+func TestBuildTools_buildCharacterResolvesEveryPart(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "class", Name: "Paladin", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Paladin","hd":{"faces":10}}`), Text: "Paladin"},
+		{Kind: "race", Name: "Aasimar", Source: "VGM", SRD: true, JSON: json.RawMessage(`{"name":"Aasimar","size":["M"]}`), Text: "Aasimar"},
+		{Kind: "background", Name: "Sage", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Sage"}`), Text: "Sage"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	_, exec := BuildTools(st, ToolsOptions{Edition: edition.All})
+	out, err := exec(context.Background(), ToolCall{Name: "buildCharacter", Arguments: json.RawMessage(`{"class":"Paladin","race":"Aasimar","background":"Sage"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	for _, part := range []string{"class", "race", "background"} {
+		if _, ok := result[part]; !ok {
+			t.Fatalf("expected %q in result: %s", part, out)
+		}
+	}
+	if _, ok := result["subclass"]; ok {
+		t.Fatalf("did not request a subclass, expected it absent: %s", out)
+	}
+}
+
+func TestBuildTools_buildCharacterReportsMissingPartsWithoutFailingOthers(t *testing.T) {
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	err := store.Create(index, store.Meta{SHA: "testha", DataRoot: t.TempDir(), IngestedAt: store.Now()}, []parse.Entity{
+		{Kind: "class", Name: "Paladin", Source: "PHB", SRD: true, JSON: json.RawMessage(`{"name":"Paladin","hd":{"faces":10}}`), Text: "Paladin"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	_, exec := BuildTools(st, ToolsOptions{Edition: edition.All})
+	out, err := exec(context.Background(), ToolCall{Name: "buildCharacter", Arguments: json.RawMessage(`{"class":"Paladin","race":"Nonexistent"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Class  json.RawMessage   `json:"class"`
+		Errors map[string]string `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if result.Class == nil {
+		t.Fatalf("expected class resolved despite race failing: %s", out)
+	}
+	if result.Errors["race"] == "" {
+		t.Fatalf("expected a race error, got: %s", out)
 	}
 }
 

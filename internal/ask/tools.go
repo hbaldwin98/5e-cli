@@ -35,8 +35,13 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 	tools := []Tool{
 		{
 			Name:        "get",
-			Description: "Look up one 5e entity or book section by kind and name. Pass source when several reprints match. For a class/subclass, pass full=true only when you need every referenced feature's complete rules text — the default response already includes the feature-name-by-level progression.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id such as PHB"},"full":{"type":"boolean","description":"for a class/subclass, also resolve and include every referenced feature's full rules text (verbose; omit unless needed)"}},"required":["kind","name"]}`),
+			Description: "Look up one 5e entity or book section by kind and name. Pass source when several reprints match. For a class/subclass, pass full=true whenever you need the actual rules text of its features (including any time you are building or describing a character) — the default response only lists feature names by level, not what they do. A subrace's response already includes its parent race's inherited traits merged in, so one subrace lookup is self-sufficient. To fully build a character (e.g. \"Paladin Aasimar with a Sage background\"), call get separately for the class (full=true), its subclass if named (full=true), the race or subrace, and the background — do not stop after the first successful lookup.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id such as PHB"},"full":{"type":"boolean","description":"for a class/subclass, also resolve and include every referenced feature's full rules text — set this whenever the actual mechanics matter, e.g. building or describing a character"}},"required":["kind","name"]}`),
+		},
+		{
+			Name:        "buildCharacter",
+			Description: "Resolve every entity needed to build a character in one call — class, subclass, race/subrace, and background — instead of several separate get calls. Always returns class/subclass with their full feature rules text. Use this any time a request names a combination of these (e.g. \"Paladin Aasimar with a Sage background\") rather than looking each one up individually.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"class":{"type":"string","description":"class name, e.g. Paladin"},"subclass":{"type":"string","description":"subclass name, e.g. Oath of Devotion"},"race":{"type":"string","description":"race name, e.g. Aasimar (pass the race even if it's really a subrace elsewhere, such as High Elf -> race Elf, subrace High Elf)"},"subrace":{"type":"string","description":"subrace name, e.g. High Elf, Drow"},"background":{"type":"string","description":"background name, e.g. Sage"},"source":{"type":"string","description":"optional 5etools source id applied to every lookup"}},"required":[]}`),
 		},
 		{
 			Name:        "search",
@@ -79,6 +84,8 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 		switch call.Name {
 		case "get":
 			return toolGet(st, opt, call.Arguments)
+		case "buildCharacter":
+			return toolBuildCharacter(st, opt, call.Arguments)
 		case "search":
 			return toolSearch(st, opt, call.Arguments)
 		case "encounter":
@@ -144,13 +151,25 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	ents, err := st.Lookup(args.Kind, args.Name, args.Source)
+	result, err := resolveEntity(st, opt, args.Kind, args.Name, args.Source, args.Full)
 	if err != nil {
 		return "", err
 	}
-	ents, err = disambiguate(st, ents, args.Source, opt, args.Kind, args.Name)
+	return toJSON(result)
+}
+
+// resolveEntity is toolGet's lookup and rendering logic, factored out so
+// toolBuildCharacter can resolve several entities (class, subclass, race,
+// subrace, background) the same way in one call instead of the model having
+// to issue and remember to fully specify several separate get calls.
+func resolveEntity(st *store.Store, opt ToolsOptions, kind, name, source string, full bool) (map[string]any, error) {
+	ents, err := st.Lookup(kind, name, source)
 	if err != nil {
-		return "", err
+		return nil, err
+	}
+	ents, err = disambiguate(st, ents, source, opt, kind, name)
+	if err != nil {
+		return nil, err
 	}
 	e := ents[0]
 	var body any
@@ -172,6 +191,9 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 	// model reads exact numbers from prose instead of re-deriving them from
 	// 5etools' tagged JSON shape itself.
 	if obj, err := statblock.Decode(e.JSON); err == nil {
+		if e.Kind == "subrace" {
+			obj = mergeSubraceRace(st, obj)
+		}
 		if text := statblock.RenderString(e.Kind, obj); strings.TrimSpace(text) != "" {
 			result["statblock"] = text
 		}
@@ -182,10 +204,10 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 		// `5e get` does, so the model reads the actual mechanics instead of
 		// a bare feature-name list.
 		if e.Kind == "class" || e.Kind == "subclass" {
-			if args.Full {
+			if full {
 				result["featureDetails"] = classFeatureDetailText(st, e.Kind, obj)
 			} else {
-				result["featureDetailsNote"] = "Pass full: true to resolve every referenced feature's full rules text; omitted here to keep this response short. Feature names by level are already in statblock."
+				result["featureDetailsNote"] = "Pass full: true to resolve every referenced feature's full rules text; omitted here to keep this response short. Feature names by level are already in statblock. If you are building or describing a character, call get again with full: true instead of answering from names alone."
 			}
 			if e.Kind == "class" {
 				if name, _ := obj["name"].(string); name != "" {
@@ -194,10 +216,57 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 			}
 		}
 		if e.Kind == "race" {
-			if name, _ := obj["name"].(string); name != "" {
-				result["subraces"] = raceSubraceNames(st, name)
+			if rn, _ := obj["name"].(string); rn != "" {
+				result["subraces"] = raceSubraceNames(st, rn)
 			}
 		}
+	}
+	return result, nil
+}
+
+type toolBuildCharacterArgs struct {
+	Class      string `json:"class"`
+	Subclass   string `json:"subclass"`
+	Race       string `json:"race"`
+	Subrace    string `json:"subrace"`
+	Background string `json:"background"`
+	Source     string `json:"source"`
+}
+
+// toolBuildCharacter resolves every part of a class/subclass/race-or-subrace
+// /background combination in one call via resolveEntity, always with
+// full=true for class and subclass — the common failure mode this exists to
+// fix is a model given a combo request ("Paladin Aasimar, Sage background")
+// making only one or two of the several get calls actually needed, or
+// omitting full=true and answering from bare feature names. Any part left
+// unresolved (not given, or not found) is reported under "errors" rather
+// than failing the whole call, so a request naming just class+race still
+// gets both instead of nothing.
+func toolBuildCharacter(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, error) {
+	var args toolBuildCharacterArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	result := map[string]any{}
+	errs := map[string]string{}
+	resolve := func(part, kind, name string, full bool) {
+		if name == "" {
+			return
+		}
+		r, err := resolveEntity(st, opt, kind, name, args.Source, full)
+		if err != nil {
+			errs[part] = err.Error()
+			return
+		}
+		result[part] = r
+	}
+	resolve("class", "class", args.Class, true)
+	resolve("subclass", "subclass", args.Subclass, true)
+	resolve("race", "race", args.Race, false)
+	resolve("subrace", "subrace", args.Subrace, false)
+	resolve("background", "background", args.Background, false)
+	if len(errs) > 0 {
+		result["errors"] = errs
 	}
 	return toJSON(result)
 }
@@ -256,6 +325,27 @@ func classSubclassNames(st *store.Store, className string) []string {
 		}
 	}
 	return out
+}
+
+// mergeSubraceRace looks up a subrace's parent race and merges it in via
+// statblock.MergeSubrace — see internal/cli/render.go's identical helper,
+// which does the same for the CLI's human output; both exist because
+// statblock stays store-agnostic.
+func mergeSubraceRace(st *store.Store, subraceObj map[string]any) map[string]any {
+	raceName, _ := subraceObj["raceName"].(string)
+	raceSource, _ := subraceObj["raceSource"].(string)
+	if raceName == "" {
+		return subraceObj
+	}
+	ents, err := st.Lookup("race", raceName, raceSource)
+	if err != nil || len(ents) == 0 {
+		return subraceObj
+	}
+	raceObj, err := statblock.Decode(ents[0].JSON)
+	if err != nil {
+		return subraceObj
+	}
+	return statblock.MergeSubrace(subraceObj, raceObj)
 }
 
 // raceSubraceNames finds every subrace name for a race the same way

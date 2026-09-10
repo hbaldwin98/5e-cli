@@ -929,6 +929,97 @@ func renderRace(w io.Writer, obj map[string]any) {
 	writeField(w, "Ability Scores", raceAbilities(obj["ability"]))
 }
 
+// MergeSubrace combines a subrace's own JSON with its parent race's so a
+// subrace lookup is self-sufficient. A subrace's entries are deltas against
+// the race, not a full trait list: some entries explicitly overwrite a race
+// trait by name (5etools' entry.data.overwrite, e.g. Drow's "Superior
+// Darkvision" replacing Elf's "Darkvision"), others are pure additions
+// (Sunlight Sensitivity, Drow Magic), and everything the subrace doesn't
+// touch (Fey Ancestry, Trance, Keen Senses, elf weapon training) only exists
+// on the race. Rendering the subrace's obj alone, as Render(kind="subrace")
+// used to, silently drops that inherited third category. size/speed/ability
+// fall back to the race when the subrace doesn't define its own; ability
+// scores add together, since 5e grants both the race's and the subrace's
+// bonus.
+func MergeSubrace(subraceObj, raceObj map[string]any) map[string]any {
+	if raceObj == nil {
+		return subraceObj
+	}
+	merged := make(map[string]any, len(subraceObj)+2)
+	for k, v := range subraceObj {
+		merged[k] = v
+	}
+	if _, ok := merged["size"]; !ok {
+		merged["size"] = raceObj["size"]
+	}
+	if _, ok := merged["speed"]; !ok {
+		merged["speed"] = raceObj["speed"]
+	}
+	if ability := mergeRaceAbility(raceObj["ability"], subraceObj["ability"]); ability != nil {
+		merged["ability"] = ability
+	}
+	merged["entries"] = mergeRaceEntries(asEntryList(raceObj["entries"]), asEntryList(subraceObj["entries"]))
+	return merged
+}
+
+func asEntryList(v any) []any {
+	entries, _ := v.([]any)
+	return entries
+}
+
+func mergeRaceAbility(raceAbility, subraceAbility any) []any {
+	race := firstAbilityMap(raceAbility)
+	sub := firstAbilityMap(subraceAbility)
+	if race == nil && sub == nil {
+		return nil
+	}
+	combined := make(map[string]any, 6)
+	for _, key := range []string{"str", "dex", "con", "int", "wis", "cha"} {
+		if total := integer(race[key]) + integer(sub[key]); total != 0 {
+			combined[key] = json.Number(strconv.Itoa(total))
+		}
+	}
+	return []any{combined}
+}
+
+func firstAbilityMap(v any) map[string]any {
+	values, _ := v.([]any)
+	if len(values) == 0 {
+		return nil
+	}
+	m, _ := values[0].(map[string]any)
+	return m
+}
+
+// mergeRaceEntries appends the subrace's own entries onto the race's,
+// dropping any race entry a subrace entry's data.overwrite names — so a
+// replaced trait (e.g. Darkvision -> Superior Darkvision) appears once, in
+// its subrace form, instead of both.
+func mergeRaceEntries(raceEntries, subEntries []any) []any {
+	overwritten := make(map[string]bool, len(subEntries))
+	for _, e := range subEntries {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		data, ok := m["data"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name := stringValue(data["overwrite"]); name != "" {
+			overwritten[strings.ToLower(name)] = true
+		}
+	}
+	merged := make([]any, 0, len(raceEntries)+len(subEntries))
+	for _, e := range raceEntries {
+		if m, ok := e.(map[string]any); ok && overwritten[strings.ToLower(stringValue(m["name"]))] {
+			continue
+		}
+		merged = append(merged, e)
+	}
+	return append(merged, subEntries...)
+}
+
 // renderClass writes a class's (or, called with a subclass's own obj and
 // obj["subclassFeatures"], a subclass's) mechanical summary — hit die,
 // primary ability, saving throws, starting proficiencies, hit points at
