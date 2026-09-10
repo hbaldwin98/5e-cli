@@ -256,5 +256,33 @@ func MergeFluff(e Entity, fluff map[string]any) Entity {
 		e.Text = ft
 	}
 	e.Edges = append(e.Edges, fe...)
+	// Keep the structured entries too, not just the flattened search text,
+	// so the lore can actually be displayed rather than only matched. It
+	// goes under an underscore-prefixed key that no 5etools record uses, and
+	// statblock renders it only when a caller asks for lore — see
+	// statblock.Lore, and the decision not to put it in every stat block.
+	if entries, ok := fluff["entries"].([]any); ok && len(entries) > 0 {
+		if raw, ok := withFluffEntries(e.JSON, entries); ok {
+			e.JSON = raw
+		}
+	}
 	return e
+}
+
+// FluffKey is where MergeFluff stores an entity's lore entries on its JSON.
+const FluffKey = "_fluff"
+
+func withFluffEntries(raw json.RawMessage, entries []any) (json.RawMessage, bool) {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		return nil, false
+	}
+	obj[FluffKey] = entries
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }

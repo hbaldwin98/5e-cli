@@ -159,3 +159,38 @@ func TestMergeLegendaryGroup_groupWithNoContentLeavesTheEntityAlone(t *testing.T
 		t.Fatalf("expected the entity untouched, got %+v", got)
 	}
 }
+
+func TestMergeFluff_keepsStructuredEntriesAlongsideSearchText(t *testing.T) {
+	e := Entity{Kind: "monster", Name: "Aboleth", JSON: json.RawMessage(`{"name":"Aboleth"}`), Text: "Aboleth"}
+	merged := MergeFluff(e, map[string]any{
+		"name":    "Aboleth",
+		"entries": []any{"Aboleths lurked in primordial oceans."},
+	})
+
+	if !strings.Contains(merged.Text, "primordial oceans") {
+		t.Fatalf("fluff should still reach the search text: %q", merged.Text)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(merged.JSON, &obj); err != nil {
+		t.Fatal(err)
+	}
+	entries, ok := obj[FluffKey].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("structured entries should be stored under %s: %v", FluffKey, obj)
+	}
+	if obj["name"] != "Aboleth" {
+		t.Fatalf("the entity's own fields must survive: %v", obj)
+	}
+}
+
+func TestMergeFluff_imagesOnlyFluffAddsNoEntriesKey(t *testing.T) {
+	e := Entity{Kind: "monster", Name: "X", JSON: json.RawMessage(`{"name":"X"}`), Text: "X"}
+	merged := MergeFluff(e, map[string]any{"name": "X", "images": []any{map[string]any{"href": "x.png"}}})
+	var obj map[string]any
+	if err := json.Unmarshal(merged.JSON, &obj); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := obj[FluffKey]; ok {
+		t.Fatal("image-only fluff should not create an empty lore section")
+	}
+}

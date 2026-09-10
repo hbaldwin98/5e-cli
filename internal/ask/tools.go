@@ -36,7 +36,7 @@ func BuildTools(st *store.Store, opt ToolsOptions) ([]Tool, ToolExecutor) {
 		{
 			Name:        "get",
 			Description: "Look up one 5e entity or book section by kind and name. Pass source when several reprints match. For a class/subclass, pass full=true whenever you need the actual rules text of its features (including any time you are building or describing a character) — the default response only lists feature names by level, not what they do. A subrace's response already includes its parent race's inherited traits merged in, so one subrace lookup is self-sufficient. To fully build a character (e.g. \"Paladin Aasimar with a Sage background\"), call get separately for the class (full=true), its subclass if named (full=true), the race or subrace, and the background — do not stop after the first successful lookup.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id. If the user said 2014/5e/classic, use a non-X source (PHB, DMG, MM, ...); if they said 2024/5.5e/one D&D/revised/new, use the matching X-prefixed source (XPHB, XDMG, XMM, ...). Set this whenever an edition was named or implied, and do not also fetch the other edition's version in the same turn."},"full":{"type":"boolean","description":"for a class/subclass, also resolve and include every referenced feature's full rules text — set this whenever the actual mechanics matter, e.g. building or describing a character"}},"required":["kind","name"]}`),
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","description":"entity kind such as spell, monster, item, or bookSection"},"name":{"type":"string","description":"entity or section name"},"source":{"type":"string","description":"optional 5etools source id. If the user said 2014/5e/classic, use a non-X source (PHB, DMG, MM, ...); if they said 2024/5.5e/one D&D/revised/new, use the matching X-prefixed source (XPHB, XDMG, XMM, ...). Set this whenever an edition was named or implied, and do not also fetch the other edition's version in the same turn."},"full":{"type":"boolean","description":"for a class/subclass, also resolve and include every referenced feature's full rules text — set this whenever the actual mechanics matter, e.g. building or describing a character"},"lore":{"type":"boolean","description":"also include the entity's descriptive lore (habitat, behavior, culture, history) from the 5etools fluff files — set this for a question about what something is or how it behaves rather than its rules"}},"required":["kind","name"]}`),
 		},
 		{
 			Name:        "buildCharacter",
@@ -144,6 +144,7 @@ type toolGetArgs struct {
 	Name   string `json:"name"`
 	Source string `json:"source"`
 	Full   bool   `json:"full"`
+	Lore   bool   `json:"lore"`
 }
 
 func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, error) {
@@ -151,7 +152,7 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	result, err := resolveEntity(st, opt, args.Kind, args.Name, args.Source, args.Full)
+	result, err := resolveEntity(st, opt, args.Kind, args.Name, args.Source, args.Full, args.Lore)
 	if err != nil {
 		return "", err
 	}
@@ -162,7 +163,7 @@ func toolGet(st *store.Store, opt ToolsOptions, raw json.RawMessage) (string, er
 // toolBuildCharacter can resolve several entities (class, subclass, race,
 // subrace, background) the same way in one call instead of the model having
 // to issue and remember to fully specify several separate get calls.
-func resolveEntity(st *store.Store, opt ToolsOptions, kind, name, source string, full bool) (map[string]any, error) {
+func resolveEntity(st *store.Store, opt ToolsOptions, kind, name, source string, full, lore bool) (map[string]any, error) {
 	ents, err := st.Lookup(kind, name, source)
 	if err != nil {
 		return nil, err
@@ -196,6 +197,17 @@ func resolveEntity(st *store.Store, opt ToolsOptions, kind, name, source string,
 		}
 		if text := statblock.RenderString(e.Kind, obj); strings.TrimSpace(text) != "" {
 			result["statblock"] = text
+		}
+		// Lore is the descriptive prose from the 5etools fluff files —
+		// what a creature or race *is*, rather than the rules for using
+		// it. Only on request: it is long enough to crowd out the numbers
+		// in a response the model has a limited budget to read.
+		if lore {
+			if text := statblock.Lore(obj); text != "" {
+				result["lore"] = text
+			}
+		} else if statblock.HasLore(obj) {
+			result["loreNote"] = "Descriptive lore exists for this entity; call get again with lore: true if the question is about what it is, where it lives, or how it behaves rather than its rules."
 		}
 		// A class/subclass's own JSON only names its features
 		// ("Fighting Style|Fighter|XPHB|1"), not their rules text — that
@@ -253,7 +265,7 @@ func toolBuildCharacter(st *store.Store, opt ToolsOptions, raw json.RawMessage) 
 		if name == "" {
 			return
 		}
-		r, err := resolveEntity(st, opt, kind, name, args.Source, full)
+		r, err := resolveEntity(st, opt, kind, name, args.Source, full, false)
 		if err != nil {
 			errs[part] = err.Error()
 			return

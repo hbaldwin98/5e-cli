@@ -155,3 +155,38 @@ func TestXPForCR(t *testing.T) {
 		t.Fatal("expected an unrecognized CR to report ok=false")
 	}
 }
+
+func TestLore_rendersOnlyWhenPresentAndStaysOutOfTheStatBlock(t *testing.T) {
+	obj := map[string]any{
+		"name":  "Aboleth",
+		"trait": []any{map[string]any{"name": "Amphibious", "entries": []any{"It breathes air and water."}}},
+		"_fluff": []any{
+			map[string]any{"type": "entries", "entries": []any{"Aboleths lurked in primordial oceans."}},
+		},
+	}
+	if !HasLore(obj) {
+		t.Fatal("expected HasLore to see the merged fluff")
+	}
+	lore := Lore(obj)
+	if !strings.Contains(lore, "primordial oceans") {
+		t.Fatalf("lore not rendered: %q", lore)
+	}
+
+	// The stat block must not carry it: lore is opt-in so it cannot bury the
+	// numbers a DM opened the entry to read.
+	block := RenderString("monster", obj)
+	if strings.Contains(block, "primordial oceans") {
+		t.Fatalf("lore leaked into the stat block:\n%s", block)
+	}
+	if !strings.Contains(block, "Amphibious") {
+		t.Fatalf("stat block should still render its traits:\n%s", block)
+	}
+
+	bare := map[string]any{"name": "Goblin"}
+	if HasLore(bare) || Lore(bare) != "" {
+		t.Fatal("an entity with no fluff should report none")
+	}
+	if RenderLoreCard("monster", "Goblin", "MM", bare, 60) != "" {
+		t.Fatal("a lore card for an entity with no lore should be empty")
+	}
+}

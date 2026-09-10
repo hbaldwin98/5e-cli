@@ -29,7 +29,7 @@ const statblockCardWidth = 96
 // piped output. Both paths share internal/statblock's field extraction, so
 // neither can drift from what a chat model sees through the get/encounter
 // tools.
-func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity, full bool) error {
+func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity, full, lore bool) error {
 	obj, err := statblock.Decode(e.JSON)
 	if err != nil {
 		return fmt.Errorf("decode %s %q: %w", e.Kind, e.Name, err)
@@ -49,10 +49,30 @@ func writeHumanEntity(w io.Writer, st *store.Store, e store.Entity, full bool) e
 			return err
 		}
 	}
+	if lore {
+		if err := writeLore(w, e, obj); err != nil {
+			return err
+		}
+	}
 	if err := writeClassFeatureDetail(w, st, e.Kind, obj, full); err != nil {
 		return err
 	}
 	return writeRaceSubraces(w, st, e.Kind, obj)
+}
+
+// writeLore appends the descriptive prose ingest merged in from the 5etools
+// fluff files, as its own card or Markdown section. It is opt-in (get
+// --lore) rather than part of the stat block: see statblock.Lore.
+func writeLore(w io.Writer, e store.Entity, obj map[string]any) error {
+	if !statblock.HasLore(obj) {
+		fmt.Fprintf(w, "\nno lore recorded for %s %q\n", e.Kind, e.Name)
+		return nil
+	}
+	if stylingEnabled(w) {
+		_, err := io.WriteString(w, "\n"+statblock.RenderLoreCard(e.Kind, e.Name, e.Source, obj, statblockCardWidth)+"\n")
+		return err
+	}
+	return renderMarkdown(w, "\n## Lore\n\n"+statblock.Lore(obj)+"\n")
 }
 
 // writeClassFeatureDetail appends a class's or subclass's referenced

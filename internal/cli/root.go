@@ -148,7 +148,7 @@ func doctorCmd(opt *options) *cobra.Command {
 
 func getCmd(opt *options) *cobra.Command {
 	var source string
-	var full bool
+	var full, lore bool
 	cmd := &cobra.Command{
 		Use:   "get <kind> <name>",
 		Short: "Look up one entity by kind and name",
@@ -190,11 +190,12 @@ rules text — pass --full for that, or look up a feature by name directly.`,
 			if len(ents) > 1 {
 				return writeAmbiguous(cmd, opt.JSON, ents)
 			}
-			return writeEntity(cmd, st, opt.JSON, ents[0], full)
+			return writeEntity(cmd, st, opt.JSON, ents[0], full, lore)
 		},
 	}
 	cmd.Flags().StringVar(&source, "source", "", "disambiguate by 5etools source id (PHB, XPHB, MM, …)")
 	cmd.Flags().BoolVar(&full, "full", false, "for a class/subclass, also resolve and print every referenced feature's full rules text")
+	cmd.Flags().BoolVar(&lore, "lore", false, "also print the entity's descriptive lore from the 5etools fluff files")
 	return cmd
 }
 
@@ -985,7 +986,7 @@ func runAdventureGet(cmd *cobra.Command, opt *options, st *store.Store, adv stor
 	if len(ents) > 1 {
 		return writeAmbiguous(cmd, opt.JSON, ents)
 	}
-	return writeEntity(cmd, st, opt.JSON, ents[0], false)
+	return writeEntity(cmd, st, opt.JSON, ents[0], false, false)
 }
 
 func mcpCmd(opt *options) *cobra.Command {
@@ -1281,7 +1282,7 @@ func splitSources(in []string) []string {
 	return out
 }
 
-func writeEntity(cmd *cobra.Command, st *store.Store, asJSON bool, e store.Entity, full bool) error {
+func writeEntity(cmd *cobra.Command, st *store.Store, asJSON bool, e store.Entity, full, lore bool) error {
 	if asJSON {
 		out := map[string]any{
 			"kind":   e.Kind,
@@ -1294,7 +1295,7 @@ func writeEntity(cmd *cobra.Command, st *store.Store, asJSON bool, e store.Entit
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	return writeHumanEntity(cmd.OutOrStdout(), st, e, full)
+	return writeHumanEntity(cmd.OutOrStdout(), st, e, full, lore)
 }
 
 func writeAmbiguous(cmd *cobra.Command, asJSON bool, ents []store.Entity) error {

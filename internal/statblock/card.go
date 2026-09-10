@@ -435,6 +435,40 @@ func RenderCard(kind, name, source string, obj map[string]any, width int) string
 	return card
 }
 
+// RenderLoreCard renders an entity's lore as its own bordered card, or ""
+// when it has none. It is a separate card from RenderCard's stat block so a
+// caller can show the numbers alone by default and add the prose on request
+// — see Lore for why lore is not just another section.
+func RenderLoreCard(kind, name, source string, obj map[string]any, width int) string {
+	if width < 40 {
+		width = 40
+	}
+	accentColor := lipgloss.Color(accent(kind))
+	inner := width - 4 // border (2) + horizontal padding (2)
+	sections := LoreSections(obj, inner, accentColor)
+	if len(sections) == 0 {
+		return ""
+	}
+
+	var body strings.Builder
+	body.WriteString(joinTitleLine(
+		lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(name),
+		lipgloss.NewStyle().Faint(true).Render(joinNonEmpty(" · ", "lore", source)),
+		inner,
+	))
+	for _, section := range sections {
+		body.WriteString("\n\n")
+		body.WriteString(section.Text)
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(0, 1).
+		Width(width).
+		Render(strings.TrimRight(body.String(), "\n"))
+}
+
 // RenderTableCard renders an arbitrary set of rows as a bordered lipgloss
 // card wrapping a bordered table — the same shape RenderCard produces, for
 // results that are a list rather than a single entity (a class's spell list,

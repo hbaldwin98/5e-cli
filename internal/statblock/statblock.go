@@ -88,6 +88,48 @@ func RenderString(kind string, obj map[string]any) string {
 	return b.String()
 }
 
+// HasLore reports whether an entity carries the descriptive lore ingest
+// merged in from the 5etools fluff files.
+func HasLore(obj map[string]any) bool {
+	entries, ok := obj[parse.FluffKey].([]any)
+	return ok && len(entries) > 0
+}
+
+// Lore renders an entity's lore — the prose from the fluff files that
+// describes what a creature, race, or item *is*, as opposed to the rules for
+// using it — as Markdown, or "" when it has none.
+//
+// It is deliberately separate from Render rather than another of its
+// sections: lore runs to a median of ~900 characters and occasionally 24,000,
+// so folding it into every stat block would bury the numbers a DM opened the
+// entry to read. Callers surface it on request (`5e get --lore`, the get
+// tool's lore parameter).
+func Lore(obj map[string]any) string {
+	entries, ok := obj[parse.FluffKey].([]any)
+	if !ok || len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	renderEntries(&b, entries, 0)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// LoreSections renders an entity's lore as card sections, for a caller
+// laying it out as ANSI rather than Markdown.
+func LoreSections(obj map[string]any, width int, accentColor color.Color) []Section {
+	entries, ok := obj[parse.FluffKey].([]any)
+	if !ok || len(entries) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	renderEntriesOpt(&b, entries, 0, &cardOpts{width: width, accent: accentColor})
+	text := strings.TrimRight(b.String(), "\n")
+	if text == "" {
+		return nil
+	}
+	return []Section{{Heading: "Lore", Text: text, Preformatted: true}}
+}
+
 // Decode parses a stored entity's raw JSON payload the way Render expects
 // it: json.Number preserved rather than collapsed to float64, since a large
 // monster HP total or spell level must round-trip exactly.
