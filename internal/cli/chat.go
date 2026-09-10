@@ -52,6 +52,26 @@ func (d turnDisplays) empty() bool {
 	return len(d.Entities) == 0 && len(d.Rolls) == 0 && len(d.DiceRolls) == 0 && len(d.Encounters) == 0
 }
 
+// parseShownEntity decodes one get-shaped tool result ({"kind","name",
+// "source","json":{...}}) into a shownEntity, used both for the get tool's
+// own result and for each part nested inside a buildCharacter result.
+func parseShownEntity(result string) (shownEntity, bool) {
+	var parsed struct {
+		Kind   string `json:"kind"`
+		Name   string `json:"name"`
+		Source string `json:"source"`
+		JSON   any    `json:"json"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		return shownEntity{}, false
+	}
+	obj, ok := parsed.JSON.(map[string]any)
+	if !ok {
+		return shownEntity{}, false
+	}
+	return shownEntity{Kind: parsed.Kind, Name: parsed.Name, Source: parsed.Source, Obj: obj}, true
+}
+
 // wrapToolExecutorWithDisplays wraps a tool executor so every get, roll,
 // dice, or encounter call's result is also recorded for direct rendering,
 // in addition to being returned to the model as text. drain returns and
@@ -67,18 +87,28 @@ func wrapToolExecutorWithDisplays(base ask.ToolExecutor) (wrapped ask.ToolExecut
 		}
 		switch call.Name {
 		case "get":
-			var parsed struct {
-				Kind   string `json:"kind"`
-				Name   string `json:"name"`
-				Source string `json:"source"`
-				JSON   any    `json:"json"`
+			if e, ok := parseShownEntity(result); ok {
+				mu.Lock()
+				d.Entities = append(d.Entities, e)
+				mu.Unlock()
 			}
+		case "buildCharacter":
+			// buildCharacter's result nests one get-shaped object per
+			// requested part (class, subclass, race, subrace, background)
+			// under that part's name, rather than being get-shaped itself —
+			// each one still deserves its own card.
+			var parsed map[string]json.RawMessage
 			if jsonErr := json.Unmarshal([]byte(result), &parsed); jsonErr == nil {
-				if obj, ok := parsed.JSON.(map[string]any); ok {
-					mu.Lock()
-					d.Entities = append(d.Entities, shownEntity{Kind: parsed.Kind, Name: parsed.Name, Source: parsed.Source, Obj: obj})
-					mu.Unlock()
+				mu.Lock()
+				for part, raw := range parsed {
+					if part == "errors" {
+						continue
+					}
+					if e, ok := parseShownEntity(string(raw)); ok {
+						d.Entities = append(d.Entities, e)
+					}
 				}
+				mu.Unlock()
 			}
 		case "roll":
 			var report randomtable.Report

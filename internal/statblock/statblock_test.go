@@ -116,6 +116,33 @@ func TestMergeSubrace_inheritsUnoverriddenRaceTraitsAndCombinesAbility(t *testin
 	}
 }
 
+func TestRenderCard_tableEntryRendersAsLipglossTableNotMarkdownPipes(t *testing.T) {
+	obj := map[string]any{
+		"name": "Sage",
+		"entries": []any{
+			map[string]any{
+				"name": "Specialty",
+				"type": "entries",
+				"entries": []any{
+					"Roll a d8.",
+					map[string]any{
+						"type":      "table",
+						"colLabels": []any{"d8", "Field of Study"},
+						"rows":      []any{[]any{"1", "Alchemist"}, []any{"2", "Astronomer"}},
+					},
+				},
+			},
+		},
+	}
+	got := RenderCard("background", "Sage", "PHB", obj, 80)
+	if strings.Contains(got, "| d8 |") || strings.Contains(got, "| --- |") {
+		t.Fatalf("expected a lipgloss table, got literal Markdown pipe syntax:\n%s", got)
+	}
+	if !strings.Contains(got, "Alchemist") || !strings.Contains(got, "Astronomer") {
+		t.Fatalf("expected table contents to still be present, got:\n%s", got)
+	}
+}
+
 func TestXPForCR(t *testing.T) {
 	cases := map[string]int{"0": 10, "1/4": 50, "5": 1800, "20": 25000}
 	for cr, want := range cases {

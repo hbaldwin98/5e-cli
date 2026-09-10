@@ -280,7 +280,7 @@ func Sections(kind string, obj map[string]any, width int, accentColor color.Colo
 			continue
 		}
 		var b strings.Builder
-		renderEntries(&b, entries, 0)
+		renderEntriesOpt(&b, entries, 0, &cardOpts{width: width, accent: accentColor})
 		text := strings.TrimRight(b.String(), "\n")
 		if text == "" {
 			continue
@@ -289,7 +289,12 @@ func Sections(kind string, obj map[string]any, width int, accentColor color.Colo
 		if heading == "" {
 			heading = "Description"
 		}
-		out = append(out, Section{Heading: heading, Text: text})
+		// Preformatted: renderEntriesOpt already wraps every text line and
+		// lipgloss-tables to width itself (see cardOpts), so RenderCard must
+		// not re-wrap this text the way it does a section built without
+		// cardOpts — a second Width-driven wrap pass over an already-wrapped
+		// table's fixed-width rows would break their column alignment.
+		out = append(out, Section{Heading: heading, Text: text, Preformatted: true})
 	}
 	return out
 }

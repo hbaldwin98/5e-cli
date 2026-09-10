@@ -8,14 +8,27 @@ package statblock
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"charm.land/lipgloss/v2"
+	lgtable "charm.land/lipgloss/v2/table"
 	"github.com/hbaldwin98/5e-cli/internal/parse"
 )
+
+// cardOpts carries card-only rendering context (content width, accent color)
+// through the generic entries walk (renderEntriesOpt and friends), so a
+// table entry renders as an actual lipgloss table sized to the card instead
+// of literal Markdown pipe syntax. nil means "not rendering for a card" and
+// keeps the original Markdown behavior every other caller relies on.
+type cardOpts struct {
+	width  int
+	accent color.Color
+}
 
 // Render writes one entity's stat-block body (everything after the name and
 // kind/source line, which the caller already knows) to w: the kind-specific
@@ -1492,16 +1505,32 @@ func entrySections(kind string) []entrySection {
 }
 
 func renderEntries(w io.Writer, entries []any, depth int) {
+	renderEntriesOpt(w, entries, depth, nil)
+}
+
+// renderEntriesOpt is renderEntries with an optional card rendering context:
+// nil renders exactly like renderEntries (Markdown, including a table
+// entry's pipe syntax); a non-nil cardOpts instead renders a table entry as
+// an actual bordered lipgloss table sized to the card, the same way
+// renderClassTable already does for a class's level-progression tables —
+// otherwise a background's or race's table (e.g. a background's "Suggested
+// Characteristics" d8 table) shows up inside a card as literal Markdown pipe
+// syntax instead of a real table.
+func renderEntriesOpt(w io.Writer, entries []any, depth int, opts *cardOpts) {
 	for _, entry := range entries {
-		renderEntry(w, entry, depth)
+		renderEntryOpt(w, entry, depth, opts)
 	}
 }
 
-func renderEntry(w io.Writer, entry any, depth int) {
+func renderEntryOpt(w io.Writer, entry any, depth int, opts *cardOpts) {
 	indent := strings.Repeat("  ", depth)
 	switch value := entry.(type) {
 	case string:
-		fmt.Fprintf(w, "%s%s\n", indent, renderString(value))
+		if opts != nil {
+			fmt.Fprintln(w, lipgloss.NewStyle().Width(opts.width).Render(indent+renderString(value)))
+		} else {
+			fmt.Fprintf(w, "%s%s\n", indent, renderString(value))
+		}
 	case map[string]any:
 		typ := stringValue(value["type"])
 		switch typ {
@@ -1509,11 +1538,11 @@ func renderEntry(w io.Writer, entry any, depth int) {
 			if items, ok := value["items"].([]any); ok {
 				for _, item := range items {
 					fmt.Fprintf(w, "%s- ", indent)
-					renderBullet(w, item, depth)
+					renderBulletOpt(w, item, depth, opts)
 				}
 			}
 		case "table":
-			renderTable(w, value, depth)
+			renderTableOpt(w, value, depth, opts)
 		case "attack":
 			text := renderStrings(value["attackEntries"])
 			if label := attackTypeLabel(stringValue(value["attackType"])); label != "" {
@@ -1530,12 +1559,12 @@ func renderEntry(w io.Writer, entry any, depth int) {
 			}
 			if nested, ok := value["entries"].([]any); ok {
 				if name != "" && len(nested) > 0 {
-					renderInlineFirst(w, nested, depth)
+					renderInlineFirstOpt(w, nested, depth, opts)
 				} else {
-					renderEntries(w, nested, depth)
+					renderEntriesOpt(w, nested, depth, opts)
 				}
 			} else if item := value["entry"]; item != nil {
-				renderBullet(w, item, depth)
+				renderBulletOpt(w, item, depth, opts)
 			} else if name != "" {
 				fmt.Fprintln(w)
 			}
@@ -1543,39 +1572,49 @@ func renderEntry(w io.Writer, entry any, depth int) {
 	}
 }
 
-func renderInlineFirst(w io.Writer, entries []any, depth int) {
+func renderInlineFirstOpt(w io.Writer, entries []any, depth int, opts *cardOpts) {
 	if text, ok := entries[0].(string); ok {
 		fmt.Fprintln(w, renderString(text))
-		renderEntries(w, entries[1:], depth+1)
+		renderEntriesOpt(w, entries[1:], depth+1, opts)
 		return
 	}
 	fmt.Fprintln(w)
-	renderEntries(w, entries, depth+1)
+	renderEntriesOpt(w, entries, depth+1, opts)
 }
 
-func renderBullet(w io.Writer, item any, depth int) {
+func renderBulletOpt(w io.Writer, item any, depth int, opts *cardOpts) {
+	wrap := func(s string) string {
+		if opts == nil {
+			return s
+		}
+		return lipgloss.NewStyle().Width(opts.width).Render(s)
+	}
 	switch value := item.(type) {
 	case string:
-		fmt.Fprintln(w, renderString(value))
+		fmt.Fprintln(w, wrap(renderString(value)))
 	case map[string]any:
 		name := renderString(stringValue(value["name"]))
 		if name != "" {
 			fmt.Fprintf(w, "%s. ", name)
 		}
 		if entry, ok := value["entry"].(string); ok {
-			fmt.Fprintln(w, renderString(entry))
+			fmt.Fprintln(w, wrap(renderString(entry)))
 			return
 		}
 		fmt.Fprintln(w)
 		if entries, ok := value["entries"].([]any); ok {
-			renderEntries(w, entries, depth+1)
+			renderEntriesOpt(w, entries, depth+1, opts)
 		}
 	default:
 		fmt.Fprintln(w, scalar(value))
 	}
 }
 
-func renderTable(w io.Writer, table map[string]any, depth int) {
+func renderTableOpt(w io.Writer, table map[string]any, depth int, opts *cardOpts) {
+	if opts != nil {
+		renderCardTable(w, table, opts)
+		return
+	}
 	indent := strings.Repeat("  ", depth)
 	if caption := renderString(stringValue(table["caption"])); caption != "" {
 		fmt.Fprintf(w, "%s%s\n", indent, caption)
@@ -1602,6 +1641,54 @@ func renderTable(w io.Writer, table map[string]any, depth int) {
 			}
 		}
 	}
+}
+
+// renderCardTable renders a generic (non-class) table entry as a bordered
+// lipgloss table, matching renderClassTable's look, instead of the literal
+// Markdown pipe syntax renderTableOpt writes for every other caller.
+func renderCardTable(w io.Writer, table map[string]any, opts *cardOpts) {
+	if caption := renderString(stringValue(table["caption"])); caption != "" {
+		fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Render(caption))
+	}
+	var headers []string
+	if labels, ok := table["colLabels"].([]any); ok {
+		for _, l := range labels {
+			headers = append(headers, renderCell(l))
+		}
+	}
+	var rows [][]string
+	if rs, ok := table["rows"].([]any); ok {
+		for _, row := range rs {
+			cells, ok := row.([]any)
+			if !ok {
+				continue
+			}
+			r := make([]string, len(cells))
+			for i, c := range cells {
+				r[i] = renderCell(c)
+			}
+			rows = append(rows, r)
+		}
+	}
+	tbl := lgtable.New().
+		Headers(headers...).
+		Rows(rows...).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(opts.accent)).
+		BorderRow(false).
+		BorderColumn(true).
+		StyleFunc(func(row, _ int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			if row == lgtable.HeaderRow {
+				return style.Bold(true)
+			}
+			return style
+		})
+	out := strings.TrimRight(tbl.Render(), "\n")
+	if lipgloss.Width(out) > opts.width {
+		out = strings.TrimRight(tbl.Width(opts.width).Render(), "\n")
+	}
+	fmt.Fprintln(w, out)
 }
 
 func writeField(w io.Writer, label, value string) {
