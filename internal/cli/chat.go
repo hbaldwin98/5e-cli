@@ -712,9 +712,9 @@ func runChat(cmd *cobra.Command, opt *options, copt *chatOptions, args []string)
 		// The Bubble Tea workspace owns the whole terminal (alt screen,
 		// its own render loop); a raw progress bar written straight to
 		// stderr underneath it doesn't get composited in, it corrupts the
-		// screen the program just drew. The workspace shows its own
-		// "thinking" spinner for a slow embedding build instead, so no
-		// progress output is written at all — same as --json.
+		// screen the program just drew. The workspace reports a slow
+		// embedding build on its own spinner instead (startTurn replaces
+		// OnProgress), so no progress output is written here — same as --json.
 		cfg.Progress = io.Discard
 	} else {
 		cfg.Progress = cmd.ErrOrStderr()

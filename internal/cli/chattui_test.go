@@ -346,6 +346,16 @@ func TestChatModel_showsAThinkingIndicatorBeforeTheFirstToken(t *testing.T) {
 	}
 }
 
+func TestChatModel_showsEmbeddingProgressInPlaceOfThinking(t *testing.T) {
+	m, _ := newTestChatModel(t)
+	m.input.SetValue("what does fireball do")
+	m.submit()
+	m.Update(embedProgressMsg{Done: 40, Total: 120, Phase: "embedding"})
+	if view := m.viewport.View(); !strings.Contains(view, "embedding 40/120") || strings.Contains(view, "thinking") {
+		t.Fatalf("want the embedding build's progress in place of thinking, got:\n%s", view)
+	}
+}
+
 func TestChatModel_slashModelOverridesAndPersistsTheModel(t *testing.T) {
 	m, api := newTestChatModelWithProvider(t)
 

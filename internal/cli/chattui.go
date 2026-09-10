@@ -117,6 +117,11 @@ type deltaMsg string
 // ask.Config.HasTools' doc comment).
 type toolCallMsg string
 
+// embedProgressMsg reports a first-question embedding cache build, so the
+// spinner shows "embedding 40/120" instead of a bare "thinking" for a build
+// that can take minutes.
+type embedProgressMsg ask.EmbedProgress
+
 // turnDoneMsg is the final result of a streamed question — success or
 // failure (including cancellation, which arrives as context.Canceled).
 type turnDoneMsg struct {
@@ -178,6 +183,10 @@ type chatModel struct {
 	// shown next to the spinner in place of a bare "thinking" while the
 	// round-trip loop runs. Cleared at the start of each turn.
 	toolStatus string
+	// embedStatus is the latest embedding cache build progress ("embedding
+	// 40/120"), shown next to the spinner while the build runs. Cleared at
+	// the start of each turn.
+	embedStatus string
 
 	// history is every line submitted (questions and slash commands alike),
 	// most recent last, recalled with Up/Down the way a shell history does.
@@ -312,8 +321,11 @@ func (m *chatModel) refreshViewport() {
 			// recent one instead of a bare "thinking" — the loop can take
 			// several round trips and a static label reads as a hang.
 			label := "thinking"
-			if m.toolStatus != "" {
+			switch {
+			case m.toolStatus != "":
 				label = "calling " + m.toolStatus
+			case m.embedStatus != "":
+				label = m.embedStatus
 			}
 			b.WriteString("\n\n")
 			b.WriteString(lipgloss.NewStyle().Faint(true).Render(m.spin.View() + " " + label))
@@ -370,6 +382,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolCallMsg:
 		m.toolStatus = string(msg)
+		m.refreshViewport()
+		return m, listenTurn(m.turnCh)
+
+	case embedProgressMsg:
+		m.embedStatus = fmt.Sprintf("%s %d/%d", msg.Phase, msg.Done, msg.Total)
 		m.refreshViewport()
 		return m, listenTurn(m.turnCh)
 
@@ -697,6 +714,7 @@ func (m *chatModel) startTurn(question string) (tea.Model, tea.Cmd) {
 	m.pending.Reset()
 	m.streaming = true
 	m.toolStatus = ""
+	m.embedStatus = ""
 
 	parent := m.cmd.Context()
 	if parent == nil {
@@ -710,6 +728,12 @@ func (m *chatModel) startTurn(question string) (tea.Model, tea.Cmd) {
 	cfg.OnToolCall = func(name string, _ json.RawMessage) {
 		select {
 		case ch <- toolCallMsg(name):
+		case <-ctx.Done():
+		}
+	}
+	cfg.OnProgress = func(p ask.EmbedProgress) {
+		select {
+		case ch <- embedProgressMsg(p):
 		case <-ctx.Done():
 		}
 	}
